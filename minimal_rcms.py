@@ -80,6 +80,55 @@ class MinimalRCMS:
                 updated_at TIMESTAMP
             );
 
+            -- 长期 5 层记忆
+            CREATE TABLE IF NOT EXISTS identity_memory (
+                user_id TEXT PRIMARY KEY,
+                traits TEXT DEFAULT '[]',
+                voice_hint TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS event_memory (
+                event_id INTEGER PRIMARY KEY,
+                user_id TEXT,
+                content TEXT,
+                relationship_delta REAL DEFAULT 0.0,
+                emotional_weight REAL DEFAULT 0.0,
+                novelty REAL DEFAULT 0.0,
+                compressed_hint TEXT DEFAULT '',
+                created_at TIMESTAMP,
+                last_recalled TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS emotional_trace (
+                trace_id INTEGER PRIMARY KEY,
+                user_id TEXT,
+                warmth REAL DEFAULT 0.0,
+                tension REAL DEFAULT 0.0,
+                uncertainty REAL DEFAULT 0.0,
+                distance REAL DEFAULT 0.0,
+                prose_hint TEXT DEFAULT '',
+                created_at TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS shared_context (
+                context_id INTEGER PRIMARY KEY,
+                user_id TEXT,
+                context_body TEXT,
+                omission_count INTEGER DEFAULT 0,
+                confirmed INTEGER DEFAULT 0,
+                created_at TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS relationship_arc (
+                arc_id INTEGER PRIMARY KEY,
+                user_id TEXT,
+                stage TEXT DEFAULT 'stranger',
+                stage_score REAL DEFAULT 0.0,
+                updated_at TIMESTAMP
+            );
+
             -- 记忆图结构
             CREATE TABLE IF NOT EXISTS memory_graph_nodes (
                 node_id INTEGER PRIMARY KEY,
@@ -847,7 +896,8 @@ class MinimalRCMS:
     def prompt_compressor(self, user_id: str, session_id: str, user_input: str,
                            stance: str, engagement: dict, momentum: tuple,
                            memories: list | None = None,
-                           recall_status: str = 'success') -> str:
+                           recall_status: str = 'success',
+                           long_term: dict | None = None) -> str:
         """半结构化 Prompt 压缩 ≤180 字"""
         if memories is None:
             memories = self.retrieve_memories(user_id, user_input, stance)
@@ -861,11 +911,26 @@ class MinimalRCMS:
         mem_lines = [f"- {m[0]}" for m in memories[:2]]
         mem_block = "\n".join(mem_lines) if mem_lines else ""
 
+        # 长期层补充
+        lt_block = ""
+        if long_term:
+            arc = long_term.get('arc_stage', '')
+            if arc and arc != 'stranger':
+                stage_map = {'familiar': '已经认识一阵了', 'rapport': '已经很熟了',
+                             'history': '是老朋友了', 'drift': '有一阵没联系',
+                             'reconnect': '又重新联系上了'}
+                lt_block = f"\n【关系】{stage_map.get(arc, '')}"
+            if long_term.get('shared_contexts'):
+                ctx = '、'.join(long_term['shared_contexts'][:2])
+                lt_block += f"\n【共同语境】{ctx}"
+
         core = "不主动说教。不假装完全理解。疲惫时简短但不冷漠。"
 
         prompt = f"【当前心理状态】\n{state_text}"
         if mem_block:
             prompt += f"\n\n【相关记忆】\n{mem_block}"
+        if lt_block:
+            prompt += lt_block
         prompt += f"\n\n【底线】\n{core}\n\n用户: {user_input}\n你:"
 
         return prompt
@@ -1175,10 +1240,14 @@ class MinimalRCMS:
     # ========== Post-Update 阶段：残差衰减 / 疲劳 / 事件回写 ==========
 
     def _post_update(self, user_id: str, session_id: str, user_input: str,
-                     stance: str, engagement: dict, momentum: tuple):
-        """Post-Update 阶段：残差衰减、疲劳因子、事件回写"""
+                     stance: str, engagement: dict, momentum: tuple,
+                     reply: str = ""):
+        """Post-Update 阶段：残差衰减、记忆回写、关系弧推进"""
         depth, energy = momentum
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # 确保长期层初始化
+        self._init_identity(user_id)
 
         # 更新 last_active
         self.conn.execute(
@@ -1189,14 +1258,22 @@ class MinimalRCMS:
         # Silent Recall Residue：每轮衰减 + Engaged 时写入
         self._decay_residue(session_id)
         if engagement['level'] == 'engaged_candidate':
-            # warmth: 正向情绪→正方向, negative energy→负方向
             warmth_delta = (1.0 - abs(energy)) * (1.0 if energy >= 0 else -0.5)
-            # tension: energy 绝对值高→张力大
             tension_delta = min(abs(energy) * 0.6, 0.5)
             self._write_residue(session_id, warmth_delta, tension_delta)
 
-        # 事件回写：engaged_candidate 时写入；attentive + 有内容时也写
-        depth_high_enough = depth > 0.5  # 为未来"关系转折事件"保留
+        # 长期层：情绪残影写入（engaged 时）
+        if engagement['level'] in ('engaged_candidate', 'attentive'):
+            self._write_emotional_trace(user_id, engagement, momentum)
+
+        # 长期层：关系弧推进
+        self._update_relationship_arc(user_id, engagement, depth)
+
+        # 长期层：共同语境构建
+        if reply:
+            self._build_shared_context(user_id, user_input, reply)
+
+        # 事件回写 + 图构建
         should_write = (
             (engagement['level'] == 'engaged_candidate')
             or (engagement['level'] == 'attentive' and len(user_input) > 15)
@@ -1212,10 +1289,168 @@ class MinimalRCMS:
                     "INSERT INTO long_term_memory (user_id, content, memory_type, session_id, created_at) VALUES (?, ?, ?, ?, ?)",
                     (user_id, summary, 'event', session_id, now_str)
                 )
-                # 同步构建记忆图
                 self._build_graph_from_memory(user_id, summary)
 
+                # 关系转折事件判断
+                if depth > 0.5 and engagement['level'] == 'engaged_candidate':
+                    self._write_event_memory(
+                        user_id, session_id, summary,
+                        relationship_delta=depth * 0.5,
+                        emotional_weight=abs(energy)
+                    )
+
         self.conn.commit()
+
+    # ========================================================================
+    #  长期 5 层记忆 — 身份 / 事件 / 情绪残影 / 共同语境 / 关系阶段
+    # ========================================================================
+
+    _ARC_STAGES = ['stranger', 'familiar', 'rapport', 'history', 'drift', 'reconnect']
+
+    def _init_identity(self, user_id: str):
+        """初始化身份记忆（首次见面）"""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO identity_memory (user_id, traits, voice_hint, updated_at) VALUES (?, '[]', '', ?)",
+            (user_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        )
+        self.conn.execute(
+            "INSERT OR IGNORE INTO relationship_arc (user_id, stage, stage_score, updated_at) VALUES (?, 'stranger', 0.0, ?)",
+            (user_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        )
+        self.conn.commit()
+
+    def _write_event_memory(self, user_id: str, session_id: str, content: str,
+                             relationship_delta: float, emotional_weight: float):
+        """写入事件记忆（仅关系转折事件）"""
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        compressed = content[:40] + '...' if len(content) > 40 else content
+        self.conn.execute(
+            "INSERT INTO event_memory (user_id, content, relationship_delta, emotional_weight, novelty, compressed_hint, created_at) "
+            "VALUES (?, ?, ?, ?, 0.0, ?, ?)",
+            (user_id, content, relationship_delta, emotional_weight, compressed, now_str)
+        )
+        self.conn.commit()
+
+    def _write_emotional_trace(self, user_id: str, engagement: dict, momentum: tuple):
+        """写入情绪残影坐标"""
+        depth, energy = momentum
+        scores = engagement.get('scores', {})
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # 从 momentum 和 engagement 推导情绪坐标
+        warmth = 1.0 - abs(energy)  # 高 energy → 低 warmth
+        tension = max(0.0, energy) if energy > 0 else 0.0
+        uncertainty = scores.get('shift', 0.0) if scores.get('shift', 0) > 0.5 else 0.0
+        distance = -depth if depth > 0.3 else depth  # 亲近程度
+
+        self.conn.execute(
+            "INSERT INTO emotional_trace (user_id, warmth, tension, uncertainty, distance, prose_hint, created_at) "
+            "VALUES (?, ?, ?, ?, '', ?, ?)",
+            (user_id, warmth, tension, uncertainty, distance, now_str)
+        )
+        self.conn.commit()
+
+    def _update_relationship_arc(self, user_id: str, engagement: dict, depth: float):
+        """更新关系阶段分数"""
+        stage_row = self.conn.execute(
+            "SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?",
+            (user_id,)
+        ).fetchone()
+        if not stage_row:
+            return
+
+        stage, score = stage_row
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # 深度参与 + 高 engagement → 正向推进
+        delta = 0.0
+        if engagement['level'] == 'engaged_candidate':
+            delta = 0.1 + depth * 0.1
+        elif engagement['level'] == 'attentive':
+            delta = 0.05
+
+        # 长时间不活跃 → 可能 drift（但不在本轮处理）
+
+        new_score = score + delta
+        new_stage = stage
+
+        # 阶段推进
+        thresholds = {'stranger': 4.0, 'familiar': 10.0, 'rapport': 20.0, 'history': 35.0, 'drift': 0.0}
+        if stage == 'stranger' and new_score >= thresholds['stranger']:
+            new_stage = 'familiar'
+        elif stage == 'familiar' and new_score >= thresholds['familiar']:
+            new_stage = 'rapport'
+        elif stage == 'rapport' and new_score >= thresholds['rapport']:
+            new_stage = 'history'
+
+        self.conn.execute(
+            "UPDATE relationship_arc SET stage = ?, stage_score = ?, updated_at = ? WHERE user_id = ?",
+            (new_stage, new_score, now_str, user_id)
+        )
+        self.conn.commit()
+
+    def _build_shared_context(self, user_id: str, user_input: str, reply: str):
+        """检测并创建共同语境（被反复提及的主题）"""
+        tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', user_input)
+        kws = [w for w in tokens if len(w) > 2 and w not in self._TRIVIAL_MARKERS]
+        if not kws:
+            return
+
+        kw = kws[0]
+        existing = self.conn.execute(
+            "SELECT context_id, omission_count FROM shared_context WHERE user_id = ? AND context_body LIKE ?",
+            (user_id, f'%{kw}%')
+        ).fetchone()
+        if existing:
+            self.conn.execute(
+                "UPDATE shared_context SET omission_count = omission_count + 1 WHERE context_id = ?",
+                (existing[0],)
+            )
+        else:
+            self.conn.execute(
+                "INSERT INTO shared_context (user_id, context_body, omission_count, confirmed) VALUES (?, ?, 1, 0)",
+                (user_id, kw)
+            )
+        self.conn.commit()
+
+    def _load_long_term_context(self, user_id: str) -> dict:
+        """加载长期层信息，供 prompt_compressor 使用"""
+        identity = self.conn.execute(
+            "SELECT traits, voice_hint FROM identity_memory WHERE user_id = ?",
+            (user_id,)
+        ).fetchone()
+
+        recent_events = self.conn.execute(
+            "SELECT compressed_hint, relationship_delta FROM event_memory WHERE user_id = ? ORDER BY created_at DESC LIMIT 2",
+            (user_id,)
+        ).fetchall()
+
+        recent_trace = self.conn.execute(
+            "SELECT prose_hint, warmth, tension FROM emotional_trace WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id,)
+        ).fetchone()
+
+        arc = self.conn.execute(
+            "SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?",
+            (user_id,)
+        ).fetchone()
+
+        shared = self.conn.execute(
+            "SELECT context_body FROM shared_context WHERE user_id = ? AND confirmed = 1 ORDER BY omission_count DESC LIMIT 2",
+            (user_id,)
+        ).fetchall()
+
+        return {
+            'identity_traits': json.loads(identity[0]) if identity and identity[0] else [],
+            'voice_hint': identity[1] if identity else '',
+            'events': [{'hint': r[0], 'delta': r[1]} for r in recent_events],
+            'trace': {'prose': recent_trace[0] if recent_trace else '',
+                      'warmth': recent_trace[1] if recent_trace else 0.0,
+                      'tension': recent_trace[2] if recent_trace else 0.0},
+            'arc_stage': arc[0] if arc else 'stranger',
+            'arc_score': arc[1] if arc else 0.0,
+            'shared_contexts': [r[0] for r in shared],
+        }
 
     # ========================================================================
     #  记忆图：激活扩散检索（BFS 替代关键词 LIKE）
@@ -1391,9 +1626,11 @@ class MinimalRCMS:
         stance = self.stance_manager(user_id, session_id, user_input, engagement)
         memories, recall_status = await self._recall(user_id, user_input, engagement['level'],
                                                       stance, momentum)
+        long_term = self._load_long_term_context(user_id)
         prompt = self.prompt_compressor(user_id, session_id, user_input, stance,
-                                         engagement, momentum, memories, recall_status)
+                                         engagement, momentum, memories, recall_status,
+                                         long_term)
         reply = await self._generate_with_fallback(prompt, stance, 'normal', backend)
         self.save_turn(session_id, user_input, reply, stance)
-        self._post_update(user_id, session_id, user_input, stance, engagement, momentum)
+        self._post_update(user_id, session_id, user_input, stance, engagement, momentum, reply)
         return reply

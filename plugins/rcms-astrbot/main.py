@@ -252,6 +252,6 @@ class RcmsPlugin(star.Star):
 
         engagement = json.loads(engagement_json)
         momentum = tuple(json.loads(momentum_json))
-        rcms._post_update(user_id, session_id, user_input, stance, engagement, momentum)
+        rcms._post_update(user_id, session_id, user_input, stance, engagement, momentum, reply)
 
         logger.debug(f"RCMS: [{persona_name}] 已记录 [{stance}]")
