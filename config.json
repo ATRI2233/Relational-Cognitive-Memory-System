@@ -1,0 +1,19 @@
+{
+  "general": {
+    "enabled": true,
+    "persona_separated": true,
+    "user_id": "default_user"
+  },
+  "memory": {
+    "enable_auto_save": true,
+    "max_memories_per_prompt": 2
+  },
+  "output_log": {
+    "enabled": true,
+    "max_size_mb": 5,
+    "path": "rcms_output.jsonl"
+  },
+  "debug": {
+    "log_level": "info"
+  }
+}

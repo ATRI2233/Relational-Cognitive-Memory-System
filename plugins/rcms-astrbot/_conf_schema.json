@@ -1,0 +1,59 @@
+{
+  "general": {
+    "description": "基本设置",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用 RCMS",
+        "hint": "关闭后不注入关系上下文，插件相当于禁用。",
+        "type": "bool",
+        "default": true
+      },
+      "persona_separated": {
+        "description": "按人格隔离记忆",
+        "hint": "启用后每个人格使用独立数据库，不同人格的记忆互不干扰。关闭则统一使用一个记忆库。",
+        "type": "bool",
+        "default": true
+      },
+      "user_id": {
+        "description": "用户标识（备用）",
+        "hint": "当无法从事件获取发送者 ID 时使用的备用用户 ID。正常情况下会自动使用实际发送者 ID。",
+        "type": "string",
+        "default": "default_user"
+      }
+    }
+  },
+  "memory": {
+    "description": "记忆管理",
+    "type": "object",
+    "items": {
+      "enable_auto_save": {
+        "description": "自动保存对话到记忆",
+        "hint": "每次对话后是否自动将内容写入长期记忆。",
+        "type": "bool",
+        "default": true
+      },
+      "max_memories_per_prompt": {
+        "description": "每次注入最大记忆数",
+        "hint": "每次 LLM 请求最多注入几条相关记忆到 system_prompt。",
+        "type": "int",
+        "default": 2,
+        "min": 0,
+        "max": 10
+      }
+    }
+  },
+  "debug": {
+    "description": "调试",
+    "type": "object",
+    "items": {
+      "log_level": {
+        "description": "日志级别",
+        "hint": "debug 会输出详细 pipeline 日志，info 只输出关键信息。",
+        "type": "string",
+        "default": "info",
+        "options": ["debug", "info", "warning"]
+      }
+    }
+  }
+}

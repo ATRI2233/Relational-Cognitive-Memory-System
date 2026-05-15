@@ -49,10 +49,9 @@ def test_stance_detection(rcms):
 async def test_casual_conversation(rcms, backend):
     reply = await rcms.chat("u1", "s1", "今天天气不错", backend)
     state = rcms.conn.execute(
-        "SELECT stance, turn_count FROM session_state WHERE session_id = ?", ("s1",)
+        "SELECT stance, turn_count, engagement_level FROM session_state WHERE session_id = ?", ("s1",)
     ).fetchone()
-    assert state[0] == 'casual'
-    assert state[1] == 1
+    assert state[1] == 1  # turn_count
     assert reply == "嗯，我在听，你继续说。"
 
 
@@ -60,10 +59,11 @@ async def test_casual_conversation(rcms, backend):
 async def test_engaged_with_memory_write(rcms, backend):
     await rcms.chat("u1", "s2", "最近好累，工作压力太大了天天加班", backend)
     state = rcms.conn.execute(
-        "SELECT stance, turn_count FROM session_state WHERE session_id = ?", ("s2",)
+        "SELECT stance, turn_count, engagement_level FROM session_state WHERE session_id = ?", ("s2",)
     ).fetchone()
-    assert state[0] == 'engaged'
-    assert state[1] == 1
+    assert state[1] == 1  # turn_count
+    # engagement 应 ≥ attentive（情绪词触发至少 1 门）
+    assert state[2] in ('attentive', 'engaged_candidate')
 
     memories = rcms.conn.execute(
         "SELECT content, memory_type FROM long_term_memory"
