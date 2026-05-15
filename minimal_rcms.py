@@ -1162,7 +1162,8 @@ class MinimalRCMS:
         return unique[:2]
 
     async def _recall(self, user_id: str, user_input: str, engagement_level: str,
-                      stance: str, momentum: tuple) -> tuple:
+                      stance: str, momentum: tuple,
+                      session_id: str = '', mood_signal: float = 0.0) -> tuple:
         """Recall dispatcher: 图检索（主） → 关键词 LIKE（备） → 超时 fallback
 
         Returns:
@@ -1175,7 +1176,8 @@ class MinimalRCMS:
         try:
             graph_result = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
-                    None, self._graph_recall, user_id, user_input, engagement_level
+                    None, self._graph_recall, user_id, user_input, engagement_level,
+                    stance, session_id, mood_signal
                 ),
                 timeout=0.3
             )
@@ -1453,6 +1455,122 @@ class MinimalRCMS:
         }
 
     # ========================================================================
+    #  Inhibition — 按 Stance 压制不合时宜的节点类型
+    # ========================================================================
+
+    _INHIBITION_RULES = {
+        'analytical':  {'suppress': ['deep_emotion', 'casual_joke'], 'boost': ['factual', 'abstract']},
+        'playful':     {'suppress': ['heavy', 'deep_emotion'], 'boost': ['casual_joke', 'light']},
+        'distant':     {'suppress': ['deep_emotion', 'intimate', 'heavy'], 'boost': ['light']},
+        'guarded':     {'suppress': ['intimate', 'vulnerability'], 'boost': ['factual']},
+        'reflective':  {'suppress': ['casual_joke'], 'boost': ['deep_emotion', 'abstract']},
+        'intimate':    {'suppress': ['casual_joke', 'distant'], 'boost': ['deep_emotion', 'vulnerability']},
+        'open':        {'suppress': [], 'boost': []},
+    }
+
+    def _apply_inhibition(self, stance: str, activation_items: list) -> list:
+        """按当前 stance 压制/增强激活结果"""
+        rules = self._INHIBITION_RULES.get(stance, self._INHIBITION_RULES['open'])
+        if not rules['suppress'] and not rules['boost']:
+            return activation_items
+
+        result = []
+        for item in activation_items:
+            content, activation = item[0], item[1]
+            # 简单启发式：含特定信号词的内容算特定类型
+            suppressed = False
+            for signal in rules['suppress']:
+                signal_words = {
+                    'deep_emotion': ['难过', '脆弱', '崩溃', '痛苦', '孤独', '无助'],
+                    'casual_joke': ['哈哈', '😄', '开玩笑', '搞笑', '逗'],
+                    'heavy': ['累', '烦', '压力', '绝望', '焦虑'],
+                    'intimate': ['我们', '关系', '相处', '亲近'],
+                    'vulnerability': ['脆弱', '无助', '扛不住', '脆弱'],
+                    'distant': ['随便', '无所谓', '算了', '没事'],
+                }.get(signal, [])
+                if signal_words and any(w in content for w in signal_words):
+                    activation *= 0.3  # 压制
+                    suppressed = True
+                    break
+            # boost
+            if not suppressed:
+                for signal in rules['boost']:
+                    boost_words = {
+                        'factual': ['因为', '所以', '结果', '发现', '原因'],
+                        'abstract': ['人生', '意义', '本质', '存在', '价值'],
+                        'light': ['吃', '喝', '天气', '电影', '游戏'],
+                        'deep_emotion': ['难过', '脆弱', '崩溃', '痛苦'],
+                        'vulnerability': ['脆弱', '无助', '扛不住'],
+                    }.get(signal, [])
+                    if boost_words and any(w in content for w in boost_words):
+                        activation = min(1.0, activation * 1.3)
+                        break
+            result.append((content, activation))
+        return result
+
+    _MISRECALL_SESSION_LIMIT = 1
+
+    def _apply_mood_congruent_misrecall(self, user_id: str, session_id: str,
+                                         activation_items: list, mood_signal: float) -> list:
+        """情绪一致性误联想：低情绪时负面记忆激活增强，每会话限 1 次"""
+        if mood_signal >= 0:
+            return activation_items
+
+        # 检查本会话是否已触发过
+        mis_key = f"misrecall_{session_id}"
+        if getattr(self, '_misrecall_counters', {}).get(mis_key, 0) >= self._MISRECALL_SESSION_LIMIT:
+            return activation_items
+
+        result = []
+        for item in activation_items:
+            content, activation = item[0], item[1]
+            negative_words = ['累', '烦', '难过', '失败', '痛苦', '后悔', '失望', '焦虑']
+            if any(w in content for w in negative_words):
+                activation *= 1.3
+                if not hasattr(self, '_misrecall_counters'):
+                    self._misrecall_counters = {}
+                self._misrecall_counters[mis_key] = self._misrecall_counters.get(mis_key, 0) + 1
+            result.append((content, min(1.0, activation)))
+        return result
+
+    # ========================================================================
+    #  Core Identity Veto — 输出层底线检查
+    # ========================================================================
+
+    def _core_veto(self, prompt: str, stance: str, momentum: tuple) -> str:
+        """在 Prompt 送 LLM 前做底线检查，违规则修正"""
+        depth, energy = momentum
+
+        # 1) 太消沉时加"简短但不冷漠"提醒
+        if energy < -0.6 and depth > 0.5:
+            if "疲惫时简短但不冷漠" not in prompt:
+                prompt += "\n\n【注意】对方状态不太好，保持简短但别冷漠。"
+            else:
+                prompt = prompt.replace(
+                    "疲惫时简短但不冷漠",
+                    "对方状态不太好，简短但有温度"
+                )
+
+        # 2) playful 深度太深 → 适度收紧
+        if stance == 'playful' and depth > 0.6:
+            prompt = prompt.replace("话里带点调侃", "稍微收一点，别太随意")
+            prompt = prompt.replace("氛围轻松，", "")
+
+        # 3) analytical 能量太高 → 加点温度
+        if stance == 'analytical' and energy > 0.5:
+            prompt += "\n【提示】注意别太冷，保持一点温度。"
+
+        # 4) 禁止说教检查
+        preaching_signals = ['你应该', '你必须', '我教你', '听我说', '你这样不对']
+        if any(s in prompt for s in preaching_signals):
+            # 自动替换
+            for s in preaching_signals:
+                prompt = prompt.replace(s, f"或许可以试试")
+                break
+
+        return prompt
+
+    # ========================================================================
     #  记忆图：激活扩散检索（BFS 替代关键词 LIKE）
     # ========================================================================
 
@@ -1590,7 +1708,9 @@ class MinimalRCMS:
         results.sort(key=lambda x: -x[1])
         return results[:4]
 
-    def _graph_recall(self, user_id: str, user_input: str, engagement_level: str) -> dict:
+    def _graph_recall(self, user_id: str, user_input: str, engagement_level: str,
+                       stance: str = 'open', session_id: str = '',
+                       mood_signal: float = 0.0) -> dict:
         """图检索主入口，返回 {'surfaced': [...], 'silent': [...], 'status': 'graph'|'fallback'}
 
         surfaced: 激活 > 0.6 → 进 Prompt
@@ -1604,10 +1724,19 @@ class MinimalRCMS:
             return {'surfaced': [], 'silent': [], 'status': 'skip'}
 
         activated = self._graph_activation_diffusion(user_id, seed_kws)
+
+        # 按(0: content, 1: activation, 2: created_at)提取到(content, activation)
+        items = [(a[0], a[1]) for a in activated]
+
+        # Inhibition：按 stance 压制/增强
+        items = self._apply_inhibition(stance, items)
+
+        # Mood-Congruent Misrecall：低情绪时负面记忆增强
+        items = self._apply_mood_congruent_misrecall(user_id, session_id, items, mood_signal)
+
         surfaced = []
         silent = []
-        for item in activated:
-            content, activation, created_at = item
+        for content, activation in items:
             if activation >= self._SURFACED_THRESHOLD:
                 surfaced.append((content, activation))
             elif activation >= self._SILENT_THRESHOLD:
@@ -1618,18 +1747,21 @@ class MinimalRCMS:
             'silent': silent[:3],
             'status': 'graph' if (surfaced or silent) else 'fallback',
         }
+
     async def chat(self, user_id: str, session_id: str, user_input: str, backend: LLMBackend) -> str:
         """主入口: Working Memory → Momentum → Engagement → Stance → Recall → Prompt Compression → LLM → Post-Update"""
         engagement = self.engagement_trigger(user_id, session_id, user_input)
         wm = self._update_working_memory(user_id, session_id, user_input, engagement)
         momentum = self._update_momentum(user_id, session_id, user_input, engagement, wm)
         stance = self.stance_manager(user_id, session_id, user_input, engagement)
+        mood_signal = wm.get('mood_signal', 0.0) if wm else 0.0
         memories, recall_status = await self._recall(user_id, user_input, engagement['level'],
-                                                      stance, momentum)
+                                                      stance, momentum, session_id, mood_signal)
         long_term = self._load_long_term_context(user_id)
         prompt = self.prompt_compressor(user_id, session_id, user_input, stance,
                                          engagement, momentum, memories, recall_status,
                                          long_term)
+        prompt = self._core_veto(prompt, stance, momentum)
         reply = await self._generate_with_fallback(prompt, stance, 'normal', backend)
         self.save_turn(session_id, user_input, reply, stance)
         self._post_update(user_id, session_id, user_input, stance, engagement, momentum, reply)
