@@ -35,9 +35,9 @@ from astrbot.core import logger
 
 from minimal_rcms import MinimalRCMS
 
-# 输出日志（JSONL 格式，自动轮换）
+# 输出日志（JSONL 格式，自动轮换）— 默认值，init 时会被配置覆盖
 _OUTPUT_LOG = os.path.join(_self, "rcms_output.jsonl")
-_MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 MB
+_MAX_LOG_SIZE = 5 * 1024 * 1024
 
 
 @register(
@@ -65,6 +65,15 @@ class RcmsPlugin(star.Star):
         self.max_memories = self._get_cfg("max_memories_per_prompt", 2)
         self._default_persona_cache: tuple[str, str] | None = None
         self._write_count = 0
+
+        # 输出日志配置
+        global _OUTPUT_LOG, _MAX_LOG_SIZE
+        ol = self._get_cfg("output_log", {})
+        if isinstance(ol, dict):
+            path = ol.get("path") or "rcms_output.jsonl"
+            _OUTPUT_LOG = os.path.join(_self, path) if not os.path.isabs(path) else path
+            mb = ol.get("max_size_mb", 5)
+            _MAX_LOG_SIZE = int(mb) * 1024 * 1024
 
         log_level = self._get_cfg("log_level", "info")
         if log_level == "debug":

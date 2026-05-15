@@ -1,5 +1,6 @@
-name: rcms
+name: astrbot_plugin_rcms
+display_name: RCMS 关系认知记忆
 desc: Relational Cognitive Memory System — 为 AI Agent 添加长期关系记忆与情感氛围感知
 author: RCMS
-version: 0.2.0
+version: 1.0.0
 repo: https://github.com/your/rcms

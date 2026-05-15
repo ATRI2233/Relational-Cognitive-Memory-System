@@ -43,6 +43,32 @@
       }
     }
   },
+  "output_log": {
+    "description": "输出日志",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用输出日志",
+        "hint": "每次回复后记录 JSONL 日志，用于分析对话模式。",
+        "type": "bool",
+        "default": true
+      },
+      "max_size_mb": {
+        "description": "日志最大体积 (MB)",
+        "hint": "超出后自动从头部删除最旧条目。",
+        "type": "int",
+        "default": 5,
+        "min": 1,
+        "max": 100
+      },
+      "path": {
+        "description": "日志文件路径",
+        "hint": "相对插件目录或绝对路径。",
+        "type": "string",
+        "default": "rcms_output.jsonl"
+      }
+    }
+  },
   "debug": {
     "description": "调试",
     "type": "object",

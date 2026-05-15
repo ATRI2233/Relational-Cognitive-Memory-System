@@ -20,7 +20,7 @@ from backends import LLMBackend
 class MinimalRCMS:
     def __init__(self, db_path="memory.db"):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._init_db()
         self._last_silent_recall = []
 
@@ -1605,11 +1605,11 @@ class MinimalRCMS:
                     (now_str, nid)
                 )
             else:
-                self.conn.execute(
+                cursor = self.conn.execute(
                     "INSERT INTO memory_graph_nodes (user_id, label, freq, last_seen) VALUES (?, ?, 1, ?)",
                     (user_id, kw, now_str)
                 )
-                nid = self.conn.lastrowid
+                nid = cursor.lastrowid
             node_ids.append(nid)
 
         # 节点两两建边
