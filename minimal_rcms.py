@@ -9,6 +9,7 @@
     reply = await rcms.chat("user_1", "session_1", "你好", backend)
 """
 import asyncio
+import json
 import re
 import sqlite3
 from datetime import datetime
@@ -65,6 +66,17 @@ class MinimalRCMS:
                 keywords TEXT,
                 status TEXT DEFAULT 'open' CHECK(status IN ('open', 'closed')),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS working_memory (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                focus_chain TEXT DEFAULT '[]',
+                focus_depth INTEGER DEFAULT 0,
+                emotional_frame TEXT DEFAULT 'neutral',
+                conversation_goal TEXT DEFAULT 'casual',
+                current_mood_signal REAL DEFAULT 0.0,
+                updated_at TIMESTAMP
             );
         """)
 
@@ -686,22 +698,121 @@ class MinimalRCMS:
     }
 
     # ========================================================================
-    #  WM Phase 1 — Working Memory：记录输入 + 提取话题候选
+    #  Working Memory — 焦点链 / 情绪帧 / 对话目标 / 连续深度
     # ========================================================================
 
-    def _wm_phase1(self, user_id: str, session_id: str, user_input: str) -> dict:
-        """WM Phase 1: record utterance + extract topic candidate
+    _EMOTIONAL_FRAMES = {
+        'heavy': ['累', '烦', '难过', '崩溃', '痛苦', '绝望', '压力'],
+        'tense': ['焦虑', '不安', '紧张', '担心', '怕', '慌'],
+        'bitter': ['失望', '生气', '愤怒', '委屈', '不甘心', '讽刺'],
+        'warm': ['开心', '感动', '幸福', '温暖', '感激'],
+        'loose': ['哈哈', '😄', '😂', '没事', '随便', '无所谓'],
+        'neutral': [],
+    }
 
-        Working Memory 暂存本轮原始输入，提取话题候选供 Momentum 使用。
-        """
+    _GOAL_SIGNALS = {
+        'seek_advice': ('为什么', '怎么办', '该不该', '要不要', '建议', '帮'),
+        'vent': _EMOTIONAL_WORDS,
+        'confirm': ('是不是', '对吗', '没错吧', '？', '?', '吗'),
+        'explore': ('什么是', '怎么回事', '好奇', '想知道', '想过'),
+        'deepen': ('然后', '后来', '接着说', '还有', '而且', '其实'),
+        'casual': _TRIVIAL_MARKERS,
+    }
+
+    def _detect_emotional_frame(self, text: str) -> str:
+        """检测情绪帧"""
+        for frame, words in self._EMOTIONAL_FRAMES.items():
+            if frame == 'neutral':
+                continue
+            if any(w in text for w in words):
+                return frame
+        return 'neutral'
+
+    def _detect_conversation_goal(self, text: str) -> str:
+        """检测对话目标"""
+        # 优先级：先匹配具体目标，最后 fallback casual
+        for goal, signals in self._GOAL_SIGNALS.items():
+            if goal == 'casual':
+                continue
+            if any(s in text for s in signals):
+                return goal
+        if any(w in text for w in self._TRIVIAL_MARKERS):
+            return 'casual'
+        return 'casual'
+
+    def _update_working_memory(self, user_id: str, session_id: str, user_input: str,
+                                engagement: dict) -> dict:
+        """更新完整工作记忆，返回当前状态 dict"""
         tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', user_input)
-        content_words = [w for w in tokens if len(w) > 1 and w not in self._TRIVIAL_MARKERS][:3]
+        content_words = [w for w in tokens if len(w) > 1 and w not in self._TRIVIAL_MARKERS]
         topic_candidate = content_words[0] if content_words else user_input[:10]
+
+        emotional_frame = self._detect_emotional_frame(user_input)
+        conversation_goal = self._detect_conversation_goal(user_input)
+        mood_signal = engagement['scores'].get('salience', 0.0) * (0.5 if emotional_frame in ('warm', 'loose') else 1.0)
+
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # 读取或创建 working_memory 行
+        row = self.conn.execute(
+            "SELECT focus_chain, focus_depth, emotional_frame, conversation_goal, current_mood_signal FROM working_memory WHERE session_id = ?",
+            (session_id,)
+        ).fetchone()
+
+        if row:
+            try:
+                chain = json.loads(row[0]) if isinstance(row[0], str) else []
+            except Exception:
+                chain = []
+            focus_depth = row[1] or 0
+            prev_frame = row[2] or 'neutral'
+            prev_goal = row[3] or 'casual'
+        else:
+            chain = []
+            focus_depth = 0
+            prev_frame = 'neutral'
+            prev_goal = 'casual'
+
+        # 焦点链：追加新话题，保持最多 5 个
+        chain.append(topic_candidate)
+        if len(chain) > 5:
+            chain.pop(0)
+
+        # focus_depth：话题未切换时递增
+        if len(chain) >= 2 and chain[-1] == chain[-2]:
+            focus_depth += 1
+        else:
+            # 计算语义连续性
+            if len(chain) >= 2:
+                bg_new = self._chinese_bigrams(chain[-1])
+                bg_old = self._chinese_bigrams(chain[-2])
+                if bg_new and bg_old:
+                    j = len(bg_new & bg_old) / max(len(bg_new | bg_old), 1)
+                    if j > 0.3:
+                        focus_depth += 1
+                    else:
+                        focus_depth = 0
+                else:
+                    focus_depth = 0
+            else:
+                focus_depth = 0
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO working_memory (session_id, user_id, focus_chain, focus_depth, emotional_frame, conversation_goal, current_mood_signal, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, user_id, json.dumps(chain), focus_depth, emotional_frame, conversation_goal, mood_signal, now_str)
+        )
+        self.conn.commit()
 
         return {
             'user_input': user_input,
             'topic_candidate': topic_candidate,
             'content_words': content_words,
+            'emotional_frame': emotional_frame,
+            'conversation_goal': conversation_goal,
+            'focus_depth': focus_depth,
+            'focus_chain': chain,
+            'mood_signal': mood_signal,
         }
 
     # ========================================================================
@@ -1059,9 +1170,9 @@ class MinimalRCMS:
 
     # ========== 主入口（异步） ==========
     async def chat(self, user_id: str, session_id: str, user_input: str, backend: LLMBackend) -> str:
-        """主入口: WM Phase1 → Momentum → Engagement → Stance → Recall → Prompt Compression → LLM → Post-Update"""
-        wm = self._wm_phase1(user_id, session_id, user_input)
+        """主入口: Working Memory → Momentum → Engagement → Stance → Recall → Prompt Compression → LLM → Post-Update"""
         engagement = self.engagement_trigger(user_id, session_id, user_input)
+        wm = self._update_working_memory(user_id, session_id, user_input, engagement)
         momentum = self._update_momentum(user_id, session_id, user_input, engagement, wm)
         stance = self.stance_manager(user_id, session_id, user_input, engagement)
         memories, recall_status = await self._recall(user_id, user_input, engagement['level'],

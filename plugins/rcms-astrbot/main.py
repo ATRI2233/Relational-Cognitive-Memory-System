@@ -185,6 +185,9 @@ class RcmsPlugin(star.Star):
     async def on_llm_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
+        """在 LLM 请求前注入 RCMS 关系上下文到 system_prompt
+        完整 Pipeline: Engagement → Working Memory → Momentum → Stance → Prompt Compression
+        """
         if not self.enabled:
             return
         user_input = event.message_str or req.prompt or ""
@@ -199,9 +202,9 @@ class RcmsPlugin(star.Star):
         sender_id = event.get_sender_id()
         user_id = sender_id or self.user_id
 
-        # 全 Pipeline：WM → Momentum → Engagement → Stance
-        wm = rcms._wm_phase1(user_id, session_id, user_input)
+        # 全 Pipeline：Engagement → Working Memory → Momentum → Stance
         engagement = rcms.engagement_trigger(user_id, session_id, user_input)
+        wm = rcms._update_working_memory(user_id, session_id, user_input, engagement)
         momentum = rcms._update_momentum(user_id, session_id, user_input, engagement, wm)
         stance = rcms.stance_manager(user_id, session_id, user_input, engagement)
 
