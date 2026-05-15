@@ -22,6 +22,7 @@ class MinimalRCMS:
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
         self._init_db()
+        self._last_silent_recall = []
 
     def _init_db(self):
         self.conn.executescript("""
@@ -78,6 +79,29 @@ class MinimalRCMS:
                 current_mood_signal REAL DEFAULT 0.0,
                 updated_at TIMESTAMP
             );
+
+            -- 记忆图结构
+            CREATE TABLE IF NOT EXISTS memory_graph_nodes (
+                node_id INTEGER PRIMARY KEY,
+                user_id TEXT,
+                label TEXT,
+                node_type TEXT DEFAULT 'keyword',
+                freq INTEGER DEFAULT 1,
+                last_seen TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_graph_edges (
+                from_node_id INTEGER,
+                to_node_id INTEGER,
+                weight REAL DEFAULT 1.0,
+                encounter_count INTEGER DEFAULT 1,
+                last_seen TIMESTAMP,
+                PRIMARY KEY (from_node_id, to_node_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mgn_user_label ON memory_graph_nodes(user_id, label);
+            CREATE INDEX IF NOT EXISTS idx_mge_from ON memory_graph_edges(from_node_id);
+            CREATE INDEX IF NOT EXISTS idx_mge_to ON memory_graph_edges(to_node_id);
         """)
 
         # 兼容旧表结构：尝试加新列，已存在则忽略
@@ -1074,22 +1098,45 @@ class MinimalRCMS:
 
     async def _recall(self, user_id: str, user_input: str, engagement_level: str,
                       stance: str, momentum: tuple) -> tuple:
-        """Recall dispatcher with activation diffusion timeout
+        """Recall dispatcher: 图检索（主） → 关键词 LIKE（备） → 超时 fallback
 
         Returns:
-            (memories, recall_status) — 'success' | 'timeout' | 'skip'
+            (memories, recall_status) — 'graph' | 'keyword_fallback' | 'timeout' | 'skip'
         """
         if engagement_level == 'coasting' and stance == 'distant':
             return [], 'skip'
+
+        # 1) 图检索
+        try:
+            graph_result = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, self._graph_recall, user_id, user_input, engagement_level
+                ),
+                timeout=0.3
+            )
+        except asyncio.TimeoutError:
+            graph_result = {'surfaced': [], 'silent': [], 'status': 'timeout'}
+
+        if graph_result['surfaced']:
+            memories = [(m[0], 'graph') for m in graph_result['surfaced']]
+            return memories, 'graph'
+
+        # 2) 图无结果 → 降级关键词 LIKE
+        if graph_result['silent']:
+            # 只有 silent 激活 → 写入残差池（但不进 Prompt）
+            self._last_silent_recall = graph_result['silent']
 
         try:
             memories = await asyncio.wait_for(
                 self._activation_diffusion(user_id, user_input, engagement_level, stance, momentum),
                 timeout=0.5
             )
-            return memories, 'success'
+            if memories:
+                return memories, 'keyword_fallback'
         except asyncio.TimeoutError:
-            return [], 'timeout'
+            pass
+
+        return [], 'timeout'
 
     # ========== LLM 容灾：安全 Prompt + 2 级重试 + 硬编码回复 ==========
 
@@ -1165,10 +1212,177 @@ class MinimalRCMS:
                     "INSERT INTO long_term_memory (user_id, content, memory_type, session_id, created_at) VALUES (?, ?, ?, ?, ?)",
                     (user_id, summary, 'event', session_id, now_str)
                 )
+                # 同步构建记忆图
+                self._build_graph_from_memory(user_id, summary)
 
         self.conn.commit()
 
-    # ========== 主入口（异步） ==========
+    # ========================================================================
+    #  记忆图：激活扩散检索（BFS 替代关键词 LIKE）
+    # ========================================================================
+
+    _GRAPH_BFS_DEPTH = 2
+    _GRAPH_ACTIVATION_DECAY = 0.5
+    _SURFACED_THRESHOLD = 0.6
+    _SILENT_THRESHOLD = 0.25
+
+    def _extract_keywords(self, text: str, max_kw: int = 5) -> list[str]:
+        """提取文本关键词（去琐碎词、去单字）"""
+        tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', text)
+        return [w for w in tokens if len(w) > 1 and w not in self._TRIVIAL_MARKERS][:max_kw]
+
+    def _build_graph_from_memory(self, user_id: str, content: str):
+        """从记忆内容提取关键词，构建/更新图节点和边"""
+        kws = self._extract_keywords(content, max_kw=8)
+        if len(kws) < 2:
+            return
+
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        node_ids = []
+
+        for kw in kws:
+            row = self.conn.execute(
+                "SELECT node_id FROM memory_graph_nodes WHERE user_id = ? AND label = ?",
+                (user_id, kw)
+            ).fetchone()
+            if row:
+                nid = row[0]
+                self.conn.execute(
+                    "UPDATE memory_graph_nodes SET freq = freq + 1, last_seen = ? WHERE node_id = ?",
+                    (now_str, nid)
+                )
+            else:
+                self.conn.execute(
+                    "INSERT INTO memory_graph_nodes (user_id, label, freq, last_seen) VALUES (?, ?, 1, ?)",
+                    (user_id, kw, now_str)
+                )
+                nid = self.conn.lastrowid
+            node_ids.append(nid)
+
+        # 节点两两建边
+        for i in range(len(node_ids)):
+            for j in range(i + 1, len(node_ids)):
+                a, b = sorted((node_ids[i], node_ids[j]))
+                edge = self.conn.execute(
+                    "SELECT weight, encounter_count FROM memory_graph_edges WHERE from_node_id = ? AND to_node_id = ?",
+                    (a, b)
+                ).fetchone()
+                if edge:
+                    self.conn.execute(
+                        "UPDATE memory_graph_edges SET weight = weight + 0.5, encounter_count = encounter_count + 1, last_seen = ? WHERE from_node_id = ? AND to_node_id = ?",
+                        (now_str, a, b)
+                    )
+                else:
+                    self.conn.execute(
+                        "INSERT INTO memory_graph_edges (from_node_id, to_node_id, weight, encounter_count, last_seen) VALUES (?, ?, 1.0, 1, ?)",
+                        (a, b, now_str)
+                    )
+        self.conn.commit()
+
+    def _graph_activation_diffusion(self, user_id: str, seed_keywords: list[str]) -> list:
+        """从种子关键词出发 BFS 扩散，返回 (content, activation, created_at) 列表
+
+        激活值 > _SURFACED_THRESHOLD 的可进入 Prompt
+        激活值 > _SILENT_THRESHOLD 的可写入残差池
+        """
+        if not seed_keywords:
+            return []
+
+        now_dt = datetime.now()
+        # 1) 找到种子节点
+        placeholders = ','.join('?' * len(seed_keywords))
+        seed_nodes = self.conn.execute(
+            f"SELECT node_id, label, freq FROM memory_graph_nodes WHERE user_id = ? AND label IN ({placeholders})",
+            (user_id, *seed_keywords)
+        ).fetchall()
+
+        if not seed_nodes:
+            return []
+
+        # 2) BFS 扩散
+        visited = set()
+        activation_map = {}  # node_id -> activation
+
+        for nid, label, freq in seed_nodes:
+            activation_map[nid] = 1.0  # 种子激活 = 1.0
+            visited.add(nid)
+
+        queue = [(nid, 0) for nid, _, _ in seed_nodes]  # (node_id, depth)
+        while queue:
+            nid, depth = queue.pop(0)
+            if depth >= self._GRAPH_BFS_DEPTH:
+                continue
+
+            edges = self.conn.execute(
+                "SELECT from_node_id, to_node_id, weight FROM memory_graph_edges WHERE from_node_id = ? OR to_node_id = ?",
+                (nid, nid)
+            ).fetchall()
+
+            for from_id, to_id, weight in edges:
+                neighbor = to_id if from_id == nid else from_id
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                decay = self._GRAPH_ACTIVATION_DECAY ** (depth + 1)
+                activation_map[neighbor] = weight * decay
+                queue.append((neighbor, depth + 1))
+
+        # 3) 按激活值排序
+        sorted_nodes = sorted(activation_map.items(), key=lambda x: -x[1])
+
+        # 4) 从高激活节点关联的记忆中检索
+        results = []
+        seen_content = set()
+        for nid, activation in sorted_nodes:
+            if len(results) >= 4:
+                break
+            node_label = self.conn.execute(
+                "SELECT label FROM memory_graph_nodes WHERE node_id = ?", (nid,)
+            ).fetchone()
+            if not node_label:
+                continue
+            kw = node_label[0]
+            memories = self.conn.execute(
+                "SELECT content, created_at FROM long_term_memory WHERE user_id = ? AND content LIKE ? ORDER BY created_at DESC LIMIT 2",
+                (user_id, f'%{kw}%')
+            ).fetchall()
+            for content, created_at in memories:
+                if content not in seen_content:
+                    seen_content.add(content)
+                    fuzz_time = self._fuzz_time(created_at)
+                    results.append((fuzz_time + '，' + content, activation, created_at))
+
+        results.sort(key=lambda x: -x[1])
+        return results[:4]
+
+    def _graph_recall(self, user_id: str, user_input: str, engagement_level: str) -> dict:
+        """图检索主入口，返回 {'surfaced': [...], 'silent': [...], 'status': 'graph'|'fallback'}
+
+        surfaced: 激活 > 0.6 → 进 Prompt
+        silent: 0.25~0.6 → 写入残差池
+        """
+        if engagement_level == 'coasting':
+            return {'surfaced': [], 'silent': [], 'status': 'skip'}
+
+        seed_kws = self._extract_keywords(user_input, max_kw=4)
+        if not seed_kws:
+            return {'surfaced': [], 'silent': [], 'status': 'skip'}
+
+        activated = self._graph_activation_diffusion(user_id, seed_kws)
+        surfaced = []
+        silent = []
+        for item in activated:
+            content, activation, created_at = item
+            if activation >= self._SURFACED_THRESHOLD:
+                surfaced.append((content, activation))
+            elif activation >= self._SILENT_THRESHOLD:
+                silent.append((content, activation))
+
+        return {
+            'surfaced': surfaced[:2],
+            'silent': silent[:3],
+            'status': 'graph' if (surfaced or silent) else 'fallback',
+        }
     async def chat(self, user_id: str, session_id: str, user_input: str, backend: LLMBackend) -> str:
         """主入口: Working Memory → Momentum → Engagement → Stance → Recall → Prompt Compression → LLM → Post-Update"""
         engagement = self.engagement_trigger(user_id, session_id, user_input)
