@@ -1,5 +1,72 @@
 # Changelog
 
+## [1.0.0] - 2026-05-15
+
+### Added
+
+- **Inhibition — 按 Stance 压制节点类型** `_apply_inhibition()`
+  - 7 态各自定义 suppress/boost 列表（如 analytical 压制 deep_emotion, boost factual）
+  - 压制 activation *= 0.3，增强 activation *= 1.3
+  - 在 _graph_recall() 中激活扩散后自动调用
+
+- **Mood-Congruent Misrecall** `_apply_mood_congruent_misrecall()`
+  - mood_signal < 0 时负面记忆 activation *= 1.3
+  - 每会话限 1 次，防止重复误联想
+
+- **Core Identity Veto** `_core_veto()`
+  - 输出层底线检查：消沉+深度 → 加温度提醒
+  - playful 过深 → 收紧调侃语气
+  - analytical 能量过高 → 加温度提示
+  - 禁止说教：自动替换"你应该"→"或许可以试试"
+
+- **长期 5 层记忆表**
+  - `identity_memory` — 用户身份画像（traits/voice_hint）
+  - `event_memory` — 关系转折事件（relationship_delta/emotional_weight）
+  - `emotional_trace` — 情绪残影坐标（warmth/tension/uncertainty/distance）
+  - `shared_context` — 共同语境（omission_count 自动累加）
+  - `relationship_arc` — 关系阶段演化（stranger→familiar→rapport→history→drift→reconnect）
+
+- **Graph Activation Diffusion** `_graph_activation_diffusion()`
+  - memory_graph_nodes + memory_graph_edges 表
+  - BFS depth=2，activation decay=0.5/level
+  - 种子节点从用户输入关键词提取
+  - 边权重基于共现实例数递增
+  - `_graph_recall()` 主入口：surfaced(>0.6→Prompt) / silent(0.25~0.6→残差池)
+
+- **Working Memory 完整版** `_update_working_memory()`
+  - focus_chain（JSON 数组，最多 5 个）
+  - emotional_frame（heavy/tense/bitter/warm/loose/neutral）
+  - conversation_goal（seek_advice/vent/confirm/explore/deepen/casual）
+  - focus_depth（连续聚焦轮数）/ current_mood_signal
+
+- **Silent Recall Residue** — 3 轮衰减潜意识残留
+  - `_write_residue()` / `_decay_residue()` / `_apply_residue()`
+  - 每轮衰减 *= 0.6，3 轮后归零
+  - 残影以 0.15/0.10 系数轻微调制 momentum，不进 Prompt
+
+- **时间衰减（按秒）** — momentum 时间挤压
+  - 30 秒阈值，decay = 0.9^intervals
+  - 非活跃期间 momentum 自然衰减
+
+- **SQLite 线程安全** — `check_same_thread=False` 支持线程池 _recall()
+- **输出日志配置化** — main.py 路径/大小改为从 config.json 读取
+- **`_conf_schema.json`** — 新增 output_log 配置组
+
+### Changed
+
+- `_recall()` 重构为三层调度：图检索（主）→ 关键词 LIKE（备）→ 超时 fallback
+- `_get_cfg()` 扩展搜索范围覆盖 output_log 顶层键
+- metadata.yaml version → 1.0.0，name 标准化 + display_name
+
+### Fixed
+
+- `sqlite3.ProgrammingError` — SQLite 跨线程访问（`check_same_thread=False`）
+- `AttributeError: lastrowid` — Python 3.11 需用 `cursor.lastrowid` 而非 `conn.lastrowid`
+
+### Testing
+
+- 64 项测试全通过，覆盖全部 6 个新增模块
+
 ## [0.6.0] - 2026-05-15
 
 ### Added
