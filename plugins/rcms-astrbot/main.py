@@ -37,7 +37,7 @@ from astrbot.core import logger
 from astrbot.core.provider.entities import ToolCallsResult
 from astrbot.core.agent.message import AssistantMessageSegment, ToolCall, ToolCallMessageSegment
 
-from minimal_rcms import MinimalRCMS
+from rcms_core import MinimalRCMS
 
 # 输出日志（JSONL 格式，自动轮换）— 默认值，init 时会被配置覆盖
 _OUTPUT_LOG = os.path.join(_self, "rcms_output.jsonl")
@@ -258,9 +258,7 @@ class RcmsPlugin(star.Star):
     async def on_llm_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
-        """在 LLM 请求前注入 RCMS 关系上下文到 system_prompt
-        完整 Pipeline: Engagement → Working Memory → Momentum → Stance → Prompt Compression
-        """
+        """在 LLM 请求前注入 RCMS 关系上下文到 system_prompt"""
         if not self.enabled:
             return
         user_input = event.message_str or req.prompt or ""
@@ -275,16 +273,10 @@ class RcmsPlugin(star.Star):
         sender_id = event.get_sender_id()
         user_id = sender_id or self.user_id
 
-        # 全 Pipeline：Engagement → Working Memory → Momentum → Stance
-        engagement = rcms.engagement_trigger(user_id, session_id, user_input)
-        wm = rcms._update_working_memory(user_id, session_id, user_input, engagement)
-        momentum = rcms._update_momentum(user_id, session_id, user_input, engagement, wm)
-        stance = rcms.stance_manager(user_id, session_id, user_input, engagement)
-
-        # 生成关系上下文字段
-        memories = rcms.retrieve_memories(user_id, user_input, stance, limit=2)
+        # 检索记忆 + 长期上下文
+        memories = rcms.retrieve_memories(user_id, user_input, 'engaged', limit=2)
         long_term = rcms._load_long_term_context(user_id)
-        context_part = rcms.narrative_context(stance, momentum, session_id,
+        context_part = rcms.narrative_context('open', session_id,
                                                memories=memories, long_term=long_term)
 
         # 按配置的注入方式插入
@@ -317,10 +309,8 @@ class RcmsPlugin(star.Star):
         # 持久化中间状态供 response hook 使用
         event.set_extra("rcms_persona", persona_name)
         event.set_extra("rcms_user_input", user_input)
-        event.set_extra("rcms_stance", stance)
+        event.set_extra("rcms_stance", "open")
         event.set_extra("rcms_session_id", session_id)
-        event.set_extra("rcms_engagement", json.dumps(engagement))
-        event.set_extra("rcms_momentum", json.dumps(momentum))
         event.set_extra("rcms_user_id", user_id)
         event.set_extra("rcms_context_prompt", context_part)
         event.set_extra("rcms_system_prompt", req.system_prompt)
@@ -334,8 +324,6 @@ class RcmsPlugin(star.Star):
         stance = event.get_extra("rcms_stance", "open")
         session_id = event.get_extra("rcms_session_id", "")
         user_id = event.get_extra("rcms_user_id", self.user_id)
-        engagement_json = event.get_extra("rcms_engagement", "{}")
-        momentum_json = event.get_extra("rcms_momentum", "[0.0, 0.0]")
         reply = resp.completion_text or ""
 
         if not user_input or not reply or not session_id:
@@ -355,8 +343,6 @@ class RcmsPlugin(star.Star):
                             context_prompt=context_prompt,
                             system_prompt=system_prompt)
 
-        engagement = json.loads(engagement_json)
-        momentum = tuple(json.loads(momentum_json))
-        rcms._post_update(user_id, session_id, user_input, stance, engagement, momentum, reply)
+        rcms._post_update(user_id, session_id, user_input, stance, reply)
 
         logger.debug(f"RCMS: [{persona_name}] 已记录 [{stance}]")
