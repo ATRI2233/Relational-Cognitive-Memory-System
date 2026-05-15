@@ -20,6 +20,13 @@
         "hint": "当无法从事件获取发送者 ID 时使用的备用用户 ID。正常情况下会自动使用实际发送者 ID。",
         "type": "string",
         "default": "default_user"
+      },
+      "injection_method": {
+        "description": "RCMS 上下文注入方式",
+        "hint": "system_prompt：追加到人格提示词尾部；prompt_prefix：放在用户消息前；faketool：以工具调用结果注入，与人格完全隔离。",
+        "type": "string",
+        "default": "system_prompt",
+        "options": ["system_prompt", "prompt_prefix", "faketool"]
       }
     }
   },

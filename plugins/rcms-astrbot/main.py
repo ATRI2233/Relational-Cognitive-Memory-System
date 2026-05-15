@@ -14,6 +14,8 @@ _self = os.path.dirname(os.path.abspath(__file__))
 if _self not in sys.path:
     sys.path.insert(0, _self)
 
+_INJECTION_METHODS = ("system_prompt", "prompt_prefix", "faketool")
+
 
 def _load_project_config() -> dict:
     """加载项目 config.json，不存在时返回空 dict"""
@@ -32,6 +34,8 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import register
 from astrbot.core import logger
+from astrbot.core.provider.entities import ToolCallsResult
+from astrbot.core.agent.message import AssistantMessageSegment, ToolCall, ToolCallMessageSegment
 
 from minimal_rcms import MinimalRCMS
 
@@ -63,8 +67,17 @@ class RcmsPlugin(star.Star):
         self.enabled = self._get_cfg("enabled", True)
         self.persona_separated = self._get_cfg("persona_separated", True)
         self.max_memories = self._get_cfg("max_memories_per_prompt", 2)
-        self._default_persona_cache: tuple[str, str] | None = None
+        self.injection_method = self._get_cfg("injection_method", "system_prompt")
+        if self.injection_method not in _INJECTION_METHODS:
+            logger.warning(f"RCMS: 未知注入方式 {self.injection_method}，使用 system_prompt")
+            self.injection_method = "system_prompt"
+        self._persona_cache: dict[str, str] = {}  # session_id → persona_name
         self._write_count = 0
+
+        # 数据库存放目录：项目根目录下的 data/
+        _project_root = os.path.dirname(os.path.dirname(_self))
+        self._data_dir = os.path.join(_project_root, "data")
+        os.makedirs(self._data_dir, exist_ok=True)
 
         # 输出日志配置
         global _OUTPUT_LOG, _MAX_LOG_SIZE
@@ -102,7 +115,7 @@ class RcmsPlugin(star.Star):
         """获取/创建对应人格的 RCMS 实例（每人格独立数据库）"""
         if persona_name not in self._rcms_instances:
             safe_name = re.sub(r'[^a-zA-Z0-9_一-鿿]', '_', persona_name)
-            db_path = os.path.join(_self, f"rcms_memory_{safe_name}.db")
+            db_path = os.path.join(self._data_dir, f"rcms_memory_{safe_name}.db")
             self._rcms_instances[persona_name] = MinimalRCMS(db_path=db_path)
             logger.info(f"RCMS: 创建人格记忆库 [{persona_name}] -> {db_path}")
         return self._rcms_instances[persona_name]
@@ -110,25 +123,72 @@ class RcmsPlugin(star.Star):
     async def _resolve_persona(self, event: AstrMessageEvent) -> str:
         """解析当前会话使用哪个人格
 
+        按会话缓存人格名，避免每轮重复查询。
         返回人格名称，作为数据库隔离的 key。
         关闭人格分离时统一返回 'default'。
         """
         if not self.persona_separated:
             return "default"
-        try:
-            mgr = getattr(self.context, 'persona_manager', None)
-            if mgr is None:
-                return "default"
-            persona = await mgr.get_default_persona_v3()
-            name = persona.get("name") if isinstance(persona, dict) else getattr(persona, 'name', None)
-            return name or "default"
-        except Exception as e:
-            logger.debug(f"RCMS: 获取人格失败 ({e})，使用 default")
+
+        session_id = event.unified_msg_origin
+        cached = self._persona_cache.get(session_id)
+        if cached:
+            return cached
+
+        mgr = getattr(self.context, 'persona_manager', None)
+        if mgr is None:
+            logger.warning("RCMS: context 无 persona_manager，使用 default")
+            self._persona_cache[session_id] = "default"
             return "default"
+
+        name = None
+        errors = []
+
+        # 优先：传入 session 标识按会话解析
+        try:
+            persona = await mgr.get_default_persona_v3(umo=session_id)
+            name = persona.get("name") if isinstance(persona, dict) else getattr(persona, 'name', None)
+        except Exception as e:
+            errors.append(f"get_default_persona_v3(umo): {e}")
+
+        # 回退 1：不传 umo 拿全局默认
+        if not name:
+            try:
+                persona = await mgr.get_default_persona_v3()
+                name = persona.get("name") if isinstance(persona, dict) else getattr(persona, 'name', None)
+            except Exception as e:
+                errors.append(f"get_default_persona_v3(): {e}")
+
+        # 回退 2：直接从缓存拿已选人格
+        if not name:
+            try:
+                selected = getattr(mgr, 'selected_default_persona_v3', None)
+                if selected:
+                    name = selected.get("name") if isinstance(selected, dict) else getattr(selected, 'name', None)
+            except Exception as e:
+                errors.append(f"selected_default_persona_v3: {e}")
+
+        # 回退 3：遍历 personas_v3 取第一个
+        if not name:
+            try:
+                pv3 = getattr(mgr, 'personas_v3', None)
+                if pv3 and len(pv3) > 0:
+                    p = pv3[0]
+                    name = p.get("name") if isinstance(p, dict) else getattr(p, 'name', None)
+            except Exception as e:
+                errors.append(f"personas_v3: {e}")
+
+        if not name:
+            name = "default"
+            logger.warning(f"RCMS: 所有人格解析方式均失败 ({'; '.join(errors)})，使用 default")
+
+        self._persona_cache[session_id] = name
+        return name
 
     # ── 输出日志（JSONL 自动轮换） ──────────────────────────
 
-    def _record_output(self, persona: str, stance: str, user_input: str, reply: str):
+    def _record_output(self, persona: str, stance: str, user_input: str, reply: str,
+                       context_prompt: str = "", system_prompt: str = ""):
         """写入一条输出日志，超出 5MB 时删除最旧条目。"""
         entry = {
             "t": time.time(),
@@ -137,6 +197,10 @@ class RcmsPlugin(star.Star):
             "u": user_input,
             "r": reply,
         }
+        if context_prompt:
+            entry["cp"] = context_prompt
+        if system_prompt:
+            entry["sp"] = system_prompt
         line = json.dumps(entry, ensure_ascii=False) + "\n"
         path = _OUTPUT_LOG
 
@@ -218,11 +282,37 @@ class RcmsPlugin(star.Star):
         stance = rcms.stance_manager(user_id, session_id, user_input, engagement)
 
         # 生成关系上下文字段
-        prompt = rcms.prompt_compressor(user_id, session_id, user_input,
-                                         stance, engagement, momentum)
-        context_part = prompt.rsplit("\n用户: ", 1)[0]
+        memories = rcms.retrieve_memories(user_id, user_input, stance, limit=2)
+        long_term = rcms._load_long_term_context(user_id)
+        context_part = rcms.narrative_context(stance, momentum, session_id,
+                                               memories=memories, long_term=long_term)
 
-        req.system_prompt += f"\n\n【RCMS 关系上下文】\n{context_part}"
+        # 按配置的注入方式插入
+        if self.injection_method == "system_prompt":
+            req.system_prompt += f"\n\n{context_part}"
+        elif self.injection_method == "prompt_prefix":
+            req.prompt = f"{context_part}\n\n{req.prompt}" if req.prompt else context_part
+        elif self.injection_method == "faketool":
+            tool_id = f"rcms_{int(time.time())}"
+            info = AssistantMessageSegment(
+                content=None,
+                tool_calls=[ToolCall(
+                    id=tool_id,
+                    function=ToolCall.FunctionBody(
+                        name="get_rcms_context",
+                        arguments="{}"
+                    ),
+                )],
+            )
+            result = ToolCallMessageSegment(
+                role="tool",
+                tool_call_id=tool_id,
+                content=context_part,
+            )
+            req.tool_calls_result = ToolCallsResult(
+                tool_calls_info=info,
+                tool_calls_result=[result],
+            )
 
         # 持久化中间状态供 response hook 使用
         event.set_extra("rcms_persona", persona_name)
@@ -232,6 +322,8 @@ class RcmsPlugin(star.Star):
         event.set_extra("rcms_engagement", json.dumps(engagement))
         event.set_extra("rcms_momentum", json.dumps(momentum))
         event.set_extra("rcms_user_id", user_id)
+        event.set_extra("rcms_context_prompt", context_part)
+        event.set_extra("rcms_system_prompt", req.system_prompt)
 
     @filter.on_llm_response()
     async def on_llm_response(
@@ -257,7 +349,11 @@ class RcmsPlugin(star.Star):
         rcms.save_turn(session_id, user_input, reply, stance)
 
         # 记录输出日志（JSONL，自动轮换）
-        self._record_output(persona_name, stance, user_input, reply)
+        context_prompt = event.get_extra("rcms_context_prompt", "")
+        system_prompt = event.get_extra("rcms_system_prompt", "")
+        self._record_output(persona_name, stance, user_input, reply,
+                            context_prompt=context_prompt,
+                            system_prompt=system_prompt)
 
         engagement = json.loads(engagement_json)
         momentum = tuple(json.loads(momentum_json))

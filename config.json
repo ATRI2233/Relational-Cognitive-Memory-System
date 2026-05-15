@@ -2,7 +2,8 @@
   "general": {
     "enabled": true,
     "persona_separated": true,
-    "user_id": "default_user"
+    "user_id": "default_user",
+    "injection_method": "system_prompt"
   },
   "memory": {
     "enable_auto_save": true,
