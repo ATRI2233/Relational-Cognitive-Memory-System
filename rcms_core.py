@@ -1,6 +1,7 @@
 """MinimalRCMS — 关系认知记忆系统核心（单文件）"""
 import asyncio
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -11,6 +12,8 @@ import numpy as np
 from openai import AsyncOpenAI
 
 from backends import LLMBackend
+
+logger = logging.getLogger("rcms")
 
 
 class MinimalRCMS:
@@ -50,6 +53,7 @@ class MinimalRCMS:
         self._emb_cache: dict[str, dict] = {}
         self._emb_client: Optional[AsyncOpenAI] = None
         self._emb_model = self.analysis_config.get("retrieval", {}).get("model", "text-embedding-3-small")
+        logger.info(f"RCMS init: db={db_path}, retrieval={self.analysis_config.get('retrieval', {}).get('enabled', False)}, post_analysis={self.analysis_config.get('post_analysis', {}).get('mode', 'rule')}")
 
     def _init_db(self):
         self.conn.executescript("""
@@ -181,10 +185,12 @@ class MinimalRCMS:
 
     def retrieve_memories(self, user_id: str, user_input: str, stance: str, limit: int = 2):
         if stance == 'casual':
+            logger.debug(f"Retrieve: user={user_id} stance=casual skip")
             return []
         tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', user_input)
         keywords = [w for w in tokens if len(w) > 1][:3]
         if not keywords:
+            logger.debug(f"Retrieve: user={user_id} no keywords from input")
             return []
         conditions = ' OR '.join(['content LIKE ?'] * len(keywords))
         params = [f'%{k}%' for k in keywords] + [user_id]
@@ -193,7 +199,9 @@ class MinimalRCMS:
             WHERE ({conditions}) AND user_id = ?
             ORDER BY created_at DESC LIMIT ?
         """, params + [limit])
-        return [(self._fuzz_time(r[2]) + '，' + r[0], r[1]) for r in cursor.fetchall()]
+        rows = cursor.fetchall()
+        logger.info(f"Retrieve: user={user_id} kws={keywords} found={len(rows)} source=keyword")
+        return [(self._fuzz_time(r[2]) + '，' + r[0], r[1]) for r in rows]
 
     def _extract_keywords(self, text: str, max_kw: int = 5) -> list[str]:
         tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', text)
@@ -316,14 +324,18 @@ class MinimalRCMS:
     async def _get_embedding(self, text: str) -> list[float]:
         await self._ensure_emb_client()
         if not self._emb_client:
+            logger.warning("Embedding: no client (api_key not configured)")
             return []
         try:
             resp = await self._emb_client.embeddings.create(
                 model=self._emb_model,
                 input=text.replace("\n", " "),
             )
-            return resp.data[0].embedding
-        except Exception:
+            vec = resp.data[0].embedding
+            logger.debug(f"Embedding: ok dim={len(vec)} model={self._emb_model}")
+            return vec
+        except Exception as e:
+            logger.warning(f"Embedding: API call failed ({e})")
             return []
 
     def _store_embedding(self, user_id: str, memory_id: int, content: str, embedding: list[float]):
@@ -341,6 +353,7 @@ class MinimalRCMS:
         ).fetchall()
         if not rows:
             self._emb_cache[user_id] = {"vectors": np.empty((0, 1536), dtype=np.float32), "meta": []}
+            logger.debug(f"EmbedCache: user={user_id} no vectors")
             return
         vecs = []
         meta = []
@@ -349,19 +362,24 @@ class MinimalRCMS:
             if len(vec) == 1536:
                 vecs.append(vec)
                 meta.append((mem_id, content))
+            else:
+                logger.warning(f"EmbedCache: skip vector dim={len(vec)} id={row_id}")
         self._emb_cache[user_id] = {
             "vectors": np.array(vecs, dtype=np.float32) if vecs else np.empty((0, 1536), dtype=np.float32),
             "meta": meta,
         }
+        logger.info(f"EmbedCache: user={user_id} loaded {len(vecs)} vectors")
 
     async def retrieve_by_embedding(self, user_id: str, query: str, limit: int = 3):
         q_vec = await self._get_embedding(query)
         if not q_vec:
+            logger.warning(f"Retrieve: user={user_id} embedding failed, fallback")
             return [], "emb_failed"
         if user_id not in self._emb_cache:
             self._load_emb_cache(user_id)
         cache = self._emb_cache[user_id]
         if cache["vectors"].shape[0] == 0:
+            logger.debug(f"Retrieve: user={user_id} no vectors yet")
             return [], "no_vectors"
         q = np.array(q_vec, dtype=np.float32)
         norm_cache = cache["vectors"] / (np.linalg.norm(cache["vectors"], axis=1, keepdims=True) + 1e-12)
@@ -373,6 +391,7 @@ class MinimalRCMS:
             if scores[idx] > 0.3:
                 mem_id, content = cache["meta"][idx]
                 results.append((content, float(scores[idx])))
+        logger.info(f"Retrieve: user={user_id} query='{query[:30]}' found={len(results)}/{cache['vectors'].shape[0]} source=embedding")
         return results, "embedding"
 
     # ── Narrative Context（供 AstrBot 注入）──
@@ -420,6 +439,7 @@ class MinimalRCMS:
 
         if extra_lines:
             items.append('；'.join(extra_lines))
+            logger.debug(f"Narrative: user extras: {' | '.join(extra_lines)}")
 
         if memories:
             raw = memories[0][0]
@@ -608,8 +628,10 @@ class MinimalRCMS:
         if cfg["mode"] != "llm":
             return
         if cfg["sampling"] < 1.0 and np.random.random() > cfg["sampling"]:
+            logger.debug(f"ANALYSIS: user={user_id} skipped by sampling (rate={cfg['sampling']})")
             return
 
+        logger.info(f"ANALYSIS: start user={user_id} model={cfg['model']}")
         client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
         try:
             prompt = self._build_analysis_prompt(user_id, user_input, reply, long_term)
@@ -620,7 +642,9 @@ class MinimalRCMS:
             )
             content = resp.choices[0].message.content or "{}"
             data = json.loads(content)
-        except Exception:
+            logger.info(f"ANALYSIS: ok mood={data.get('mood','?')} delta={data.get('relationship_delta',0)} importance={data.get('importance',0)}")
+        except Exception as e:
+            logger.warning(f"ANALYSIS: LLM call failed ({e})")
             return
         finally:
             await client.close()
@@ -778,6 +802,14 @@ class MinimalRCMS:
                     "INSERT INTO event_memory (user_id, content, relationship_delta, emotional_weight, novelty, compressed_hint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (user_id, summary, rd, mood_intensity := data.get("mood_intensity", 0.0), importance, summary[:40] + "...", now_str),
                 )
+
+        log_parts = []
+        if data.get("traits_updates"): log_parts.append(f"traits+{len(data['traits_updates'])}")
+        if data.get("shared_jokes"): log_parts.append(f"jokes+{len(data['shared_jokes'])}")
+        if data.get("boundary_hits"): log_parts.append(f"bounds+{len(data['boundary_hits'])}")
+        if data.get("entities"): log_parts.append(f"ents+{len(data['entities'])}")
+        if data.get("importance", 0) >= 0.5: log_parts.append("event")
+        logger.info(f"ANALYSIS: write user={user_id} {' | '.join(log_parts) if log_parts else 'no-updates'}")
 
         self.conn.commit()
 

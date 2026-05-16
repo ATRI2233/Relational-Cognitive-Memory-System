@@ -281,11 +281,17 @@ class RcmsPlugin(star.Star):
         # 检索记忆 + 长期上下文
         analysis_cfg = self._get_analysis_config()
         retrieval_cfg = analysis_cfg.get("retrieval", {})
-        if retrieval_cfg.get("enabled", False):
-            memories, _source = await rcms.retrieve_by_embedding(user_id, user_input, limit=2)
+        use_emb = retrieval_cfg.get("enabled", False)
+        if use_emb:
+            memories, emb_source = await rcms.retrieve_by_embedding(user_id, user_input, limit=2)
+            logger.info(f"RCMS: [{persona_name}] emb_retrieve source={emb_source} hits={len(memories)}")
         else:
             memories = rcms.retrieve_memories(user_id, user_input, 'engaged', limit=2)
+            logger.info(f"RCMS: [{persona_name}] kw_retrieve hits={len(memories)}")
         long_term = rcms._load_long_term_context(user_id)
+        arc = long_term.get("arc_stage", "stranger")
+        traits_count = len(long_term.get("identity_traits", []))
+        logger.debug(f"RCMS: [{persona_name}] context arc={arc} traits={traits_count} shared={len(long_term.get('shared_contexts',[]))} entities={len(long_term.get('entities',[]))}")
         context_part = rcms.narrative_context('open', session_id,
                                                memories=memories, long_term=long_term)
 
@@ -362,14 +368,18 @@ class RcmsPlugin(star.Star):
 
         # Embedding：新记忆入库后异步向量化
         if retrieval_cfg.get("enabled", False) and len(user_input) > 15:
+            logger.debug(f"RCMS: [{persona_name}] schedule_embed")
             asyncio.create_task(self._delayed_embed(rcms, user_id, session_id, user_input))
 
         # ANALYSIS LLM
         if post_cfg.get("mode") == "llm":
+            logger.info(f"RCMS: [{persona_name}] schedule_analysis mode=llm sampling={post_cfg.get('sampling',0)}")
             long_term = rcms._load_long_term_context(user_id)
             asyncio.create_task(rcms._run_analysis(user_id, user_input, reply, long_term))
+        else:
+            logger.debug(f"RCMS: [{persona_name}] post_analysis=rule (skip LLM)")
 
-        logger.debug(f"RCMS: [{persona_name}] 已记录 [{stance}]")
+        logger.info(f"RCMS: [{persona_name}] done turn_len={len(user_input)+len(reply)}")
 
     async def _delayed_embed(self, rcms: MinimalRCMS, user_id: str, session_id: str, content: str):
         """延迟嵌入：获取最近一条未向量化的记忆并生成 embedding"""
