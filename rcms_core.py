@@ -43,13 +43,18 @@ class MinimalRCMS:
 
     # ── 初始化 ──
 
-    def __init__(self, db_path="memory.db", analysis_config: dict | None = None):
+    def __init__(self, db_path="memory.db", analysis_config: dict | None = None,
+                 llm_call=None, embed_call=None):
+        """llm_call: async (prompt: str, model: str) -> str | None — LLM 回调
+           embed_call: async (text: str) -> list[float] | None — Embedding 回调"""
         self.db_path = db_path
         self.analysis_config = analysis_config or {}
+        self._llm_call = llm_call
+        self._embed_call = embed_call
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._init_db()
         self._last_silent_recall = []
-        # Embedding 缓存：{user_id: {"vectors": ndarray, "meta": [(id, content), ...]}}
+        # Embedding 缓存
         self._emb_cache: dict[str, dict] = {}
         self._emb_client: Optional[AsyncOpenAI] = None
         self._emb_model = self.analysis_config.get("retrieval", {}).get("model", "text-embedding-3-small")
@@ -322,6 +327,16 @@ class MinimalRCMS:
             self._emb_client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
 
     async def _get_embedding(self, text: str) -> list[float]:
+        # 优先使用外部回调（AstrBot 模式）
+        if self._embed_call:
+            try:
+                vec = await self._embed_call(text)
+                if vec:
+                    logger.debug(f"Embedding: via callback dim={len(vec)}")
+                    return vec
+            except Exception as e:
+                logger.warning(f"Embedding: callback failed ({e})")
+        # 回退：直接 OpenAI API
         await self._ensure_emb_client()
         if not self._emb_client:
             logger.warning("Embedding: no client (api_key not configured)")
@@ -632,22 +647,36 @@ class MinimalRCMS:
             return
 
         logger.info(f"ANALYSIS: start user={user_id} model={cfg['model']}")
-        client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+        prompt = self._build_analysis_prompt(user_id, user_input, reply, long_term)
+        content = None
         try:
-            prompt = self._build_analysis_prompt(user_id, user_input, reply, long_term)
-            resp = await client.chat.completions.create(
-                model=cfg["model"],
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-            )
-            content = resp.choices[0].message.content or "{}"
-            data = json.loads(content)
-            logger.info(f"ANALYSIS: ok mood={data.get('mood','?')} delta={data.get('relationship_delta',0)} importance={data.get('importance',0)}")
+            if self._llm_call:
+                content = await self._llm_call(prompt, model=cfg["model"])
+                logger.debug(f"ANALYSIS: via callback len={len(content or '')}")
+            else:
+                client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+                try:
+                    resp = await client.chat.completions.create(
+                        model=cfg["model"],
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"},
+                    )
+                    content = resp.choices[0].message.content or "{}"
+                finally:
+                    await client.close()
         except Exception as e:
             logger.warning(f"ANALYSIS: LLM call failed ({e})")
             return
-        finally:
-            await client.close()
+
+        if not content:
+            logger.warning("ANALYSIS: empty response")
+            return
+        try:
+            data = json.loads(content)
+            logger.info(f"ANALYSIS: ok mood={data.get('mood','?')} delta={data.get('relationship_delta',0)} importance={data.get('importance',0)}")
+        except json.JSONDecodeError:
+            logger.warning(f"ANALYSIS: invalid JSON: {content[:200]}")
+            return
 
         self._apply_analysis(user_id, user_input, reply, data)
 

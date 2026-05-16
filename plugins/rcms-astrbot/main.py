@@ -114,13 +114,101 @@ class RcmsPlugin(star.Star):
     def _get_analysis_config(self) -> dict:
         return self.config.get("analysis", {})
 
+    def _build_provider_callbacks(self):
+        """从 AstrBot cmd_config.json 读取 active provider 构造回调"""
+        try:
+            # 找 cmd_config.json
+            candidates = [
+                os.path.expanduser("~/.astrbot/data/cmd_config.json"),
+                os.path.join(os.getcwd(), "data", "cmd_config.json"),
+            ]
+            cfg_path = None
+            for p in candidates:
+                if os.path.exists(p):
+                    cfg_path = p
+                    break
+            if not cfg_path:
+                logger.warning("RCMS: 未找到 AstrBot cmd_config.json，使用独立 API 配置")
+                return None, None
+
+            with open(cfg_path, encoding="utf-8-sig") as f:
+                astrbot_cfg = json.load(f)
+
+            sources = {s["id"]: s for s in astrbot_cfg.get("provider_sources", [])}
+            providers = [p for p in astrbot_cfg.get("provider", []) if p.get("enable", False)]
+            default_id = astrbot_cfg.get("provider_settings", {}).get("default_provider_id", "")
+
+            # 找启用的 provider
+            target = None
+            for p in providers:
+                if p["id"] == default_id or not target:
+                    target = p
+
+            if not target:
+                logger.warning("RCMS: AstrBot 无启用的 provider")
+                return None, None
+
+            # 读取 embedding 配置
+            emb_cfg = astrbot_cfg.get("embedding_provider", {}) or {}
+            emb_source_id = emb_cfg.get("provider_source_id", "")
+            emb_model = emb_cfg.get("model", "")
+
+            # LLM call
+            src = sources.get(target.get("provider_source_id", ""))
+            if not src:
+                logger.warning("RCMS: AstrBot provider source 未找到")
+                return None, None
+
+            api_key = src.get("key", [""])[0] if isinstance(src.get("key"), list) else src.get("key", "")
+            base_url = src.get("api_base", "https://api.openai.com/v1")
+            llm_model = target.get("model", "gpt-4o")
+
+            from openai import AsyncOpenAI
+
+            llm_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+            async def llm_call(prompt: str, model: str = "") -> str:
+                nonlocal llm_client
+                m = model or llm_model
+                resp = await llm_client.chat.completions.create(
+                    model=m,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                )
+                return resp.choices[0].message.content or "{}"
+
+            # Embedding call
+            emb_src = sources.get(emb_source_id, src)
+            emb_key = emb_src.get("key", [""])[0] if isinstance(emb_src.get("key"), list) else emb_src.get("key", "")
+            emb_url = emb_src.get("api_base", "https://api.openai.com/v1")
+            emb_model_name = emb_model or "text-embedding-3-small"
+            emb_client = AsyncOpenAI(api_key=emb_key, base_url=emb_url)
+
+            async def embed_call(text: str) -> list[float]:
+                nonlocal emb_client
+                resp = await emb_client.embeddings.create(
+                    model=emb_model_name,
+                    input=text.replace("\n", " "),
+                )
+                return resp.data[0].embedding
+
+            logger.info(f"RCMS: AstrBot provider loaded — LLM={llm_model} Embed={emb_model_name}")
+            return llm_call, embed_call
+
+        except Exception as e:
+            logger.warning(f"RCMS: AstrBot provider 加载失败 ({e})，使用独立 API 配置")
+            return None, None
+
     def _get_rcms(self, persona_name: str) -> MinimalRCMS:
         if persona_name not in self._rcms_instances:
             safe_name = re.sub(r'[^a-zA-Z0-9_一-鿿]', '_', persona_name)
             db_path = os.path.join(self._data_dir, f"rcms_memory_{safe_name}.db")
+            llm_cb, emb_cb = self._build_provider_callbacks()
             self._rcms_instances[persona_name] = MinimalRCMS(
                 db_path=db_path,
                 analysis_config=self._get_analysis_config(),
+                llm_call=llm_cb,
+                embed_call=emb_cb,
             )
             logger.info(f"RCMS: 创建人格记忆库 [{persona_name}] -> {db_path}")
         return self._rcms_instances[persona_name]
