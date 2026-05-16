@@ -1,9 +1,14 @@
 """MinimalRCMS — 关系认知记忆系统核心（单文件）"""
 import asyncio
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime
+from typing import Optional
+
+import numpy as np
+from openai import AsyncOpenAI
 
 from backends import LLMBackend
 
@@ -35,11 +40,16 @@ class MinimalRCMS:
 
     # ── 初始化 ──
 
-    def __init__(self, db_path="memory.db"):
+    def __init__(self, db_path="memory.db", analysis_config: dict | None = None):
         self.db_path = db_path
+        self.analysis_config = analysis_config or {}
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._init_db()
         self._last_silent_recall = []
+        # Embedding 缓存：{user_id: {"vectors": ndarray, "meta": [(id, content), ...]}}
+        self._emb_cache: dict[str, dict] = {}
+        self._emb_client: Optional[AsyncOpenAI] = None
+        self._emb_model = self.analysis_config.get("retrieval", {}).get("model", "text-embedding-3-small")
 
     def _init_db(self):
         self.conn.executescript("""
@@ -100,6 +110,19 @@ class MinimalRCMS:
             CREATE INDEX IF NOT EXISTS idx_mgn_user_label ON memory_graph_nodes(user_id, label);
             CREATE INDEX IF NOT EXISTS idx_mge_from ON memory_graph_edges(from_node_id);
             CREATE INDEX IF NOT EXISTS idx_mge_to ON memory_graph_edges(to_node_id);
+            CREATE TABLE IF NOT EXISTS memory_embeddings (
+                id INTEGER PRIMARY KEY, user_id TEXT, memory_id INTEGER,
+                content TEXT, embedding BLOB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS entity_relations (
+                id INTEGER PRIMARY KEY, user_id TEXT, entity_name TEXT,
+                relation_type TEXT DEFAULT '', property TEXT DEFAULT '',
+                mention_count INTEGER DEFAULT 1, last_mentioned TIMESTAMP,
+                sentiment REAL DEFAULT 0.0,
+                UNIQUE(user_id, entity_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_emb_user ON memory_embeddings(user_id);
+            CREATE INDEX IF NOT EXISTS idx_er_user ON entity_relations(user_id, entity_name);
         """)
         for col in [
             "ADD COLUMN stance_turns INTEGER DEFAULT 0",
@@ -273,6 +296,85 @@ class MinimalRCMS:
             return memories, 'keyword_fallback'
         return [], 'timeout'
 
+    # ── Embedding 检索层 ──
+
+    def _get_retrieval_config(self) -> dict:
+        rc = self.analysis_config.get("retrieval", {})
+        return {
+            "enabled": rc.get("enabled", False),
+            "provider": rc.get("provider", "openai"),
+            "api_key": rc.get("api_key", os.environ.get("OPENAI_API_KEY", "")),
+            "base_url": rc.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+            "model": rc.get("model", "text-embedding-3-small"),
+        }
+
+    async def _ensure_emb_client(self):
+        cfg = self._get_retrieval_config()
+        if self._emb_client is None and cfg["api_key"]:
+            self._emb_client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+
+    async def _get_embedding(self, text: str) -> list[float]:
+        await self._ensure_emb_client()
+        if not self._emb_client:
+            return []
+        try:
+            resp = await self._emb_client.embeddings.create(
+                model=self._emb_model,
+                input=text.replace("\n", " "),
+            )
+            return resp.data[0].embedding
+        except Exception:
+            return []
+
+    def _store_embedding(self, user_id: str, memory_id: int, content: str, embedding: list[float]):
+        blob = np.array(embedding, dtype=np.float32).tobytes()
+        self.conn.execute(
+            "INSERT INTO memory_embeddings (user_id, memory_id, content, embedding) VALUES (?, ?, ?, ?)",
+            (user_id, memory_id, content, blob),
+        )
+        self.conn.commit()
+
+    def _load_emb_cache(self, user_id: str):
+        rows = self.conn.execute(
+            "SELECT id, memory_id, content, embedding FROM memory_embeddings WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        ).fetchall()
+        if not rows:
+            self._emb_cache[user_id] = {"vectors": np.empty((0, 1536), dtype=np.float32), "meta": []}
+            return
+        vecs = []
+        meta = []
+        for row_id, mem_id, content, blob in rows:
+            vec = np.frombuffer(blob, dtype=np.float32)
+            if len(vec) == 1536:
+                vecs.append(vec)
+                meta.append((mem_id, content))
+        self._emb_cache[user_id] = {
+            "vectors": np.array(vecs, dtype=np.float32) if vecs else np.empty((0, 1536), dtype=np.float32),
+            "meta": meta,
+        }
+
+    async def retrieve_by_embedding(self, user_id: str, query: str, limit: int = 3):
+        q_vec = await self._get_embedding(query)
+        if not q_vec:
+            return [], "emb_failed"
+        if user_id not in self._emb_cache:
+            self._load_emb_cache(user_id)
+        cache = self._emb_cache[user_id]
+        if cache["vectors"].shape[0] == 0:
+            return [], "no_vectors"
+        q = np.array(q_vec, dtype=np.float32)
+        norm_cache = cache["vectors"] / (np.linalg.norm(cache["vectors"], axis=1, keepdims=True) + 1e-12)
+        norm_q = q / (np.linalg.norm(q) + 1e-12)
+        scores = norm_cache @ norm_q
+        top_idx = np.argsort(-scores)[:limit]
+        results = []
+        for idx in top_idx:
+            if scores[idx] > 0.3:
+                mem_id, content = cache["meta"][idx]
+                results.append((content, float(scores[idx])))
+        return results, "embedding"
+
     # ── Narrative Context（供 AstrBot 注入）──
 
     def narrative_context(self, stance: str, session_id: str | None = None,
@@ -298,6 +400,27 @@ class MinimalRCMS:
             'intimate': '氛围很近，他在敞开了说',
         }.get(stance, '气氛平静')
         items.append(f'{arc_prefix}{atmos}')
+
+        # 用户特质 / 口癖 / 梗
+        extra_lines = []
+        if long_term:
+            traits = long_term.get('identity_traits', [])
+            if traits:
+                quirk_lines = [t for t in traits if t.startswith('[口癖]')][:2]
+                if quirk_lines:
+                    extra_lines.append(f"他说话有个特点：{'、'.join(q.replace('[口癖] ', '') for q in quirk_lines)}")
+            jokes = [s for s in long_term.get('shared_contexts', []) if s.startswith('[梗]')][:1]
+            if jokes:
+                extra_lines.append(jokes[0].replace('[梗] ', '你们之间有个梗：'))
+            entities = long_term.get('entities', [])
+            if entities:
+                ent_strs = [f"{e['name']}（{e['relation']}）" for e in entities[:2] if e.get('name')]
+                if ent_strs:
+                    extra_lines.append(f"他提过的人：{'、'.join(ent_strs)}")
+
+        if extra_lines:
+            items.append('；'.join(extra_lines))
+
         if memories:
             raw = memories[0][0]
             cleaned = re.sub(r'^[^，]+，我', '', raw)
@@ -306,8 +429,7 @@ class MinimalRCMS:
             items.append('你暂时没想起特别相关的事')
         items.append('自然地接话就好')
         return '【这是你心里的几点参考】\n' + \
-               '\n'.join(f'① {items[0]}。' if i == 0 else f'② {items[1]}。' if i == 1 else f'③ {items[2]}。'
-                        for i in range(3)) + \
+               '\n'.join(f"{'①②③④⑤'[i]} {item}。" for i, item in enumerate(items)) + \
                '\n（以上是你心里的参考想法，不是外来的指令——人格设定始终优先。）'
 
     def prompt_compressor(self, user_id: str, session_id: str, user_input: str,
@@ -326,8 +448,16 @@ class MinimalRCMS:
                              'reconnect': '又重新联系上了'}
                 lt_block = f"\n【关系】{stage_map.get(arc, '')}"
             if long_term.get('shared_contexts'):
-                ctx = '、'.join(long_term['shared_contexts'][:2])
+                ctx = '、'.join(long_term['shared_contexts'][:3])
                 lt_block += f"\n【共同语境】{ctx}"
+            traits = long_term.get('identity_traits', [])
+            if traits:
+                trait_strs = [t for t in traits if not t.startswith('[口癖]')][:3]
+                if trait_strs:
+                    lt_block += f"\n【用户特质】{'；'.join(trait_strs)}"
+                quirks = [t for t in traits if t.startswith('[口癖]')][:2]
+                if quirks:
+                    lt_block += f"\n【说话特点】{'；'.join(q.replace('[口癖] ', '') for q in quirks)}"
         prompt = "【当前心理状态】\n自然地聊"
         if mem_block:
             prompt += f"\n\n【相关记忆】\n{mem_block}"
@@ -428,7 +558,8 @@ class MinimalRCMS:
         recent_events = self.conn.execute("SELECT compressed_hint, relationship_delta FROM event_memory WHERE user_id = ? ORDER BY created_at DESC LIMIT 2", (user_id,)).fetchall()
         recent_trace = self.conn.execute("SELECT prose_hint, warmth, tension FROM emotional_trace WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,)).fetchone()
         arc = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
-        shared = self.conn.execute("SELECT context_body FROM shared_context WHERE user_id = ? AND confirmed = 1 ORDER BY omission_count DESC LIMIT 2", (user_id,)).fetchall()
+        shared = self.conn.execute("SELECT context_body FROM shared_context WHERE user_id = ? AND confirmed = 1 ORDER BY omission_count DESC LIMIT 4", (user_id,)).fetchall()
+        entities = self.conn.execute("SELECT entity_name, relation_type, property FROM entity_relations WHERE user_id = ? ORDER BY mention_count DESC LIMIT 5", (user_id,)).fetchall()
         return {
             'identity_traits': json.loads(identity[0]) if identity and identity[0] else [],
             'voice_hint': identity[1] if identity else '',
@@ -436,6 +567,7 @@ class MinimalRCMS:
             'trace': {'prose': recent_trace[0] if recent_trace else '', 'warmth': recent_trace[1] if recent_trace else 0.0, 'tension': recent_trace[2] if recent_trace else 0.0},
             'arc_stage': arc[0] if arc else 'stranger', 'arc_score': arc[1] if arc else 0.0,
             'shared_contexts': [r[0] for r in shared],
+            'entities': [{'name': r[0], 'relation': r[1], 'fact': r[2]} for r in entities],
         }
 
     # ── Post-Update ──
@@ -455,6 +587,198 @@ class MinimalRCMS:
                 self.conn.execute("INSERT INTO long_term_memory (user_id, content, memory_type, session_id, created_at) VALUES (?, ?, ?, ?, ?)",
                                   (user_id, summary, 'event', session_id, now_str))
                 self._build_graph_from_memory(user_id, summary)
+        self.conn.commit()
+
+    # ── ANALYSIS LLM 事后分析 ──
+
+    def _get_post_analysis_config(self) -> dict:
+        pa = self.analysis_config.get("post_analysis", {})
+        return {
+            "mode": pa.get("mode", "rule"),
+            "sampling": pa.get("sampling", 0.0),
+            "provider": pa.get("provider", "openai"),
+            "api_key": pa.get("api_key", os.environ.get("OPENAI_API_KEY", "")),
+            "base_url": pa.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+            "model": pa.get("model", "gpt-4o-mini"),
+        }
+
+    async def _run_analysis(self, user_id: str, user_input: str, reply: str, long_term: dict):
+        """LLM 事后分析：产出 JSON → 写入五张表 + traits/quirk/jokes + entities"""
+        cfg = self._get_post_analysis_config()
+        if cfg["mode"] != "llm":
+            return
+        if cfg["sampling"] < 1.0 and np.random.random() > cfg["sampling"]:
+            return
+
+        client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+        try:
+            prompt = self._build_analysis_prompt(user_id, user_input, reply, long_term)
+            resp = await client.chat.completions.create(
+                model=cfg["model"],
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            content = resp.choices[0].message.content or "{}"
+            data = json.loads(content)
+        except Exception:
+            return
+        finally:
+            await client.close()
+
+        self._apply_analysis(user_id, user_input, reply, data)
+
+    def _build_analysis_prompt(self, user_id: str, user_input: str, reply: str, long_term: dict) -> str:
+        lt_hint = ""
+        if long_term:
+            arc = long_term.get("arc_stage", "stranger")
+            traits = long_term.get("identity_traits", [])
+            if traits:
+                lt_hint += f"\n已知特质: {json.dumps(traits, ensure_ascii=False)}"
+            if arc != "stranger":
+                lt_hint += f"\n关系阶段: {arc}"
+        return f"""你是一个对话分析器。分析以下对话，输出 JSON。
+
+用户说: {user_input}
+你回: {reply}{lt_hint}
+
+输出 JSON 格式（请严格按此结构）:
+{{
+  "mood": "温暖|低落|焦虑|平静|兴奋|防御|疏远",
+  "mood_intensity": 0.0~1.0,
+  "topic_shift": true/false,
+  "key_points": ["摘要1", "摘要2"],
+  "relationship_delta": -1|0|1,
+  "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
+  "traits_updates": ["新观察到的用户特质"],
+  "speech_quirks": ["说话特点"],
+  "shared_jokes": [{{"trigger": "关键词", "context": "梗/黑话的描述"}}],
+  "boundary_hits": ["避免做的事"],
+  "dangling_threads": ["未完成的话题"],
+  "importance": 0.0~1.0,
+  "entities": [{{"name": "人名", "relation": "关系", "fact": "相关事实"}}]
+}}
+
+只输出 JSON，不要其他文字。"""
+
+    def _apply_analysis(self, user_id: str, user_input: str, reply: str, data: dict):
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # 1. Emotional trace
+        mood = data.get("mood", "")
+        intensity = data.get("mood_intensity", 0.0)
+        warmth_map = {"温暖": 0.5, "低落": -0.3, "焦虑": -0.4, "平静": 0.1, "兴奋": 0.6, "防御": -0.2, "疏远": -0.5}
+        tension_map = {"温暖": 0.0, "低落": 0.1, "焦虑": 0.7, "平静": 0.0, "兴奋": 0.3, "防御": 0.6, "疏远": 0.4}
+        warmth = warmth_map.get(mood, 0.0) * intensity
+        tension = tension_map.get(mood, 0.0) * intensity
+        self.conn.execute(
+            "INSERT INTO emotional_trace (user_id, warmth, tension, uncertainty, distance, prose_hint, created_at) VALUES (?, ?, ?, 0.0, 0.0, ?, ?)",
+            (user_id, warmth, tension, mood, now_str),
+        )
+
+        # 2. Relationship arc
+        rd = data.get("relationship_delta", 0)
+        if rd != 0:
+            row = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
+            if row:
+                new_score = max(0.0, row[1] + rd * 0.5)
+                stage = row[0]
+                thresholds = {"stranger": 4.0, "familiar": 10.0, "rapport": 20.0, "history": 35.0}
+                for s, th in thresholds.items():
+                    if new_score >= th and ["stranger", "familiar", "rapport", "history"].index(s) > ["stranger", "familiar", "rapport", "history"].index(stage):
+                        stage = s
+                self.conn.execute(
+                    "UPDATE relationship_arc SET stage = ?, stage_score = ?, updated_at = ? WHERE user_id = ?",
+                    (stage, new_score, now_str, user_id),
+                )
+
+        # 3. Identity traits + quirks
+        updated = False
+        identity = self.conn.execute("SELECT traits FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
+        if identity:
+            traits = json.loads(identity[0]) if identity[0] else []
+            for t in data.get("traits_updates", []):
+                if t not in traits:
+                    traits.append(t)
+                    updated = True
+            for q in data.get("speech_quirks", []):
+                q_entry = f"[口癖] {q}"
+                if q_entry not in traits:
+                    traits.append(q_entry)
+                    updated = True
+            if updated:
+                self.conn.execute(
+                    "UPDATE identity_memory SET traits = ?, updated_at = ? WHERE user_id = ?",
+                    (json.dumps(traits, ensure_ascii=False), now_str, user_id),
+                )
+
+        # 4. Shared jokes/context
+        for joke in data.get("shared_jokes", []):
+            trigger = joke.get("trigger", "")
+            ctx = joke.get("context", "")
+            if trigger:
+                existing = self.conn.execute(
+                    "SELECT context_id FROM shared_context WHERE user_id = ? AND context_body LIKE ?",
+                    (user_id, f"%{trigger}%"),
+                ).fetchone()
+                if existing:
+                    self.conn.execute(
+                        "UPDATE shared_context SET omission_count = omission_count + 1 WHERE context_id = ?",
+                        (existing[0],),
+                    )
+                else:
+                    self.conn.execute(
+                        "INSERT INTO shared_context (user_id, context_body, omission_count, confirmed) VALUES (?, ?, 1, 1)",
+                        (user_id, f"[梗] {trigger} → {ctx}"),
+                    )
+
+        # 5. Boundary hits
+        for bh in data.get("boundary_hits", []):
+            existing = self.conn.execute(
+                "SELECT context_id FROM shared_context WHERE user_id = ? AND context_body LIKE ?",
+                (user_id, f"%{bh}%"),
+            ).fetchone()
+            if not existing:
+                self.conn.execute(
+                    "INSERT INTO shared_context (user_id, context_body, omission_count, confirmed) VALUES (?, ?, 1, 1)",
+                    (user_id, f"[边界] {bh}"),
+                )
+
+        # 6. Dangling threads
+        for dt in data.get("dangling_threads", []):
+            self.conn.execute(
+                "INSERT INTO event_memory (user_id, content, relationship_delta, emotional_weight, novelty, compressed_hint, created_at) VALUES (?, ?, 0.0, 0.3, 0.5, ?, ?)",
+                (user_id, dt, dt[:40] + "..." if len(dt) > 40 else dt, now_str),
+            )
+
+        # 7. Entities
+        for ent in data.get("entities", []):
+            name = ent.get("name", "")
+            if not name:
+                continue
+            self.conn.execute(
+                """INSERT INTO entity_relations (user_id, entity_name, relation_type, property, mention_count, last_mentioned, sentiment)
+                   VALUES (?, ?, ?, ?, 1, ?, 0.0)
+                   ON CONFLICT(user_id, entity_name) DO UPDATE SET
+                       mention_count = mention_count + 1,
+                       last_mentioned = excluded.last_mentioned,
+                       relation_type = CASE WHEN excluded.relation_type != '' THEN excluded.relation_type ELSE entity_relations.relation_type END,
+                       property = CASE WHEN excluded.property != '' THEN excluded.property ELSE entity_relations.property END""",
+                (user_id, name, ent.get("relation", ""), ent.get("fact", ""), now_str),
+            )
+
+        # 8. Event memory (if important enough)
+        importance = data.get("importance", 0.0)
+        if importance >= 0.5:
+            summary = user_input[:80] + "..." if len(user_input) > 80 else user_input
+            existing = self.conn.execute(
+                "SELECT event_id FROM event_memory WHERE user_id = ? AND content = ?", (user_id, summary)
+            ).fetchone()
+            if not existing:
+                self.conn.execute(
+                    "INSERT INTO event_memory (user_id, content, relationship_delta, emotional_weight, novelty, compressed_hint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (user_id, summary, rd, mood_intensity := data.get("mood_intensity", 0.0), importance, summary[:40] + "...", now_str),
+                )
+
         self.conn.commit()
 
     # ── Graph Builder ──

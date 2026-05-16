@@ -105,18 +105,23 @@ class RcmsPlugin(star.Star):
         return merged
 
     def _get_cfg(self, key: str, default):
-        for cat in ["general", "memory", "debug"]:
+        for cat in ["general", "memory", "debug", "analysis"]:
             cat_obj = self.config.get(cat)
             if isinstance(cat_obj, dict) and key in cat_obj:
                 return cat_obj[key]
         return self.config.get(key, default)
 
+    def _get_analysis_config(self) -> dict:
+        return self.config.get("analysis", {})
+
     def _get_rcms(self, persona_name: str) -> MinimalRCMS:
-        """获取/创建对应人格的 RCMS 实例（每人格独立数据库）"""
         if persona_name not in self._rcms_instances:
             safe_name = re.sub(r'[^a-zA-Z0-9_一-鿿]', '_', persona_name)
             db_path = os.path.join(self._data_dir, f"rcms_memory_{safe_name}.db")
-            self._rcms_instances[persona_name] = MinimalRCMS(db_path=db_path)
+            self._rcms_instances[persona_name] = MinimalRCMS(
+                db_path=db_path,
+                analysis_config=self._get_analysis_config(),
+            )
             logger.info(f"RCMS: 创建人格记忆库 [{persona_name}] -> {db_path}")
         return self._rcms_instances[persona_name]
 
@@ -274,7 +279,12 @@ class RcmsPlugin(star.Star):
         user_id = sender_id or self.user_id
 
         # 检索记忆 + 长期上下文
-        memories = rcms.retrieve_memories(user_id, user_input, 'engaged', limit=2)
+        analysis_cfg = self._get_analysis_config()
+        retrieval_cfg = analysis_cfg.get("retrieval", {})
+        if retrieval_cfg.get("enabled", False):
+            memories, _source = await rcms.retrieve_by_embedding(user_id, user_input, limit=2)
+        else:
+            memories = rcms.retrieve_memories(user_id, user_input, 'engaged', limit=2)
         long_term = rcms._load_long_term_context(user_id)
         context_part = rcms.narrative_context('open', session_id,
                                                memories=memories, long_term=long_term)
@@ -345,4 +355,40 @@ class RcmsPlugin(star.Star):
 
         rcms._post_update(user_id, session_id, user_input, stance, reply)
 
+        # 异步触发事后 ANALYSIS + 记忆向量化（fire-and-forget，不阻塞回复）
+        analysis_cfg = self._get_analysis_config()
+        retrieval_cfg = analysis_cfg.get("retrieval", {})
+        post_cfg = analysis_cfg.get("post_analysis", {})
+
+        # Embedding：新记忆入库后异步向量化
+        if retrieval_cfg.get("enabled", False) and len(user_input) > 15:
+            asyncio.create_task(self._delayed_embed(rcms, user_id, session_id, user_input))
+
+        # ANALYSIS LLM
+        if post_cfg.get("mode") == "llm":
+            long_term = rcms._load_long_term_context(user_id)
+            asyncio.create_task(rcms._run_analysis(user_id, user_input, reply, long_term))
+
         logger.debug(f"RCMS: [{persona_name}] 已记录 [{stance}]")
+
+    async def _delayed_embed(self, rcms: MinimalRCMS, user_id: str, session_id: str, content: str):
+        """延迟嵌入：获取最近一条未向量化的记忆并生成 embedding"""
+        try:
+            row = rcms.conn.execute(
+                "SELECT id, content FROM long_term_memory WHERE user_id = ? AND session_id = ? ORDER BY created_at DESC LIMIT 1",
+                (user_id, session_id),
+            ).fetchone()
+            if not row:
+                return
+            mem_id, text = row
+            existing = rcms.conn.execute(
+                "SELECT id FROM memory_embeddings WHERE user_id = ? AND memory_id = ?", (user_id, mem_id)
+            ).fetchone()
+            if existing:
+                return
+            vec = await rcms._get_embedding(text[:512])
+            if vec:
+                rcms._store_embedding(user_id, mem_id, text[:512], vec)
+                rcms._load_emb_cache(user_id)
+        except Exception:
+            pass
