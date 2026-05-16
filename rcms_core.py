@@ -371,34 +371,39 @@ class MinimalRCMS:
             (user_id,),
         ).fetchall()
         if not rows:
-            self._emb_cache[user_id] = {"vectors": np.empty((0, 1536), dtype=np.float32), "meta": []}
+            self._emb_cache[user_id] = {"vectors": np.empty((0, 0), dtype=np.float32), "meta": []}
             logger.debug(f"EmbedCache: user={user_id} no vectors")
             return
         vecs = []
         meta = []
+        expected_dim = None
         for row_id, mem_id, content, blob in rows:
             vec = np.frombuffer(blob, dtype=np.float32)
-            if len(vec) == 1536:
+            if expected_dim is None:
+                expected_dim = len(vec)
+            if len(vec) == expected_dim:
                 vecs.append(vec)
                 meta.append((mem_id, content))
             else:
-                logger.warning(f"EmbedCache: skip vector dim={len(vec)} id={row_id}")
+                logger.warning(f"EmbedCache: skip vector dim={len(vec)} (expected {expected_dim}) id={row_id}")
         self._emb_cache[user_id] = {
-            "vectors": np.array(vecs, dtype=np.float32) if vecs else np.empty((0, 1536), dtype=np.float32),
+            "vectors": np.array(vecs, dtype=np.float32) if vecs else np.empty((0, expected_dim or 0), dtype=np.float32),
             "meta": meta,
         }
-        logger.info(f"EmbedCache: user={user_id} loaded {len(vecs)} vectors")
+        logger.info(f"EmbedCache: user={user_id} loaded {len(vecs)} vectors (dim={expected_dim})")
 
     async def retrieve_by_embedding(self, user_id: str, query: str, limit: int = 3):
-        q_vec = await self._get_embedding(query)
-        if not q_vec:
-            logger.warning(f"Retrieve: user={user_id} embedding failed, fallback")
-            return [], "emb_failed"
+        # 先检查缓存，没向量就不调 API
         if user_id not in self._emb_cache:
             self._load_emb_cache(user_id)
         cache = self._emb_cache[user_id]
         if cache["vectors"].shape[0] == 0:
             logger.debug(f"Retrieve: user={user_id} no vectors yet")
+            return [], "no_vectors"
+        # 缓存有向量，才 embedding query 做语义检索
+        q_vec = await self._get_embedding(query)
+        if not q_vec or len(q_vec) != cache["vectors"].shape[1]:
+            logger.debug(f"Retrieve: user={user_id} dim mismatch or empty")
             return [], "no_vectors"
         q = np.array(q_vec, dtype=np.float32)
         norm_cache = cache["vectors"] / (np.linalg.norm(cache["vectors"], axis=1, keepdims=True) + 1e-12)
