@@ -33,6 +33,8 @@ from astrbot.api import star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import register
+import logging
+
 from astrbot.core import logger
 from astrbot.core.provider.entities import ToolCallsResult
 from astrbot.core.agent.message import AssistantMessageSegment, ToolCall, ToolCallMessageSegment
@@ -93,6 +95,16 @@ class RcmsPlugin(star.Star):
             logger.setLevel("DEBUG")
         logger.info("RCMS: 插件已加载")
 
+        # 配置 rcms_core.py 的 logger 输出到文件
+        _rcms_log_path = os.path.join(_self, "rcms.log")
+        _rcms_logger = logging.getLogger("rcms")
+        _rcms_logger.setLevel(logging.DEBUG)
+        if not _rcms_logger.handlers:
+            _fh = logging.FileHandler(_rcms_log_path, encoding="utf-8", mode="a")
+            _fh.setLevel(logging.DEBUG)
+            _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+            _rcms_logger.addHandler(_fh)
+
     @staticmethod
     def _merge_cfg(base: dict, override: dict) -> dict:
         """递归合并两个配置字典（override 优先）"""
@@ -105,99 +117,146 @@ class RcmsPlugin(star.Star):
         return merged
 
     def _get_cfg(self, key: str, default):
-        for cat in ["general", "memory", "debug", "analysis"]:
+        for cat in ["general", "memory", "debug", "analysis", "api"]:
             cat_obj = self.config.get(cat)
             if isinstance(cat_obj, dict) and key in cat_obj:
                 return cat_obj[key]
         return self.config.get(key, default)
 
     def _get_analysis_config(self) -> dict:
-        return self.config.get("analysis", {})
+        """返回合并后的分析配置（含 API 字段，供 rcms_core 使用）"""
+        cfg = self.config.get("analysis", {}).copy()
+        api_cfg = self.config.get("api", {})
+        for key in ("retrieval", "post_analysis"):
+            sub = api_cfg.get(key, {})
+            if sub:
+                merged = dict(cfg.get(key, {}))
+                source = sub.get("source", "astrbot")
+                merged["source"] = source
+                merged["astrbot_source_id"] = sub.get("astrbot_source_id", "")
+                if source == "custom":
+                    merged["custom_api_key"] = sub.get("custom_token", "")
+                    merged["custom_base_url"] = sub.get("custom_url", "https://api.openai.com/v1")
+                    merged["custom_model"] = sub.get("custom_model", "")
+                cfg[key] = merged
+        return cfg
 
     def _build_provider_callbacks(self):
-        """从 AstrBot cmd_config.json 读取 active provider 构造回调"""
-        try:
-            # 找 cmd_config.json
-            candidates = [
-                os.path.expanduser("~/.astrbot/data/cmd_config.json"),
-                os.path.join(os.getcwd(), "data", "cmd_config.json"),
-            ]
-            cfg_path = None
-            for p in candidates:
-                if os.path.exists(p):
-                    cfg_path = p
-                    break
-            if not cfg_path:
-                logger.warning("RCMS: 未找到 AstrBot cmd_config.json，使用独立 API 配置")
-                return None, None
+        """从 AstrBot 配置或自定义设置构造 LLM/Embedding 回调
 
-            with open(cfg_path, encoding="utf-8-sig") as f:
-                astrbot_cfg = json.load(f)
+        从 config.api 段读取来源配置：
+          - source=astrbot: 外部读取 AstrBot cmd_config.json
+            astrbot_source_id 指定 provider source ID，留空自动匹配
+          - source=custom: 使用 api.* 中的 custom_url / custom_token / custom_model
+        """
+        api_cfg = self.config.get("api", {})
 
-            sources = {s["id"]: s for s in astrbot_cfg.get("provider_sources", [])}
-            providers = [p for p in astrbot_cfg.get("provider", []) if p.get("enable", False)]
-            default_id = astrbot_cfg.get("provider_settings", {}).get("default_provider_id", "")
+        def _read_api(key: str) -> tuple:
+            """读取某功能的 API 配置，返回 (token, url, model, source, src_id)"""
+            sub = api_cfg.get(key, {})
+            source = sub.get("source", "astrbot")
+            token = sub.get("custom_token", "") or None if source == "custom" else None
+            url = sub.get("custom_url", "https://api.openai.com/v1")
+            model = sub.get("custom_model", "")
+            return token, url, model, source, sub.get("astrbot_source_id", "")
 
-            # 找启用的 provider
-            target = None
-            for p in providers:
-                if p["id"] == default_id or not target:
-                    target = p
+        emb_key, emb_url, emb_model, emb_src, emb_src_id = _read_api("retrieval")
+        llm_key, llm_url, llm_model, llm_src, llm_src_id = _read_api("post_analysis")
 
-            if not target:
-                logger.warning("RCMS: AstrBot 无启用的 provider")
-                return None, None
+        # ── 2. 从 AstrBot cmd_config.json 补充（source=astrbot） ──
+        need_astrbot_emb = emb_key is None and emb_src == "astrbot"
+        need_astrbot_llm = llm_key is None and llm_src == "astrbot"
 
-            # 读取 embedding 配置
-            emb_cfg = astrbot_cfg.get("embedding_provider", {}) or {}
-            emb_source_id = emb_cfg.get("provider_source_id", "")
-            emb_model = emb_cfg.get("model", "")
+        if need_astrbot_emb or need_astrbot_llm:
+            try:
+                candidates = [
+                    os.path.expanduser("~/.astrbot/data/cmd_config.json"),
+                    os.path.join(os.getcwd(), "data", "cmd_config.json"),
+                ]
+                cfg_path = next((p for p in candidates if os.path.exists(p)), None)
 
-            # LLM call
-            src = sources.get(target.get("provider_source_id", ""))
-            if not src:
-                logger.warning("RCMS: AstrBot provider source 未找到")
-                return None, None
+                if cfg_path:
+                    with open(cfg_path, encoding="utf-8-sig") as f:
+                        astrbot_cfg = json.load(f)
 
-            api_key = src.get("key", [""])[0] if isinstance(src.get("key"), list) else src.get("key", "")
-            base_url = src.get("api_base", "https://api.openai.com/v1")
-            llm_model = target.get("model", "gpt-4o")
+                    sources = {s["id"]: s for s in astrbot_cfg.get("provider_sources", [])}
 
-            from openai import AsyncOpenAI
+                    # Embedding provider
+                    if need_astrbot_emb:
+                        # AstrBot v3: embedding 存在 provider[] 中 type=openai_embedding
+                        emb_providers = [p for p in astrbot_cfg.get("provider", [])
+                                         if p.get("enable", False) and (
+                                             p.get("type") == "openai_embedding"
+                                             or p.get("provider_type") == "embedding")]
+                        if emb_providers:
+                            ep = emb_providers[0]
+                            emb_key = ep.get("embedding_api_key", "") or None
+                            emb_url = ep.get("embedding_api_base", "https://api.openai.com/v1")
+                            emb_model = ep.get("embedding_model", "text-embedding-3-small")
+                        else:
+                            # 旧版 AstrBot: 顶层 embedding_provider 字段
+                            ec = astrbot_cfg.get("embedding_provider", {}) or {}
+                            src_id = ec.get("provider_source_id", "")
+                            if src_id:
+                                src = sources.get(src_id)
+                                if src:
+                                    emb_key = (src.get("key", [""])[0] if isinstance(src.get("key"), list) else src.get("key", "")) or None
+                                    emb_url = src.get("api_base", "https://api.openai.com/v1")
+                                emb_model = ec.get("model", "text-embedding-3-small")
 
-            llm_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+                    # LLM provider
+                    if need_astrbot_llm:
+                        src_id = llm_src_id
+                        if not src_id:
+                            providers = [p for p in astrbot_cfg.get("provider", []) if p.get("enable", False)]
+                            default_id = astrbot_cfg.get("provider_settings", {}).get("default_provider_id", "")
+                            target = next((p for p in providers if p["id"] == default_id), providers[0] if providers else None)
+                            if target:
+                                src_id = target.get("provider_source_id", "")
+                                llm_model = target.get("model", "gpt-4o")
+                        src = sources.get(src_id)
+                        if src:
+                            llm_key = (src.get("key", [""])[0] if isinstance(src.get("key"), list) else src.get("key", "")) or None
+                            llm_url = src.get("api_base", "https://api.openai.com/v1")
 
-            async def llm_call(prompt: str, model: str = "") -> str:
-                nonlocal llm_client
+                    logger.info(f"RCMS: AstrBot provider loaded — LLM={llm_model} Embed={emb_model}")
+            except Exception as e:
+                logger.warning(f"RCMS: AstrBot provider 加载失败 ({e})")
+
+        # ── 3. Fallback: embedding 未找到时复用 LLM 凭据 ──
+        if emb_key is None and llm_key is not None:
+            emb_key = llm_key
+            emb_url = llm_url
+            if not emb_model:
+                emb_model = "text-embedding-3-small"
+            logger.info(f"RCMS: Embedding fallback to LLM provider ({emb_model})")
+
+        # ── 4. 构造回调 ──
+        from openai import AsyncOpenAI
+
+        emb_callable = None
+        if emb_key:
+            _ec = AsyncOpenAI(api_key=emb_key, base_url=emb_url)
+            async def _embed(text):
+                nonlocal _ec
+                resp = await _ec.embeddings.create(model=emb_model, input=text.replace("\n", " "))
+                return resp.data[0].embedding
+            emb_callable = _embed
+
+        llm_callable = None
+        if llm_key:
+            _lc = AsyncOpenAI(api_key=llm_key, base_url=llm_url)
+            async def _llm(prompt, model=""):
+                nonlocal _lc
                 m = model or llm_model
-                resp = await llm_client.chat.completions.create(
-                    model=m,
-                    messages=[{"role": "user", "content": prompt}],
+                resp = await _lc.chat.completions.create(
+                    model=m, messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
                 )
                 return resp.choices[0].message.content or "{}"
+            llm_callable = _llm
 
-            # Embedding call
-            emb_src = sources.get(emb_source_id, src)
-            emb_key = emb_src.get("key", [""])[0] if isinstance(emb_src.get("key"), list) else emb_src.get("key", "")
-            emb_url = emb_src.get("api_base", "https://api.openai.com/v1")
-            emb_model_name = emb_model or "text-embedding-3-small"
-            emb_client = AsyncOpenAI(api_key=emb_key, base_url=emb_url)
-
-            async def embed_call(text: str) -> list[float]:
-                nonlocal emb_client
-                resp = await emb_client.embeddings.create(
-                    model=emb_model_name,
-                    input=text.replace("\n", " "),
-                )
-                return resp.data[0].embedding
-
-            logger.info(f"RCMS: AstrBot provider loaded — LLM={llm_model} Embed={emb_model_name}")
-            return llm_call, embed_call
-
-        except Exception as e:
-            logger.warning(f"RCMS: AstrBot provider 加载失败 ({e})，使用独立 API 配置")
-            return None, None
+        return llm_callable, emb_callable
 
     def _get_rcms(self, persona_name: str) -> MinimalRCMS:
         if persona_name not in self._rcms_instances:
@@ -373,13 +432,17 @@ class RcmsPlugin(star.Star):
         if use_emb:
             memories, emb_source = await rcms.retrieve_by_embedding(user_id, user_input, limit=2)
             logger.info(f"RCMS: [{persona_name}] emb_retrieve source={emb_source} hits={len(memories)}")
+            # embedding 暂无缓存时降级到关键词
+            if not memories and emb_source in ("no_vectors", "emb_failed"):
+                memories = rcms.retrieve_memories(user_id, user_input, 'engaged', limit=2)
+                logger.info(f"RCMS: [{persona_name}] emb_fallback kw hits={len(memories)}")
         else:
             memories = rcms.retrieve_memories(user_id, user_input, 'engaged', limit=2)
             logger.info(f"RCMS: [{persona_name}] kw_retrieve hits={len(memories)}")
         long_term = rcms._load_long_term_context(user_id)
         arc = long_term.get("arc_stage", "stranger")
         traits_count = len(long_term.get("identity_traits", []))
-        logger.debug(f"RCMS: [{persona_name}] context arc={arc} traits={traits_count} shared={len(long_term.get('shared_contexts',[]))} entities={len(long_term.get('entities',[]))}")
+        logger.info(f"RCMS: [{persona_name}] context arc={arc} traits={traits_count} events={len(long_term.get('events',[]))} shared={len(long_term.get('shared_contexts',[]))} entities={len(long_term.get('entities',[]))}")
         context_part = rcms.narrative_context('open', session_id,
                                                memories=memories, long_term=long_term)
 
@@ -463,7 +526,7 @@ class RcmsPlugin(star.Star):
         if post_cfg.get("mode") == "llm":
             logger.info(f"RCMS: [{persona_name}] schedule_analysis mode=llm sampling={post_cfg.get('sampling',0)}")
             long_term = rcms._load_long_term_context(user_id)
-            asyncio.create_task(rcms._run_analysis(user_id, user_input, reply, long_term))
+            asyncio.create_task(rcms._run_analysis(user_id, session_id, user_input, reply, long_term))
         else:
             logger.debug(f"RCMS: [{persona_name}] post_analysis=rule (skip LLM)")
 

@@ -57,7 +57,8 @@ class MinimalRCMS:
         # Embedding 缓存
         self._emb_cache: dict[str, dict] = {}
         self._emb_client: Optional[AsyncOpenAI] = None
-        self._emb_model = self.analysis_config.get("retrieval", {}).get("model", "text-embedding-3-small")
+        rc = self.analysis_config.get("retrieval", {})
+        self._emb_model = rc.get("custom_model", "") or rc.get("model", "text-embedding-3-small")
         logger.info(f"RCMS init: db={db_path}, retrieval={self.analysis_config.get('retrieval', {}).get('enabled', False)}, post_analysis={self.analysis_config.get('post_analysis', {}).get('mode', 'rule')}")
 
     def _init_db(self):
@@ -73,7 +74,8 @@ class MinimalRCMS:
                 stance_turns INTEGER DEFAULT 0, engagement_level TEXT DEFAULT 'coasting',
                 momentum_depth REAL DEFAULT 0.0, momentum_energy REAL DEFAULT 0.0,
                 last_active TIMESTAMP, residue_warmth REAL DEFAULT 0.0,
-                residue_tension REAL DEFAULT 0.0
+                residue_tension REAL DEFAULT 0.0, dangling_threads TEXT DEFAULT '[]',
+                embedding_updated INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
@@ -141,6 +143,7 @@ class MinimalRCMS:
             "ADD COLUMN last_active TIMESTAMP",
             "ADD COLUMN residue_warmth REAL DEFAULT 0.0",
             "ADD COLUMN residue_tension REAL DEFAULT 0.0",
+            "ADD COLUMN dangling_threads TEXT DEFAULT ''",
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE session_state {col}")
@@ -315,10 +318,11 @@ class MinimalRCMS:
         rc = self.analysis_config.get("retrieval", {})
         return {
             "enabled": rc.get("enabled", False),
-            "provider": rc.get("provider", "openai"),
-            "api_key": rc.get("api_key", os.environ.get("OPENAI_API_KEY", "")),
-            "base_url": rc.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
-            "model": rc.get("model", "text-embedding-3-small"),
+            "source": rc.get("source", "astrbot"),
+            "api_key": rc.get("custom_api_key", "") or rc.get("api_key", os.environ.get("OPENAI_API_KEY", "")),
+            "base_url": rc.get("custom_base_url", "") or rc.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+            "model": rc.get("custom_model", "") or rc.get("model", "text-embedding-3-small"),
+            "astrbot_source_id": rc.get("astrbot_source_id", ""),
         }
 
     async def _ensure_emb_client(self):
@@ -413,59 +417,138 @@ class MinimalRCMS:
 
     def narrative_context(self, stance: str, session_id: str | None = None,
                            memories: list | None = None, long_term: dict | None = None) -> str:
-        items = []
-        arc_prefix = ''
-        if long_term:
-            arc = long_term.get('arc_stage', '')
-            if arc and arc != 'stranger':
-                arc_prefix = {
-                    'familiar': '你们已经聊过好几轮了，',
-                    'rapport': '你们已经很熟了，',
-                    'history': '你们是老朋友了，',
-                    'drift': '虽然有一阵没联系了',
-                    'reconnect': '重新联系上之后聊得还算自然',
-                }.get(arc, '')
-        atmos = {
-            'reflective': '他在回想过去的事，语气比平时沉一些',
-            'guarded': '他话里好像有话，措辞有点收着',
-            'playful': '气氛轻松，话里带点调侃',
-            'analytical': '气氛偏理性，在冷静地分析',
-            'distant': '气氛偏淡，他不太想深入聊',
-            'intimate': '氛围很近，他在敞开了说',
-        }.get(stance, '气氛平静')
-        items.append(f'{arc_prefix}{atmos}')
+        parts = []
 
-        # 用户特质 / 口癖 / 梗
-        extra_lines = []
+        # ── 会话统计 ──
+        turn_count = 0
+        dangling = ""
+        focus = ""
+        warmth = 0.0
+        tension = 0.0
+        if session_id:
+            try:
+                row = self.conn.execute(
+                    "SELECT turn_count, focus_topic, dangling_threads, residue_warmth, residue_tension "
+                    "FROM session_state WHERE session_id = ?", (session_id,)
+                ).fetchone()
+                if row:
+                    turn_count = row[0] or 0
+                    focus = row[1] or ""
+                    dangling = row[2] or ""
+                    warmth = row[3] or 0.0
+                    tension = row[4] or 0.0
+            except Exception:
+                pass
+
+        # ── 关系 ──
+        arc_line = ""
         if long_term:
-            traits = long_term.get('identity_traits', [])
-            if traits:
-                quirk_lines = [t for t in traits if t.startswith('[口癖]')][:2]
-                if quirk_lines:
-                    extra_lines.append(f"他说话有个特点：{'、'.join(q.replace('[口癖] ', '') for q in quirk_lines)}")
-            jokes = [s for s in long_term.get('shared_contexts', []) if s.startswith('[梗]')][:1]
-            if jokes:
-                extra_lines.append(jokes[0].replace('[梗] ', '你们之间有个梗：'))
+            arc = long_term.get('arc_stage', 'stranger')
+            score = long_term.get('arc_score', 0.0)
+            label = {'familiar': '认识一阵了', 'rapport': '算熟了',
+                     'history': '老熟人', 'drift': '冷淡过一阵',
+                     'reconnect': '重新联系上'}.get(arc, '初识')
+            arc_line = f"关系: {label} (分 {score:.1f})"
+            if turn_count:
+                arc_line += f"，聊了 {turn_count} 轮"
+            parts.append(arc_line)
+
+        # ── 当前氛围 ──
+        mood_map = {'reflective': '他在回想', 'guarded': '他话里有话',
+                    'playful': '气氛轻松带调侃', 'analytical': '他在理性分析',
+                    'distant': '他不太想深入', 'intimate': '他在敞开了说'}
+        mood = mood_map.get(stance, '气氛平静')
+        mood_suffix = ""
+        if abs(warmth) > 0.1:
+            mood_suffix += f" (warmth {warmth:.1f}"
+            mood_suffix += f" / tension {tension:.1f}" if tension > 0.1 else ""
+            mood_suffix += ")"
+        parts.append(f"当前: {mood}{mood_suffix}")
+
+        # ── 用户画像: traits + quirks + voice（带退化状态） ──
+        profile_lines = []
+        if long_term:
+            trait_details = long_term.get('trait_details', [])
+            for td in trait_details:
+                text = td.get("text", "")
+                strength = td.get("strength", 0)
+                prefix = "" if strength >= 5 else "↘ " if strength <= 2 else "· "
+                if not text.startswith("[口癖]"):
+                    profile_lines.append(f"{prefix}{text}")
+            quirks = [td["text"].replace("[口癖] ", "") for td in trait_details if td["text"].startswith("[口癖]")][:3]
+            if quirks:
+                q_mark = "↘ " if any(td.get("strength", 0) <= 2 for td in trait_details if td["text"].startswith("[口癖]")) else ""
+                profile_lines.append(f"{q_mark}口癖: {'、'.join(quirks)}")
+            voice = long_term.get('voice_hint', '')
+            if voice and len(profile_lines) < 5:
+                profile_lines.append(voice)
+        if profile_lines:
+            parts.append("他是什么样的:\n" + '\n'.join(f'  · {t}' for t in profile_lines))
+
+        # ── 共同语境: 梗 / 上下文 / 实体 / 话题 ──
+        ctx_lines = []
+        if long_term:
+            shared = long_term.get('shared_contexts', [])
+            jokes = [s.replace('[梗] ', '') for s in shared if s.startswith('[梗]')][:2]
+            other = [s for s in shared if not s.startswith('[梗]')][:2]
+            ctx_lines.extend(f"梗: {j}" for j in jokes)
+            ctx_lines.extend(other)
+
             entities = long_term.get('entities', [])
             if entities:
-                ent_strs = [f"{e['name']}（{e['relation']}）" for e in entities[:2] if e.get('name')]
+                ent_strs = []
+                for e in entities[:4]:
+                    if not e.get('name'):
+                        continue
+                    tag = ""
+                    if e.get('relation') or e.get('fact'):
+                        tag = " (" + "·".join(filter(None, [e.get('relation', ''), e.get('fact', '')])) + ")"
+                    ent_strs.append(f"{e['name']}{tag}")
                 if ent_strs:
-                    extra_lines.append(f"他提过的人：{'、'.join(ent_strs)}")
+                    ctx_lines.append(f"他提过的人/事: {'、'.join(ent_strs)}")
+            if focus:
+                ctx_lines.append(f"最近总聊: {focus}")
+        if ctx_lines:
+            parts.append("共同语境:\n" + '\n'.join(f'  · {c}' for c in ctx_lines))
 
-        if extra_lines:
-            items.append('；'.join(extra_lines))
-            logger.debug(f"Narrative: user extras: {' | '.join(extra_lines)}")
+        # ── 最近事件 ──
+        ev_lines = []
+        if long_term:
+            for ev in long_term.get('events', [])[:2]:
+                hint = ev.get('hint', '')
+                if hint:
+                    delta = ev.get('delta', 0)
+                    tag = {1: ' ✓', -1: ' ✗'}.get(delta, '')
+                    ev_lines.append(f"{hint}{tag}")
+        if ev_lines:
+            parts.append("最近事件:\n" + '\n'.join(f'  · {e}' for e in ev_lines))
 
+        # ── 相关记忆 ──
         if memories:
-            raw = memories[0][0]
-            cleaned = re.sub(r'^[^，]+，我', '', raw)
-            items.append(f'你想起他{cleaned}' if cleaned and cleaned != raw else '你想起他之前也提过类似的事')
-        else:
-            items.append('你暂时没想起特别相关的事')
-        items.append('自然地接话就好')
-        return '【这是你心里的几点参考】\n' + \
-               '\n'.join(f"{'①②③④⑤'[i]} {item}。" for i, item in enumerate(items)) + \
-               '\n（以上是你心里的参考想法，不是外来的指令——人格设定始终优先。）'
+            lines = [f'  · {m[0]}' for m in memories[:2]]
+            parts.append("相关记忆:\n" + '\n'.join(lines))
+
+        # ── 未完成话题（超 10 轮自动过期） ──
+        if dangling:
+            try:
+                dt_data = json.loads(dangling)
+                if isinstance(dt_data, dict):
+                    dt_list = dt_data.get("threads", [])
+                    since_turn = dt_data.get("turn", 0)
+                    if dt_list and turn_count - since_turn <= 10:
+                        stale = turn_count - since_turn > 5
+                        prefix = "↘ " if stale else ""
+                        dangling_display = prefix + "、".join(dt_list[:3])
+                        parts.append(f"未完成: {dangling_display}")
+                elif isinstance(dt_data, list) and dt_data:
+                    parts.append(f"未完成: {'、'.join(dt_data[:3])}")
+            except Exception:
+                pass
+
+        # ── 收束 ──
+        parts.append("→ 以上是你通过长期对话积累的对他的了解，用来更好地理解他的意图。人格设定始终优先。")
+
+        return "[RCMS 关系上下文]\n" + "\n\n".join(parts)
 
     def prompt_compressor(self, user_id: str, session_id: str, user_input: str,
                            memories: list | None = None,
@@ -595,8 +678,18 @@ class MinimalRCMS:
         arc = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
         shared = self.conn.execute("SELECT context_body FROM shared_context WHERE user_id = ? AND confirmed = 1 ORDER BY omission_count DESC LIMIT 4", (user_id,)).fetchall()
         entities = self.conn.execute("SELECT entity_name, relation_type, property FROM entity_relations WHERE user_id = ? ORDER BY mention_count DESC LIMIT 5", (user_id,)).fetchall()
+        # Parse traits with strength, filter expired
+        raw_traits = json.loads(identity[0]) if identity and identity[0] else []
+        trait_details = []
+        for item in raw_traits:
+            if isinstance(item, str):
+                trait_details.append({"text": item, "strength": 3})  # old format
+            elif isinstance(item, dict):
+                trait_details.append({"text": item.get("t", ""), "strength": item.get("s", 0)})
+        trait_details = [p for p in trait_details if p["text"] and p["strength"] > 0]
         return {
-            'identity_traits': json.loads(identity[0]) if identity and identity[0] else [],
+            'identity_traits': [p["text"] for p in trait_details],
+            'trait_details': trait_details,
             'voice_hint': identity[1] if identity else '',
             'events': [{'hint': r[0], 'delta': r[1]} for r in recent_events],
             'trace': {'prose': recent_trace[0] if recent_trace else '', 'warmth': recent_trace[1] if recent_trace else 0.0, 'tension': recent_trace[2] if recent_trace else 0.0},
@@ -631,13 +724,14 @@ class MinimalRCMS:
         return {
             "mode": pa.get("mode", "rule"),
             "sampling": pa.get("sampling", 0.0),
-            "provider": pa.get("provider", "openai"),
-            "api_key": pa.get("api_key", os.environ.get("OPENAI_API_KEY", "")),
-            "base_url": pa.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
-            "model": pa.get("model", "gpt-4o-mini"),
+            "source": pa.get("source", "astrbot"),
+            "api_key": pa.get("custom_api_key", "") or pa.get("api_key", os.environ.get("OPENAI_API_KEY", "")),
+            "base_url": pa.get("custom_base_url", "") or pa.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+            "model": pa.get("custom_model", "") if pa.get("source") == "custom" else "",
+            "astrbot_source_id": pa.get("astrbot_source_id", ""),
         }
 
-    async def _run_analysis(self, user_id: str, user_input: str, reply: str, long_term: dict):
+    async def _run_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, long_term: dict):
         """LLM 事后分析：产出 JSON → 写入五张表 + traits/quirk/jokes + entities"""
         cfg = self._get_post_analysis_config()
         if cfg["mode"] != "llm":
@@ -678,7 +772,7 @@ class MinimalRCMS:
             logger.warning(f"ANALYSIS: invalid JSON: {content[:200]}")
             return
 
-        self._apply_analysis(user_id, user_input, reply, data)
+        self._apply_analysis(user_id, session_id, user_input, reply, data)
 
     def _build_analysis_prompt(self, user_id: str, user_input: str, reply: str, long_term: dict) -> str:
         lt_hint = ""
@@ -713,8 +807,13 @@ class MinimalRCMS:
 
 只输出 JSON，不要其他文字。"""
 
-    def _apply_analysis(self, user_id: str, user_input: str, reply: str, data: dict):
+    def _apply_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, data: dict):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # 0. Ensure session_state row exists for dangling_threads
+        if session_id:
+            self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, now_str))
+            self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
 
         # 1. Emotional trace
         mood = data.get("mood", "")
@@ -744,24 +843,36 @@ class MinimalRCMS:
                     (stage, new_score, now_str, user_id),
                 )
 
-        # 3. Identity traits + quirks
-        updated = False
+        # 3. Identity traits + quirks — strength-based decay
         identity = self.conn.execute("SELECT traits FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
         if identity:
-            traits = json.loads(identity[0]) if identity[0] else []
-            for t in data.get("traits_updates", []):
-                if t not in traits:
-                    traits.append(t)
-                    updated = True
+            raw = json.loads(identity[0]) if identity[0] else []
+            trait_map = {}
+            for item in raw:
+                if isinstance(item, str):
+                    trait_map[item] = 3
+                elif isinstance(item, dict):
+                    trait_map[item.get("t", "")] = item.get("s", 0)
+            # quirks join the pool
             for q in data.get("speech_quirks", []):
                 q_entry = f"[口癖] {q}"
-                if q_entry not in traits:
-                    traits.append(q_entry)
-                    updated = True
-            if updated:
+                trait_map.setdefault(q_entry, 0)
+            # Decay: decrement all, reset confirmed to fresh
+            confirmed = list(data.get("traits_updates", []))
+            for q in data.get("speech_quirks", []):
+                confirmed.append(f"[口癖] {q}")
+            for t in list(trait_map.keys()):
+                if t in confirmed:
+                    trait_map[t] = 5  # fresh
+                else:
+                    trait_map[t] -= 1  # decay
+                    if trait_map[t] <= 0:
+                        del trait_map[t]
+            new_traits = [{"t": t, "s": s} for t, s in trait_map.items()]
+            if new_traits != raw:
                 self.conn.execute(
                     "UPDATE identity_memory SET traits = ?, updated_at = ? WHERE user_id = ?",
-                    (json.dumps(traits, ensure_ascii=False), now_str, user_id),
+                    (json.dumps(new_traits, ensure_ascii=False), now_str, user_id),
                 )
 
         # 4. Shared jokes/context
@@ -801,6 +912,13 @@ class MinimalRCMS:
             self.conn.execute(
                 "INSERT INTO event_memory (user_id, content, relationship_delta, emotional_weight, novelty, compressed_hint, created_at) VALUES (?, ?, 0.0, 0.3, 0.5, ?, ?)",
                 (user_id, dt, dt[:40] + "..." if len(dt) > 40 else dt, now_str),
+            )
+        if session_id and data.get("dangling_threads"):
+            row = self.conn.execute("SELECT turn_count FROM session_state WHERE session_id = ?", (session_id,)).fetchone()
+            current_turn = row[0] if row else 0
+            self.conn.execute(
+                "UPDATE session_state SET dangling_threads = ? WHERE session_id = ?",
+                (json.dumps({"threads": data["dangling_threads"], "turn": current_turn}, ensure_ascii=False), session_id),
             )
 
         # 7. Entities
@@ -874,7 +992,9 @@ class MinimalRCMS:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self.conn.execute("INSERT INTO chat_history (session_id, role, content, created_at) VALUES (?, ?, ?, ?)", (session_id, 'user', user_input, timestamp))
         self.conn.execute("INSERT INTO chat_history (session_id, role, content, created_at) VALUES (?, ?, ?, ?)", (session_id, 'assistant', agent_reply, timestamp))
-        self.conn.execute("UPDATE session_state SET turn_count = turn_count + 1, stance = ? WHERE session_id = ?", (stance, session_id))
+        # 首次会话插入初始行，后续递增
+        self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, timestamp))
+        self.conn.execute("UPDATE session_state SET turn_count = turn_count + 1, stance = ?, last_active = ? WHERE session_id = ?", (stance, timestamp, session_id))
         self.conn.commit()
 
     # ── Core Veto ──
