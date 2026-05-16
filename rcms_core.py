@@ -421,7 +421,8 @@ class MinimalRCMS:
     # ── Narrative Context（供 AstrBot 注入）──
 
     def narrative_context(self, stance: str, session_id: str | None = None,
-                           memories: list | None = None, long_term: dict | None = None) -> str:
+                           memories: list | None = None, long_term: dict | None = None,
+                           user_input: str = "") -> str:
         parts = []
 
         # ── 会话统计 ──
@@ -470,22 +471,28 @@ class MinimalRCMS:
             mood_suffix += ")"
         parts.append(f"当前: {mood}{mood_suffix}")
 
-        # ── 用户画像: traits + quirks + voice（带退化状态） ──
+        # ── 用户画像: traits + quirks + voice（强度排序，展示 top5 + 剩余汇总） ──
         profile_lines = []
         if long_term:
             trait_details = long_term.get('trait_details', [])
-            for td in trait_details:
-                text = td.get("text", "")
+            trait_details.sort(key=lambda x: x.get("strength", 0), reverse=True)
+            all_traits = [td for td in trait_details if not td["text"].startswith("[口癖]")]
+            max_show = 5
+            for td in all_traits[:max_show]:
                 strength = td.get("strength", 0)
                 prefix = "" if strength >= 5 else "↘ " if strength <= 2 else "· "
-                if not text.startswith("[口癖]"):
-                    profile_lines.append(f"{prefix}{text}")
-            quirks = [td["text"].replace("[口癖] ", "") for td in trait_details if td["text"].startswith("[口癖]")][:3]
+                profile_lines.append(f"{prefix}{td['text']}")
+            remaining = len(all_traits) - max_show
+            if remaining > 0:
+                profile_lines.append(f"及其他 {remaining} 条特质")
+            quirks = [(td.get("strength", 0), td["text"].replace("[口癖] ", ""))
+                      for td in trait_details if td["text"].startswith("[口癖]")]
+            quirks.sort(key=lambda x: x[0], reverse=True)
             if quirks:
-                q_mark = "↘ " if any(td.get("strength", 0) <= 2 for td in trait_details if td["text"].startswith("[口癖]")) else ""
-                profile_lines.append(f"{q_mark}口癖: {'、'.join(quirks)}")
+                q_mark = "↘ " if any(q[0] <= 2 for q in quirks) else ""
+                profile_lines.append(f"{q_mark}口癖: {'、'.join(q[1] for q in quirks[:2])}")
             voice = long_term.get('voice_hint', '')
-            if voice and len(profile_lines) < 5:
+            if voice and not all_traits:
                 profile_lines.append(voice)
         if profile_lines:
             parts.append("他是什么样的:\n" + '\n'.join(f'  · {t}' for t in profile_lines))
@@ -690,7 +697,7 @@ class MinimalRCMS:
             if isinstance(item, str):
                 trait_details.append({"text": item, "strength": 3})  # old format
             elif isinstance(item, dict):
-                trait_details.append({"text": item.get("t", ""), "strength": item.get("s", 0)})
+                trait_details.append({"text": item.get("t", ""), "strength": item.get("s", 0), "count": item.get("c", 0)})
         trait_details = [p for p in trait_details if p["text"] and p["strength"] > 0]
         return {
             'identity_traits': [p["text"] for p in trait_details],
@@ -777,7 +784,7 @@ class MinimalRCMS:
             logger.warning(f"ANALYSIS: invalid JSON: {content[:200]}")
             return
 
-        self._apply_analysis(user_id, session_id, user_input, reply, data)
+        await self._apply_analysis(user_id, session_id, user_input, reply, data)
 
     def _build_analysis_prompt(self, user_id: str, user_input: str, reply: str, long_term: dict) -> str:
         lt_hint = ""
@@ -812,7 +819,7 @@ class MinimalRCMS:
 
 只输出 JSON，不要其他文字。"""
 
-    def _apply_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, data: dict):
+    async def _apply_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, data: dict):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # 0. Ensure session_state row exists for dangling_threads
@@ -848,36 +855,75 @@ class MinimalRCMS:
                     (stage, new_score, now_str, user_id),
                 )
 
-        # 3. Identity traits + quirks — strength-based decay
+        # 3. Identity traits + quirks — similarity merge + strength decay + confirmation floor
         identity = self.conn.execute("SELECT traits FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
         if identity:
             raw = json.loads(identity[0]) if identity[0] else []
-            trait_map = {}
+            trait_map = {}  # text -> {s: strength, c: confirm_count}
             for item in raw:
                 if isinstance(item, str):
-                    trait_map[item] = 3
+                    trait_map[item] = {"s": 3, "c": 0}
                 elif isinstance(item, dict):
-                    trait_map[item.get("t", "")] = item.get("s", 0)
-            # quirks join the pool
+                    trait_map[item.get("t", "")] = {"s": item.get("s", 0), "c": item.get("c", 0)}
+
+            # Similarity merge: embed new traits, compare with existing
+            new_traits = list(data.get("traits_updates", []))
+            confirmed = []
+            if new_traits:
+                existing_texts = list(trait_map.keys())
+                all_texts = new_traits + existing_texts
+                embs = []
+                for t in all_texts:
+                    emb = await self._get_embedding(t)
+                    embs.append(np.array(emb, dtype=np.float32) if emb else None)
+                n_new = len(new_traits)
+                for i, new_t in enumerate(new_traits):
+                    if embs[i] is None:
+                        confirmed.append(new_t)
+                        continue
+                    found = False
+                    for j, existing_t in enumerate(existing_texts):
+                        if embs[n_new + j] is not None:
+                            sim = np.dot(embs[i], embs[n_new + j]) / (np.linalg.norm(embs[i]) * np.linalg.norm(embs[n_new + j]) + 1e-12)
+                            if sim > 0.82:
+                                confirmed.append(existing_t)
+                                found = True
+                                break
+                    if not found:
+                        confirmed.append(new_t)
+
+            # Quirks join the pool
             for q in data.get("speech_quirks", []):
                 q_entry = f"[口癖] {q}"
-                trait_map.setdefault(q_entry, 0)
-            # Decay: decrement all, reset confirmed to fresh
-            confirmed = list(data.get("traits_updates", []))
-            for q in data.get("speech_quirks", []):
-                confirmed.append(f"[口癖] {q}")
-            for t in list(trait_map.keys()):
-                if t in confirmed:
-                    trait_map[t] = 5  # fresh
+                if q_entry not in trait_map:
+                    trait_map[q_entry] = {"s": 0, "c": 0}
+                confirmed.append(q_entry)
+
+            # Process confirmed: reset strength, increment count
+            seen = set()
+            for t in confirmed:
+                if t in seen:
+                    continue
+                seen.add(t)
+                if t not in trait_map:
+                    trait_map[t] = {"s": 5, "c": 1}
                 else:
-                    trait_map[t] -= 1  # decay
-                    if trait_map[t] <= 0:
+                    trait_map[t]["s"] = 5
+                    trait_map[t]["c"] += 1
+
+            # Decay unconfirmed: strength -= 1, floor = min(c, 3)
+            for t in list(trait_map.keys()):
+                if t not in seen:
+                    floor = min(trait_map[t]["c"], 3)
+                    trait_map[t]["s"] = max(trait_map[t]["s"] - 1, floor)
+                    if trait_map[t]["s"] <= 0:
                         del trait_map[t]
-            new_traits = [{"t": t, "s": s} for t, s in trait_map.items()]
-            if new_traits != raw:
+
+            new_traits_json = [{"t": t, "s": v["s"], "c": v["c"]} for t, v in trait_map.items()]
+            if new_traits_json != raw:
                 self.conn.execute(
                     "UPDATE identity_memory SET traits = ?, updated_at = ? WHERE user_id = ?",
-                    (json.dumps(new_traits, ensure_ascii=False), now_str, user_id),
+                    (json.dumps(new_traits_json, ensure_ascii=False), now_str, user_id),
                 )
 
         # 4. Shared jokes/context
