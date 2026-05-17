@@ -256,36 +256,9 @@ class AnalysisMixin:
             to_name = ent.get("fact", "")
             if not from_name or not rel or not to_name:
                 continue
-            # upsert from_node
-            row = self.conn.execute(
-                "SELECT node_id FROM memory_graph_nodes WHERE user_id = ? AND label = ?", (user_id, from_name)
-            ).fetchone()
-            if row:
-                from_id = row[0]
-                self.conn.execute("UPDATE memory_graph_nodes SET freq = freq + 1, last_seen = ? WHERE node_id = ?", (now_str, from_id))
-            else:
-                cur = self.conn.execute("INSERT INTO memory_graph_nodes (user_id, label, freq, last_seen) VALUES (?, ?, 1, ?)", (user_id, from_name, now_str))
-                from_id = cur.lastrowid
-            # upsert to_node
-            row = self.conn.execute(
-                "SELECT node_id FROM memory_graph_nodes WHERE user_id = ? AND label = ?", (user_id, to_name)
-            ).fetchone()
-            if row:
-                to_id = row[0]
-                self.conn.execute("UPDATE memory_graph_nodes SET freq = freq + 1, last_seen = ? WHERE node_id = ?", (now_str, to_id))
-            else:
-                cur = self.conn.execute("INSERT INTO memory_graph_nodes (user_id, label, freq, last_seen) VALUES (?, ?, 1, ?)", (user_id, to_name, now_str))
-                to_id = cur.lastrowid
-            # upsert edge with relation
-            self.conn.execute("""
-                INSERT INTO memory_graph_edges (from_node_id, to_node_id, weight, encounter_count, last_seen, relation)
-                VALUES (?, ?, 1.0, 1, ?, ?)
-                ON CONFLICT(from_node_id, to_node_id) DO UPDATE SET
-                    weight = weight + 0.5,
-                    encounter_count = encounter_count + 1,
-                    last_seen = excluded.last_seen,
-                    relation = CASE WHEN excluded.relation != '' THEN excluded.relation ELSE memory_graph_edges.relation END
-            """, (from_id, to_id, now_str, rel))
+            from_id = self._upsert_graph_node(user_id, from_name, now_str)
+            to_id = self._upsert_graph_node(user_id, to_name, now_str)
+            self._upsert_graph_edge(from_id, to_id, now_str, relation=rel)
 
         # 9. Event memory (if important enough) → cognitive_distill
         importance = data.get("importance", 0.0)

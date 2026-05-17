@@ -24,13 +24,15 @@ class RetrievalMixin:
     # ── 可调参数（硬编码默认，可被 config.json analysis.retrieval 覆盖） ──
 
     def _get_retrieval_params(self) -> dict:
-        rc = self.analysis_config.get("retrieval", {})
-        return {
-            "total_cap": rc.get("total_cap", 5),
-            "channel_min": rc.get("channel_min", [1, 1, 1]),
-            "time_decay_halflife": rc.get("time_decay_halflife", 30),
-            "emotional_resonance_bonus": rc.get("emotional_resonance_bonus", 0.15),
-        }
+        if not hasattr(self, '__retrieval_params'):
+            rc = self.analysis_config.get("retrieval", {})
+            self.__retrieval_params = {
+                "total_cap": rc.get("total_cap", 5),
+                "channel_min": rc.get("channel_min", [1, 1, 1]),
+                "time_decay_halflife": rc.get("time_decay_halflife", 30),
+                "emotional_resonance_bonus": rc.get("emotional_resonance_bonus", 0.15),
+            }
+        return self.__retrieval_params
 
     # ── 公共入口 ──
 
@@ -298,6 +300,44 @@ class RetrievalMixin:
 
         merged.sort(key=lambda x: -x[1])
         return [(content, tag) for content, score, tag in merged[:total_cap]]
+
+    # ── 图操作 helper（消除 duplication） ──
+
+    def _upsert_graph_node(self, user_id: str, label: str, now_str: str) -> int:
+        row = self.conn.execute(
+            "SELECT node_id FROM memory_graph_nodes WHERE user_id = ? AND label = ?",
+            (user_id, label),
+        ).fetchone()
+        if row:
+            self.conn.execute(
+                "UPDATE memory_graph_nodes SET freq = freq + 1, last_seen = ? WHERE node_id = ?",
+                (now_str, row[0]),
+            )
+            return row[0]
+        cur = self.conn.execute(
+            "INSERT INTO memory_graph_nodes (user_id, label, freq, last_seen) VALUES (?, ?, 1, ?)",
+            (user_id, label, now_str),
+        )
+        return cur.lastrowid
+
+    def _upsert_graph_edge(self, from_id: int, to_id: int, now_str: str, relation: str = ""):
+        existing = self.conn.execute(
+            "SELECT weight FROM memory_graph_edges WHERE from_node_id = ? AND to_node_id = ?",
+            (from_id, to_id),
+        ).fetchone()
+        if existing:
+            self.conn.execute(
+                """UPDATE memory_graph_edges SET weight = weight + 0.5,
+                   encounter_count = encounter_count + 1, last_seen = ?,
+                   relation = CASE WHEN ? != '' THEN ? ELSE relation END
+                   WHERE from_node_id = ? AND to_node_id = ?""",
+                (now_str, relation, relation, from_id, to_id),
+            )
+        else:
+            self.conn.execute(
+                "INSERT INTO memory_graph_edges (from_node_id, to_node_id, weight, encounter_count, last_seen, relation) VALUES (?, ?, 1.0, 1, ?, ?)",
+                (from_id, to_id, now_str, relation),
+            )
 
     # ── 辅助：原始工具 ──
 

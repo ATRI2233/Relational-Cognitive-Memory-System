@@ -88,13 +88,16 @@ CREATE TABLE IF NOT EXISTS cognitive_distill (
 ```
 用户输入
     │
-    ├─→ Embedding API → 语义检索 → cognitive_distill（向量相似度粗筛）
+    ├─→ 三通道融合召回（retrieve_memories）
+    │    ├─ 通道 1：importance × 时间衰减 → 近期大事 1-2 条
+    │    ├─ 通道 2：时间过滤 → 图扩散扩词 → 向量余弦 → 情绪共振 → 2-3 条
+    │    └─ 通道 3：图谱高权重边（relation 语义优先）→ 1-2 条自然语言陈述
     │
     ├─→ 当前状态加载
     │    (identity_memory / relationship_arc / shared_context / emotional_trace / entity_relations)
     │    → 注入 prompt 作为 "当前对这个用户的理解"
     │
-    ├─→ 精筛后的记忆 + 当前状态 → LLM 回答
+    ├─→ 融合记忆 + 当前状态 → LLM 回答
     │
     ├─→ save_turn (chat_history 追加写)
     │
@@ -104,12 +107,39 @@ CREATE TABLE IF NOT EXISTS cognitive_distill (
          ├─→ _maybe_distill (双触发检查)
          └─→ ANALYSIS (LLM / 规则)
               ├─→ 情绪 → emotional_trace
+              ├─→ 话题转移 → focus_topic（原 topic_shift + key_points）
               ├─→ 关系 → relationship_arc
               ├─→ 特质/口癖 → identity_memory
               ├─→ 梗/边界 → shared_context
-              ├─→ 实体 → entity_relations
+              ├─→ 实体 → entity_relations + 图边（带 relation 语义字段）
               └─→ 事件/dangling → cognitive_distill
 ```
+
+## 三通道融合召回
+
+`retrieve_memories` 是三通道异步融合引擎，替代旧版关键词 LIKE 检索：
+
+| 通道 | 算法 | 得分公式 | 名额 |
+|------|------|---------|------|
+| **时间重要性** | `importance × exp(-λ·days)` 衰减排序 | 时间半衰衰减 | 保底 1，配额 ch_min[0]+1 |
+| **多维共振** | 时间词硬过滤 → 图扩散扩关键词 → 原查询+扩散词拼装 embed → 余弦相似度 → 情绪同频加成 | `cos_sim×0.6 + imp_decay×0.4`，情绪匹配再 ×1.15 | 保底 1，配额 ch_min[1]+2 |
+| **图谱骨架** | `memory_graph_edges` 高权重边，relation 优先级排序 | 有 relation 的边额外 +2 分 | 保底 1，配额 ch_min[2]+1 |
+
+融合策略：每通道保底 → 前 25 字去重 → 按分排序 → 截断到 `total_cap`。
+
+Configurable 参数（`config.json → analysis.retrieval`）：
+- `total_cap`：总上限，默认 5
+- `channel_min`：每通道保底，默认 `[1, 1, 1]`
+- `time_decay_halflife`：重要性半衰期（天），默认 30
+- `emotional_resonance_bonus`：情绪同频加成系数，默认 0.15
+
+### 图谱 relation 字段
+
+`memory_graph_edges` 新增 `relation TEXT` 字段，来源：
+- **LLM ANALYSIS**：`entities` 中 `name` → from_node、`fact` → to_node、`relation` → edge.relation
+- **共现构建**：`_build_graph_from_memory` 自动建立的关键词共现边 `relation` 为空
+
+输出格式：有 relation 时 `「老板」--[当众骂]--> 「用户」`，无 relation 时 `话题「X」与「Y」常被提及`。
 
 ## ANALYSIS LLM 产出格式
 
