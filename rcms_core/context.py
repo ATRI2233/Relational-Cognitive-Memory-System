@@ -149,11 +149,11 @@ class ContextMixin:
 
         return "[RCMS 关系上下文]\n" + "\n\n".join(parts)
 
-    def prompt_compressor(self, user_id: str, session_id: str, user_input: str,
+    async def prompt_compressor(self, user_id: str, session_id: str, user_input: str,
                            memories: list | None = None,
                            long_term: dict | None = None) -> str:
         if memories is None:
-            memories = self.retrieve_memories(user_id, user_input, 'engaged')
+            memories = await self.retrieve_memories(user_id, user_input, 'engaged')
         mem_lines = [f"- {m[0]}" for m in memories[:2]]
         mem_block = "\n".join(mem_lines) if mem_lines else ""
         lt_block = ""

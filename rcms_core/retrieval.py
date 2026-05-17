@@ -1,19 +1,231 @@
+import json
 import logging
-import os
+import math
 import re
 from datetime import datetime
 
 import numpy as np
-from openai import AsyncOpenAI
 
 logger = logging.getLogger("rcms")
 
 
 class RetrievalMixin:
-    """关键词/图/Embedding 检索"""
+    """三通道融合召回引擎"""
+
+    _TIME_DECAY_HALFLIFE = 30     # 重要性半衰期（天）
+    _EMOTIONAL_RESONANCE_BONUS = 0.15
+
+    _TIME_WORDS = {
+        '今天': (0, 0), '今日': (0, 0),
+        '昨天': (1, 1), '昨日': (1, 1),
+        '前天': (2, 2),
+        '最近': (0, 7), '近来': (0, 7), '近期': (0, 7),
+        '上周': (7, 13), '上星期': (7, 13),
+    }
+
+    # ── 公共入口 ──
+
+    async def retrieve_memories(self, user_id: str, user_input: str, stance: str, total_cap: int = 5):
+        """三通道融合，每通道保底 1 条，总数不超过 total_cap"""
+        if stance == 'casual':
+            return []
+
+        ch1 = self._channel_time_importance(user_id, limit=2)
+        ch2 = await self._channel_multi_resonance(user_id, user_input, limit=3)
+        ch3 = self._channel_graph_skeleton(user_id, user_input, limit=2)
+
+        return self._fusion([ch1, ch2, ch3], total_cap)
+
+    # ── 通道 1：时间重要性锚点 ──
+
+    def _time_decay(self, days_ago: int) -> float:
+        """指数衰减，半衰期 _TIME_DECAY_HALFLIFE 天"""
+        lam = math.log(2) / self._TIME_DECAY_HALFLIFE
+        return math.exp(-lam * max(0, days_ago))
+
+    def _channel_time_importance(self, user_id: str, limit: int = 2):
+        """通道 1：importance × 时间衰减，不查向量"""
+        rows = self.conn.execute("""
+            SELECT content, created_at, importance
+            FROM cognitive_distill
+            WHERE user_id = ? AND importance > 0.1 AND content NOT LIKE '[蒸馏]%'
+            ORDER BY created_at DESC LIMIT 50
+        """, (user_id,)).fetchall()
+
+        now = datetime.now()
+        scored = []
+        for content, created_at, importance in rows:
+            days = 0
+            if created_at:
+                try:
+                    days = (now - datetime.fromisoformat(str(created_at))).days
+                except (ValueError, TypeError):
+                    days = 999
+            score = importance * self._time_decay(days)
+            scored.append((self._fuzz_time(created_at) + '，' + content, score, 'recent'))
+
+        scored.sort(key=lambda x: -x[1])
+        return scored[:limit]
+
+    # ── 通道 2：多维共振 ──
+
+    def _parse_time_filter(self, user_input: str):
+        """解析时间词 → (min_days_ago, max_days_ago) 或 None"""
+        for word, (min_d, max_d) in self._TIME_WORDS.items():
+            if word in user_input:
+                return (min_d, max_d)
+        return None
+
+    def _get_current_mood(self, user_id: str) -> str:
+        row = self.conn.execute(
+            "SELECT prose_hint FROM emotional_trace WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        return row[0] if row else ''
+
+    async def _channel_multi_resonance(self, user_id: str, user_input: str, limit: int = 3):
+        """通道 2：时间词过滤 → 图扩散增强 → 向量检索 → 情绪共振 → 重要性兜底"""
+        time_range = self._parse_time_filter(user_input)
+
+        # Graph diffusion 增强关键词
+        kws = self._extract_keywords(user_input)[:4]
+        diffused = self._graph_activation_diffusion(user_id, kws)
+        all_keywords = list(set(kws + [label for label, _ in diffused[:3]]))
+
+        # 构建 SQL 过滤
+        clauses = ["user_id = ?", "content NOT LIKE '[蒸馏]%'"]
+        params = [user_id]
+
+        if time_range:
+            min_d, max_d = time_range
+            if max_d is not None:
+                clauses.append("CAST(julianday('now') - julianday(created_at) AS INTEGER) <= ?")
+                params.append(max_d)
+            clauses.append("CAST(julianday('now') - julianday(created_at) AS INTEGER) >= ?")
+            params.append(min_d)
+
+        kw_clauses = []
+        for kw in all_keywords:
+            kw_clauses.append("content LIKE ?")
+            params.append(f'%{kw}%')
+        if kw_clauses:
+            clauses.append(f"({' OR '.join(kw_clauses)})")
+
+        rows = self.conn.execute(
+            f"SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT 30",
+            params,
+        ).fetchall()
+
+        # 无结果 → 重要性兜底（不限关键词）
+        if not rows:
+            rows = self.conn.execute(
+                "SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE user_id = ? AND importance >= 0.5 AND content NOT LIKE '[蒸馏]%' ORDER BY created_at DESC LIMIT 5",
+                (user_id,),
+            ).fetchall()
+
+        # 情绪共振加权
+        current_mood = self._get_current_mood(user_id)
+        now = datetime.now()
+
+        scored = []
+        for rid, content, created_at, importance, mood in rows:
+            days = 0
+            if created_at:
+                try:
+                    days = (now - datetime.fromisoformat(str(created_at))).days
+                except (ValueError, TypeError):
+                    days = 999
+            base = importance * self._time_decay(days)
+
+            if current_mood and mood and mood == current_mood:
+                base *= (1 + self._EMOTIONAL_RESONANCE_BONUS)
+
+            scored.append((self._fuzz_time(created_at) + '，' + content, base, 'resonance'))
+
+        scored.sort(key=lambda x: -x[1])
+        return scored[:limit]
+
+    # ── 通道 3：图谱骨架事实 ──
+
+    def _channel_graph_skeleton(self, user_id: str, user_input: str, limit: int = 2):
+        """通道 3：纯图边查询，不查蒸馏表，输出自然语言陈述"""
+        kws = self._extract_keywords(user_input)[:4]
+        if not kws:
+            return []
+
+        ph = ','.join('?' * len(kws))
+        seed = self.conn.execute(
+            f"SELECT node_id FROM memory_graph_nodes WHERE user_id = ? AND label IN ({ph})",
+            (user_id, *kws),
+        ).fetchall()
+        seed_ids = {r[0] for r in seed}
+        if not seed_ids:
+            return []
+
+        ph2 = ','.join('?' * len(seed_ids))
+        edges = self.conn.execute(f"""
+            SELECT n1.label AS a, n2.label AS b, e.weight
+            FROM memory_graph_edges e
+            JOIN memory_graph_nodes n1 ON e.from_node_id = n1.node_id
+            JOIN memory_graph_nodes n2 ON e.to_node_id = n2.node_id
+            WHERE (e.from_node_id IN ({ph2}) OR e.to_node_id IN ({ph2}))
+              AND n1.user_id = ? AND n2.user_id = ?
+            ORDER BY e.weight DESC
+            LIMIT ?
+        """, (*seed_ids, *seed_ids, user_id, user_id, limit * 3)).fetchall()
+
+        seen = set()
+        results = []
+        for a, b, weight in edges:
+            pair = (min(a, b), max(a, b))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            stmt = f"[图谱] 话题「{a}」与「{b}」常被一起提及（相关度 {weight:.1f}）"
+            results.append((stmt, weight, 'skeleton'))
+
+        return results[:limit]
+
+    # ── 融合 ──
+
+    def _fusion(self, channels: list[list], total_cap: int = 5):
+        """三通道融合：每通道保底 1 条 → 去重 → 排序 → 截断"""
+        seen = set()
+        merged = []
+
+        # Phase 1：每通道保底 1 条
+        for ch in channels:
+            for item in ch:
+                key = item[0][:25]
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(item)
+                    break
+
+        # Phase 2：填剩余名额
+        for ch in channels:
+            for item in ch:
+                if len(merged) >= total_cap:
+                    break
+                key = item[0][:25]
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(item)
+            if len(merged) >= total_cap:
+                break
+
+        merged.sort(key=lambda x: -x[1])
+        return [(content, tag) for content, score, tag in merged[:total_cap]]
+
+    # ── 辅助：原始工具 ──
 
     def _fuzz_time(self, dt_str: str) -> str:
-        dt = datetime.fromisoformat(dt_str) if isinstance(dt_str, str) else datetime.strptime(dt_str[:19], '%Y-%m-%d %H:%M:%S')
+        if not dt_str:
+            return ''
+        try:
+            dt = datetime.fromisoformat(str(dt_str)) if isinstance(dt_str, str) else datetime.strptime(str(dt_str)[:19], '%Y-%m-%d %H:%M:%S')
+        except (ValueError, TypeError):
+            return ''
         days = (datetime.now() - dt).days
         if days <= 2:
             return "前两天"
@@ -22,26 +234,6 @@ class RetrievalMixin:
         if days <= 60:
             return "前段时间"
         return "很久以前"
-
-    def retrieve_memories(self, user_id: str, user_input: str, stance: str, limit: int = 2):
-        if stance == 'casual':
-            logger.debug(f"Retrieve: user={user_id} stance=casual skip")
-            return []
-        tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', user_input)
-        keywords = [w for w in tokens if len(w) > 1][:3]
-        if not keywords:
-            logger.debug(f"Retrieve: user={user_id} no keywords from input")
-            return []
-        conditions = ' OR '.join(['content LIKE ?'] * len(keywords))
-        params = [f'%{k}%' for k in keywords] + [user_id]
-        cursor = self.conn.execute(f"""
-            SELECT content, created_at FROM cognitive_distill
-            WHERE ({conditions}) AND user_id = ?
-            ORDER BY created_at DESC LIMIT ?
-        """, params + [limit])
-        rows = cursor.fetchall()
-        logger.info(f"Retrieve: user={user_id} kws={keywords} found={len(rows)} source=keyword")
-        return [(self._fuzz_time(r[1]) + '，' + r[0], 'event') for r in rows]
 
     def _extract_keywords(self, text: str, max_kw: int = 5) -> list[str]:
         tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', text)
@@ -101,6 +293,8 @@ class RetrievalMixin:
             elif score >= self._SILENT_THRESHOLD:
                 silent.append(label)
         return {"surfaced": surfaced, "silent": silent, "activated": diffused}
+
+    # ── Embedding 相关 ──
 
     def _get_retrieval_config(self) -> dict:
         rc = self.analysis_config.get("retrieval", {})

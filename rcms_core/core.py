@@ -78,9 +78,9 @@ class MinimalRCMS(
     # ── Chat（standalone） ──
 
     async def chat(self, user_id: str, session_id: str, user_input: str, backend: LLMBackend) -> str:
-        memories = self.retrieve_memories(user_id, user_input, 'engaged')
+        memories = await self.retrieve_memories(user_id, user_input, 'engaged')
         long_term = self._load_long_term_context(user_id)
-        prompt = self.prompt_compressor(user_id, session_id, user_input, memories, long_term)
+        prompt = await self.prompt_compressor(user_id, session_id, user_input, memories, long_term)
         prompt = self._core_veto(prompt)
         try:
             reply = await backend.generate(prompt)

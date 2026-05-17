@@ -434,10 +434,10 @@ class RcmsPlugin(star.Star):
             logger.info(f"RCMS: [{persona_name}] emb_retrieve source={emb_source} hits={len(memories)}")
             # embedding 暂无缓存时降级到关键词
             if not memories and emb_source in ("no_vectors", "emb_failed"):
-                memories = rcms.retrieve_memories(user_id, user_input, 'engaged', limit=2)
+                memories = await rcms.retrieve_memories(user_id, user_input, 'engaged')
                 logger.info(f"RCMS: [{persona_name}] emb_fallback kw hits={len(memories)}")
         else:
-            memories = rcms.retrieve_memories(user_id, user_input, 'engaged', limit=2)
+            memories = await rcms.retrieve_memories(user_id, user_input, 'engaged')
             logger.info(f"RCMS: [{persona_name}] kw_retrieve hits={len(memories)}")
         long_term = rcms._load_long_term_context(user_id)
         arc = long_term.get("arc_stage", "stranger")
