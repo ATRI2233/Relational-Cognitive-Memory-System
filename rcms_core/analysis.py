@@ -139,13 +139,14 @@ class AnalysisMixin:
             (user_id, warmth, tension, mood, now_str),
         )
 
-        # 3. Relationship arc
+        # 3. Relationship arc + 里程碑
         rd = data.get("relationship_delta", 0)
         if rd != 0:
             row = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
             if row:
+                old_stage = row[0]
                 new_score = max(0.0, row[1] + rd * 0.5)
-                stage = row[0]
+                stage = old_stage
                 thresholds = {"stranger": 4.0, "familiar": 10.0, "rapport": 20.0, "history": 35.0}
                 for s, th in thresholds.items():
                     if new_score >= th and ["stranger", "familiar", "rapport", "history"].index(s) > ["stranger", "familiar", "rapport", "history"].index(stage):
@@ -154,6 +155,13 @@ class AnalysisMixin:
                     "UPDATE relationship_arc SET stage = ?, stage_score = ?, updated_at = ? WHERE user_id = ?",
                     (stage, new_score, now_str, user_id),
                 )
+                if stage != old_stage:
+                    stage_label = {"familiar": "认识一阵了", "rapport": "算熟了", "history": "老熟人"}.get(stage, stage)
+                    old_label = {"familiar": "认识一阵了", "rapport": "算熟了", "history": "老熟人"}.get(old_stage, old_stage)
+                    self.conn.execute(
+                        "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (user_id, f"[里程碑] 关系阶段: {old_label} → {stage_label}", f"关系里程碑: → {stage_label}", 0.9, now_str),
+                    )
 
         # 4. Identity traits + quirks — 单次 LLM 已产出语义去重，无需额外 embedding API
         identity = self.conn.execute("SELECT traits FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
@@ -274,23 +282,7 @@ class AnalysisMixin:
                 (json.dumps({"threads": data["dangling_threads"], "turn": current_turn}, ensure_ascii=False), session_id),
             )
 
-        # 8. Entities → entity_relations
-        for ent in data.get("entities", []):
-            name = ent.get("name", "")
-            if not name:
-                continue
-            self.conn.execute(
-                """INSERT INTO entity_relations (user_id, entity_name, relation_type, property, mention_count, last_mentioned, sentiment)
-                   VALUES (?, ?, ?, ?, 1, ?, 0.0)
-                   ON CONFLICT(user_id, entity_name) DO UPDATE SET
-                       mention_count = mention_count + 1,
-                       last_mentioned = excluded.last_mentioned,
-                       relation_type = CASE WHEN excluded.relation_type != '' THEN excluded.relation_type ELSE entity_relations.relation_type END,
-                       property = CASE WHEN excluded.property != '' THEN excluded.property ELSE entity_relations.property END""",
-                (user_id, name, ent.get("relation", ""), ent.get("fact", ""), now_str),
-            )
-
-        # 8b. Entities → 图谱边（带 relation 语义）
+        # 8. Entities → 图谱边（entity_relations 已废弃，统一由图谱带 relation 的边承载）
         for ent in data.get("entities", []):
             from_name = ent.get("name", "")
             rel = ent.get("relation", "")

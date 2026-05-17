@@ -31,6 +31,14 @@ class MemoryMixin:
             new_stage = 'history'
         self.conn.execute("UPDATE relationship_arc SET stage = ?, stage_score = ?, updated_at = ? WHERE user_id = ?",
                           (new_stage, new_score, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id))
+        if new_stage != stage:
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            stage_label = {"familiar": "认识一阵了", "rapport": "算熟了", "history": "老熟人"}.get(new_stage, new_stage)
+            old_label = {"familiar": "认识一阵了", "rapport": "算熟了", "history": "老熟人"}.get(stage, stage)
+            self.conn.execute(
+                "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, f"[里程碑] 关系阶段: {old_label} → {stage_label}", f"关系里程碑: → {stage_label}", 0.9, now_str),
+            )
         self.conn.commit()
 
     def _build_shared_context(self, user_id: str, user_input: str, reply: str):
@@ -56,7 +64,14 @@ class MemoryMixin:
         recent_trace = self.conn.execute("SELECT prose_hint, warmth, tension FROM emotional_trace WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,)).fetchone()
         arc = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
         shared = self.conn.execute("SELECT context_body FROM shared_context WHERE user_id = ? AND confirmed = 1 ORDER BY omission_count DESC LIMIT 4", (user_id,)).fetchall()
-        entities = self.conn.execute("SELECT entity_name, relation_type, property FROM entity_relations WHERE user_id = ? ORDER BY mention_count DESC LIMIT 5", (user_id,)).fetchall()
+        entities = self.conn.execute("""
+            SELECT n1.label, e.relation, n2.label
+            FROM memory_graph_edges e
+            JOIN memory_graph_nodes n1 ON e.from_node_id = n1.node_id
+            JOIN memory_graph_nodes n2 ON e.to_node_id = n2.node_id
+            WHERE n1.user_id = ? AND e.relation != ''
+            ORDER BY e.weight DESC LIMIT 5
+        """, (user_id,)).fetchall()
         raw_traits = json.loads(identity[0]) if identity and identity[0] else []
         trait_details = []
         for item in raw_traits:
