@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS cognitive_distill (
 
 ### 蒸馏触发机制
 
-双条件触发，先到先执行（`_DISTILL_MAX_TURNS` / `_DISTILL_MAX_MINUTES`，默认 50 轮 / 120 分钟）：
+双条件触发，先到先执行（`_DISTILL_MAX_TURNS` / `_DISTILL_MAX_MINUTES`，默认 30 轮 / 60 分钟）：
 
 ```
 每轮对话结束 → _post_update → _maybe_distill

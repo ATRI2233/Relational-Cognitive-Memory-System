@@ -47,8 +47,8 @@ class MinimalRCMS(
 
     _ARC_STAGES = ['stranger', 'familiar', 'rapport', 'history', 'drift', 'reconnect']
     _RESIDUE_DECAY = 0.6
-    _DISTILL_MAX_TURNS = 50
-    _DISTILL_MAX_MINUTES = 120
+    _DISTILL_MAX_TURNS = 30
+    _DISTILL_MAX_MINUTES = 60
     _GRAPH_BFS_DEPTH = 2
     _GRAPH_ACTIVATION_DECAY = 0.5
     _SURFACED_THRESHOLD = 0.6

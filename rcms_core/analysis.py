@@ -107,7 +107,15 @@ class AnalysisMixin:
             self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, now_str))
             self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
 
-        # 1. Emotional trace
+        # 1. Topic tracking — focus_topic from LLM analysis, 比关键词猜测精准
+        if data.get("topic_shift") and data.get("key_points"):
+            new_topic = data["key_points"][0][:60]
+            self.conn.execute(
+                "UPDATE session_state SET focus_topic = ? WHERE session_id = ?",
+                (new_topic, session_id),
+            )
+
+        # 2. Emotional trace
         mood = data.get("mood", "")
         intensity = data.get("mood_intensity", 0.0)
         warmth_map = {"温暖": 0.5, "低落": -0.3, "焦虑": -0.4, "平静": 0.1, "兴奋": 0.6, "防御": -0.2, "疏远": -0.5}
@@ -119,7 +127,7 @@ class AnalysisMixin:
             (user_id, warmth, tension, mood, now_str),
         )
 
-        # 2. Relationship arc
+        # 3. Relationship arc
         rd = data.get("relationship_delta", 0)
         if rd != 0:
             row = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
@@ -135,7 +143,7 @@ class AnalysisMixin:
                     (stage, new_score, now_str, user_id),
                 )
 
-        # 3. Identity traits + quirks — 单次 LLM 已产出语义去重，无需额外 embedding API
+        # 4. Identity traits + quirks — 单次 LLM 已产出语义去重，无需额外 embedding API
         identity = self.conn.execute("SELECT traits FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
         if identity:
             raw = json.loads(identity[0]) if identity[0] else []
@@ -179,7 +187,7 @@ class AnalysisMixin:
                     (json.dumps(new_traits_json, ensure_ascii=False), now_str, user_id),
                 )
 
-        # 4. Shared jokes/context
+        # 5. Shared jokes/context
         for joke in data.get("shared_jokes", []):
             trigger = joke.get("trigger", "")
             ctx = joke.get("context", "")
@@ -199,7 +207,7 @@ class AnalysisMixin:
                         (user_id, f"[梗] {trigger} → {ctx}"),
                     )
 
-        # 5. Boundary hits
+        # 6. Boundary hits
         for bh in data.get("boundary_hits", []):
             existing = self.conn.execute(
                 "SELECT context_id FROM shared_context WHERE user_id = ? AND context_body LIKE ?",
@@ -211,7 +219,7 @@ class AnalysisMixin:
                     (user_id, f"[边界] {bh}"),
                 )
 
-        # 6. Dangling threads → cognitive_distill
+        # 7. Dangling threads → cognitive_distill
         for dt in data.get("dangling_threads", []):
             self.conn.execute(
                 "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -225,7 +233,7 @@ class AnalysisMixin:
                 (json.dumps({"threads": data["dangling_threads"], "turn": current_turn}, ensure_ascii=False), session_id),
             )
 
-        # 7. Entities
+        # 8. Entities
         for ent in data.get("entities", []):
             name = ent.get("name", "")
             if not name:
@@ -241,7 +249,7 @@ class AnalysisMixin:
                 (user_id, name, ent.get("relation", ""), ent.get("fact", ""), now_str),
             )
 
-        # 8. Event memory (if important enough) → cognitive_distill
+        # 9. Event memory (if important enough) → cognitive_distill
         importance = data.get("importance", 0.0)
         if importance >= 0.5:
             summary = user_input[:80] + "..." if len(user_input) > 80 else user_input
