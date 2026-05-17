@@ -1,6 +1,6 @@
 # RCMS v2 架构设计
 
-> 2026-05-16 讨论定稿。替代旧的规则分析层（v1），建立 LLM 驱动的新架构。
+> 2026-05-17 更新。v1 规则分析层已移除，建立 LLM 驱动 + 统一蒸馏表的新架构。
 
 ## 核心原则
 
@@ -8,37 +8,78 @@
 2. **"当前状态 × 过往经验"** — 人的反应是当前注意力 × 长期积累的模式的总和。系统必须把两者真正耦合。
 3. **LLM 做分析，代码只做存和取。** 代码负责 SQL + embedding 检索 + 模板拼接，LLM 负责理解、判断、提炼。
 4. **不覆盖，只追加。** 所有 ANALYSIS 产出都是追加写，旧状态不删除。时间轴自然形成。
+5. **一次 API 调用完成所有分析。** LLM 单次调用产出完整 JSON（情绪/特质/实体/梗/边界/未完成叙事），不再按功能分多次调用。
+6. **蒸馏双触发。** 时间和轮数先到先触发，阈值可配，避免长对话记忆膨胀。
 
-## 需求范围
+## 存储架构
 
-### ✅ 做
+### 分层设计
 
-| 需求 | 说明 |
-|------|------|
-| 多用户隔离 | 现有 user_id 体系已经满足 |
-| 用户画像（爱好/事件/关系/小细节） | 五张长期表 + traits + quirks，LLM ANALYSIS 写入 |
-| 聊天经验 | `chat_history` + `long_term_memory` 已有 |
-| 当前语境决定"想什么" | embedding 语义检索做粗筛 |
-| 长期积累决定"怎么想" | 五张表积累作为额外 context 注入 prompt |
-| 人际关系理解 | 关系状态变化、边界感知、用户与他人的人际动态 |
-| 边界记忆 | 防踩雷：LLM 从用户反应识别"什么话题/方式引起负面反馈" |
-| 未完成叙事 | LLM 识别 dangling thread（"上回你说的事后来怎么样了"），自然提起 |
-| 用户小偏好/口癖/梗 | LLM 发现模式（"说话爱带喵"）、运用模式（玩哈基米梗）|
+| 层 | 表 | 存什么 | 特征 |
+|----|-----|--------|------|
+| **全量流水** | `chat_history` | 所有原始对话，role/content/timestamp | 追加写，不筛选，不删除 |
+| **蒸馏记忆** | `cognitive_distill` | 统一蒸馏表：原文摘要 + 元数据 + 向量 | 合并 old `long_term_memory`/`event_memory`/`memory_embeddings` |
+| **当前状态** | `identity_memory` | 用户特质、说话风格、口癖 | 当前画像，LLM 更新 |
+| **当前状态** | `relationship_arc` | 关系阶段 + 分数 | 当前关系值，LLM 评估 |
+| **当前状态** | `shared_context` | 共同语言、梗、边界规则 | 规则/默契，不参入蒸馏 |
+| **时序信号** | `emotional_trace` | 情绪轨迹、氛围感知 | 时间轴，追加写 |
+| **实体索引** | `entity_relations` | 用户提到的人物/事物及其属性 | 去重合并，mention_count 累积 |
 
-### ❌ 不做
+> **"当前状态"三张表不可揉入蒸馏表！** 它们代表的是"当前对用户的认知/关系/默契"，是规则而非流水账，必须独立存在。
 
-| 维度 | 理由 |
-|------|------|
-| 价值体系地图 | 伪精确，日常对话提取不出可靠的价值判断 |
-| 反事实记忆 | 出现频率极低，不值得设计存储结构 |
-| 信任积分/建议采纳率 | 量化人际关系是游戏化陷阱 |
-| 话题生命周期 | "永久归档"的判断不可靠，误判代价高 |
-| 认知负荷标记 | 回复长度就是最佳 proxy，不需要 LLM 分析 |
-| 仪式感/特定习惯 | 现有图扩散（高频共现）已经能覆盖 |
+### cognitive_distill 表结构
+
+```sql
+CREATE TABLE IF NOT EXISTS cognitive_distill (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT,
+    session_id TEXT,
+    content TEXT NOT NULL,        -- 原文或摘要
+    summary TEXT,                  -- LLM 提炼摘要（可选）
+    mood TEXT DEFAULT '',          -- 情绪标签
+    mood_intensity REAL DEFAULT 0.0,
+    importance REAL DEFAULT 0.3,  -- 重要性 0.0~1.0
+    entities TEXT DEFAULT '[]',    -- JSON 实体列表
+    embedding BLOB,                -- 向量（用于语义检索）
+    turn_num INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+特点：
+- 替代旧的三张表：`long_term_memory`（关键词模糊匹配）、`event_memory`（事件）、`memory_embeddings`（向量单独存放）
+- 每条记录自带完整元数据：时间、情绪、重要性、实体标签、向量
+- 来源多样：`_post_update` 写入对话摘要、蒸馏触发写入浓缩摘要、LLM ANALYSIS 写入事件/dangling_threads
+- 向量列 `embedding` 为独立存储，`idx_cd_embed` 索引过滤 `NOT NULL` 行加速检索
+
+### 蒸馏触发机制
+
+双条件触发，先到先执行（`_DISTILL_MAX_TURNS` / `_DISTILL_MAX_MINUTES`，默认 50 轮 / 120 分钟）：
+
+```
+每轮对话结束 → _post_update → _maybe_distill
+    ├─ turn_count - last_distill_turn >= 50?  → 触发
+    └─ elapsed >= 120 分钟?                    → 触发
+         ↓
+    合并上次蒸馏以来未总结的条目 → 写入 cognitive_distill (importance=0.7)
+    → 更新 last_distill_turn / last_distill_at
+```
+
+不足 3 条时不蒸馏，避免碎片。
+
+### 迁移路径
+
+已有数据库会自动执行迁移（`_migrate_to_cognitive_distill`）：
+1. 检查是否存在旧表 `long_term_memory`
+2. 若无旧表或已迁移过 → 跳过
+3. old `long_term_memory` → INSERT 到 `cognitive_distill`
+4. 按 content 匹配 `memory_embeddings.embedding` → UPDATE cognitive_distill.embedding
+5. old `event_memory` → 追加到 `cognitive_distill`
+6. DROP 旧三表
 
 ## 技术栈
 
-- **SQLite** — 主存储，五张长期表 + 聊天历史 不变。零额外软件。
+- **SQLite** — 主存储，零额外软件。
 - **Embedding API** — 语义检索。调 API（OpenAI text-embedding-3-small），无本地模型依赖。
 - **不用 Neo4j** — 当前数据量级下不需要图数据库的推理能力，不值得运维成本。
 
@@ -47,28 +88,28 @@
 ```
 用户输入
     │
-    ├─→ Embedding API → 语义检索 → 候选记忆（粗筛）
+    ├─→ Embedding API → 语义检索 → cognitive_distill（向量相似度粗筛）
     │
-    ├─→ 五张表加载 "当前对这个用户的理解"
-    │    (特质 / 事件 / 情绪 / 共同语境 / 关系阶段 / 口癖 / 梗)
-    │    → 作为 context 跟候选记忆一起注入 prompt
+    ├─→ 当前状态加载
+    │    (identity_memory / relationship_arc / shared_context / emotional_trace / entity_relations)
+    │    → 注入 prompt 作为 "当前对这个用户的理解"
     │
-    ├─→ 精筛后的记忆 + 五张表 context → LLM 回答
+    ├─→ 精筛后的记忆 + 当前状态 → LLM 回答
     │
-    └─→ 事后 ANALYSIS(LLM) → 更新五张表 + traits + quirks + jokes
-         ↓
-         下一轮的"怎么想"变了
+    ├─→ save_turn (chat_history 追加写)
+    │
+    └─→ _post_update
+         ├─→ cognitive_distill 写入对话摘要
+         ├─→ _build_graph_from_memory (memory_graph_nodes/edges)
+         ├─→ _maybe_distill (双触发检查)
+         └─→ ANALYSIS (LLM / 规则)
+              ├─→ 情绪 → emotional_trace
+              ├─→ 关系 → relationship_arc
+              ├─→ 特质/口癖 → identity_memory
+              ├─→ 梗/边界 → shared_context
+              ├─→ 实体 → entity_relations
+              └─→ 事件/dangling → cognitive_distill
 ```
-
-## 五张长期表（结构不变，写入者从规则变为 LLM）
-
-| 表 | 存什么 | 写入方式 |
-|-----|--------|---------|
-| `identity_memory` | 用户特质、说话风格、行为模式、口癖 | ANALYSIS LLM 追加/更新 |
-| `event_memory` | 重大事件、关系转折 | ANALYSIS LLM 从对话中提取 |
-| `emotional_trace` | 情绪轨迹、氛围感知 | ANALYSIS LLM 判断 |
-| `shared_context` | 共同语言、默契、黑话、梗 | ANALYSIS LLM 识别 |
-| `relationship_arc` | 关系阶段及变化方向 | ANALYSIS LLM 评估（三档：近/平/远）|
 
 ## ANALYSIS LLM 产出格式
 
@@ -91,7 +132,8 @@
 ```
 
 结构化字段（mood, user_state, relationship_delta, importance）→ 写入对应表字段。
-自由文本（traits_updates, speech_quirks, boundary_hits, dangling_threads）→ 写入 identity_memory / event_memory 的 text 字段。
+自由文本（traits_updates, speech_quirks, boundary_hits）→ 写入 identity_memory。
+`dangling_threads` → 写入 cognitive_distill。
 `shared_jokes` → 写入 shared_context。
 `entities` → 写入 `entity_relations` 表。
 
@@ -136,7 +178,7 @@ CREATE TABLE IF NOT EXISTS entity_relations (
 ┌──────────────┐     ┌──────────────────┐
 │  RETRIEVAL   │────→│  Embedding API   │
 │  (代码)       │     │  语义检索候选     │
-│              │     │  五张表加载 context│
+│              │     │  认知蒸馏 + 当前状态加载│
 └──────┬───────┘     └──────────────────┘
        │
        ▼
@@ -171,6 +213,10 @@ CREATE TABLE IF NOT EXISTS entity_relations (
 | 边界记忆 | 无 | LLM 从用户反馈识别 |
 | 模式理解 | 无 | 通过多层积累实现 |
 | 代码量 | 全部手写（~820 行） | 规则层移除，embedding + ANALYSIS 替代 |
+| 存储架构 | 功能分表（event/embedding/long-term 各自独立），数据不交叉 | 统一蒸馏表 `cognitive_distill`，每条记录带齐元数据 |
+| API 调用 | 按功能分多次调用（embedding + analysis 分开） | 单次 LLM ANALYSIS 产出完整 JSON，零碎 API 调用消除 |
+| 遗忘机制 | 无 | `importance` 分级 + 时间加权衰减 |
+| 蒸馏 | 无 | 双条件触发（轮数/时间），先到先执行 |
 
 ## 用户小细节/口癖/梗 工作流程
 
@@ -223,16 +269,25 @@ CREATE TABLE IF NOT EXISTS entity_relations (
   },
   "analysis": {
     // 语义检索：Embedding API
+    // source=astrbot → 读 AstrBot cmd_config.json
+    // source=custom   → 用 custom_api_key/base_url/model
     "retrieval": {
       "enabled": true,
-      "provider": "openai",
-      "model": "text-embedding-3-small"
+      "source": "astrbot",            // "astrbot" | "custom"
+      "astrbot_source_id": "",        // AstrBot provider source ID，留空自动匹配
+      "custom_api_key": "",           // source=custom 时使用
+      "custom_base_url": "https://api.openai.com/v1",
+      "custom_model": "text-embedding-3-small"
     },
     // 事后分析：对话结束后 LLM 产出 JSON 更新五张表
     "post_analysis": {
-      "mode": "rule",         // "rule" | "llm"
+      "mode": "rule",                 // "rule" | "llm"
       "sampling": 0.1,
-      "model": "gpt-4o-mini"
+      "source": "astrbot",            // "astrbot" | "custom"
+      "astrbot_source_id": "",
+      "custom_api_key": "",
+      "custom_base_url": "https://api.openai.com/v1",
+      "custom_model": "gpt-4o-mini"
     }
   }
 }

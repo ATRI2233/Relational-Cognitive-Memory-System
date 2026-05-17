@@ -17,21 +17,29 @@
   "debug": {
     "log_level": "info"
   },
+  "api": {
+    "retrieval": {
+      "source": "astrbot",
+      "astrbot_source_id": "",
+      "custom_url": "https://api.openai.com/v1",
+      "custom_token": "",
+      "custom_model": "text-embedding-3-small"
+    },
+    "post_analysis": {
+      "source": "astrbot",
+      "astrbot_source_id": "",
+      "custom_url": "https://api.openai.com/v1",
+      "custom_token": "",
+      "custom_model": "gpt-4o-mini"
+    }
+  },
   "analysis": {
     "retrieval": {
-      "enabled": false,
-      "provider": "openai",
-      "model": "text-embedding-3-small",
-      "api_key": "",
-      "base_url": "https://api.openai.com/v1"
+      "enabled": true
     },
     "post_analysis": {
       "mode": "rule",
-      "sampling": 0.1,
-      "provider": "openai",
-      "model": "gpt-4o-mini",
-      "api_key": "",
-      "base_url": "https://api.openai.com/v1"
+      "sampling": 0.1
     }
   }
 }

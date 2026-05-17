@@ -536,20 +536,15 @@ class RcmsPlugin(star.Star):
         """延迟嵌入：获取最近一条未向量化的记忆并生成 embedding"""
         try:
             row = rcms.conn.execute(
-                "SELECT id, content FROM long_term_memory WHERE user_id = ? AND session_id = ? ORDER BY created_at DESC LIMIT 1",
+                "SELECT id, content FROM cognitive_distill WHERE user_id = ? AND session_id = ? AND embedding IS NULL ORDER BY created_at DESC LIMIT 1",
                 (user_id, session_id),
             ).fetchone()
             if not row:
                 return
-            mem_id, text = row
-            existing = rcms.conn.execute(
-                "SELECT id FROM memory_embeddings WHERE user_id = ? AND memory_id = ?", (user_id, mem_id)
-            ).fetchone()
-            if existing:
-                return
+            rec_id, text = row
             vec = await rcms._get_embedding(text[:512])
             if vec:
-                rcms._store_embedding(user_id, mem_id, text[:512], vec)
+                rcms._store_embedding(user_id, rec_id, vec)
                 rcms._load_emb_cache(user_id)
         except Exception:
             pass

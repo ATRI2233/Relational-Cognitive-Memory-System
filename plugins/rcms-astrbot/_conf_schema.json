@@ -76,6 +76,125 @@
       }
     }
   },
+  "api": {
+    "description": "API 配置（外部读取 / 自定义）",
+    "type": "object",
+    "items": {
+      "retrieval": {
+        "description": "语义检索 Embedding API 配置",
+        "type": "object",
+        "items": {
+          "source": {
+            "description": "API 来源",
+            "hint": "astrbot：外部读取 AstrBot 已配置的模型提供商；custom：手动输入 URL/Token/模型",
+            "type": "string",
+            "default": "astrbot",
+            "options": ["astrbot", "custom"]
+          },
+          "astrbot_source_id": {
+            "description": "AstrBot 提供商 ID（source=astrbot）",
+            "hint": "AstrBot cmd_config.json 中 provider_sources 的 id，留空自动匹配当前启用的提供商",
+            "type": "string",
+            "default": ""
+          },
+          "custom_url": {
+            "description": "自定义 API 地址（source=custom）",
+            "hint": "仅在 source=custom 时生效",
+            "type": "string",
+            "default": "https://api.openai.com/v1"
+          },
+          "custom_token": {
+            "description": "自定义 API Token（source=custom）",
+            "hint": "仅在 source=custom 时生效",
+            "type": "string",
+            "default": ""
+          },
+          "custom_model": {
+            "description": "自定义模型名（source=custom）",
+            "hint": "仅在 source=custom 时生效",
+            "type": "string",
+            "default": "text-embedding-3-small"
+          }
+        }
+      },
+      "post_analysis": {
+        "description": "事后分析 LLM API 配置",
+        "type": "object",
+        "items": {
+          "source": {
+            "description": "API 来源",
+            "hint": "astrbot：外部读取 AstrBot 已配置的模型提供商；custom：手动输入 URL/Token/模型",
+            "type": "string",
+            "default": "astrbot",
+            "options": ["astrbot", "custom"]
+          },
+          "astrbot_source_id": {
+            "description": "AstrBot 提供商 ID（source=astrbot）",
+            "hint": "AstrBot cmd_config.json 中 provider_sources 的 id，留空自动匹配当前启用的提供商",
+            "type": "string",
+            "default": ""
+          },
+          "custom_url": {
+            "description": "自定义 API 地址（source=custom）",
+            "hint": "仅在 source=custom 时生效",
+            "type": "string",
+            "default": "https://api.openai.com/v1"
+          },
+          "custom_token": {
+            "description": "自定义 API Token（source=custom）",
+            "hint": "仅在 source=custom 时生效",
+            "type": "string",
+            "default": ""
+          },
+          "custom_model": {
+            "description": "自定义模型名（source=custom）",
+            "hint": "仅在 source=custom 时生效，推荐 gpt-4o-mini 成本低效果够",
+            "type": "string",
+            "default": "gpt-4o-mini"
+          }
+        }
+      }
+    }
+  },
+  "analysis": {
+    "description": "检索与分析行为设置（不含 API 凭证）",
+    "type": "object",
+    "items": {
+      "retrieval": {
+        "description": "语义检索行为",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用语义检索",
+            "hint": "开启后使用 Embedding API 进行语义检索，替代关键词 LIKE 检索。API 凭证在 api.retrieval 中配置。",
+            "type": "bool",
+            "default": true
+          }
+        }
+      },
+      "post_analysis": {
+        "description": "事后分析行为",
+        "type": "object",
+        "items": {
+          "mode": {
+            "description": "分析模式",
+            "hint": "rule：纯规则（免费）；llm：调用 LLM 分析对话并更新长期记忆表。LLM API 凭证在 api.post_analysis 中配置。",
+            "type": "string",
+            "default": "rule",
+            "options": ["rule", "llm"]
+          },
+          "sampling": {
+            "description": "采样率",
+            "hint": "1.0=每次都分析，0.1=平均每10轮一次，0=永不。",
+            "type": "float",
+            "default": 0.1,
+            "min": 0,
+            "max": 1.0
+          }
+        }
+      }
+    }
+  },
   "debug": {
     "description": "调试",
     "type": "object",

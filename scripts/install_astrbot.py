@@ -6,6 +6,7 @@
 用法:
     python install_astrbot.py                    # 自动查找 ~/.astrbot
     python install_astrbot.py --plugin-dir D:/path/to/plugins  # 手动指定
+    python install_astrbot.py --forward-api      # 安装时导入 AstrBot API 配置
 """
 import argparse
 import json
@@ -16,7 +17,7 @@ import sys
 # 源文件: RCMS 项目根目录
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SRC_PLUGIN = os.path.join(_HERE, "plugins", "rcms-astrbot")
-_CORE_FILES = ["minimal_rcms.py"]
+_CORE_DIRS = ["rcms_core"]
 _BACKEND_DIR = os.path.join(_HERE, "backends")
 
 PLUGIN_DIR_NAME = "astrbot_plugin_rcms"
@@ -61,7 +62,105 @@ def scan_astrbot_personas(astrbot_root: str) -> list[str]:
     return personas
 
 
-def install(target_dir: str, force: bool = False):
+def _forward_api_config(rcms_config_path: str, astrbot_root: str):
+    """从 AstrBot cmd_config.json 读取 API 配置，写入 RCMS 的 api 段"""
+    cmd_path = os.path.join(astrbot_root, "data", "cmd_config.json")
+    if not os.path.exists(cmd_path):
+        print("  [!] 未找到 AstrBot cmd_config.json，跳过 API 导入")
+        return
+
+    try:
+        with open(cmd_path, encoding="utf-8-sig") as f:
+            cmd_cfg = json.load(f)
+    except Exception as e:
+        print(f"  [!] 读取 AstrBot 配置失败: {e}")
+        return
+
+    sources = {s["id"]: s for s in cmd_cfg.get("provider_sources", [])}
+
+    # ── LLM 提供商（默认启用的） ──
+    llm_src_id = ""
+    llm_model = "gpt-4o"
+    providers = [p for p in cmd_cfg.get("provider", []) if p.get("enable", False)]
+    if providers:
+        default_id = cmd_cfg.get("provider_settings", {}).get("default_provider_id", "")
+        target = next((p for p in providers if p["id"] == default_id), providers[0])
+        llm_src_id = target.get("provider_source_id", "")
+        llm_model = target.get("model", "gpt-4o")
+    llm_src = sources.get(llm_src_id) if llm_src_id else None
+
+    # ── Embedding 提供商（AstrBot v3 在 provider[] 里，旧版在顶层 embedding_provider） ──
+    emb_key = None
+    emb_url = None
+    emb_model = "text-embedding-3-small"
+    emb_providers = [p for p in cmd_cfg.get("provider", [])
+                     if p.get("enable", False) and (
+                         p.get("type") == "openai_embedding"
+                         or p.get("provider_type") == "embedding")]
+    if emb_providers:
+        ep = emb_providers[0]
+        emb_key = ep.get("embedding_api_key", "") or None
+        emb_url = ep.get("embedding_api_base", "") or None
+        emb_model = ep.get("embedding_model", "text-embedding-3-small")
+    else:
+        # 旧版: 顶层 embedding_provider 字段
+        ec = cmd_cfg.get("embedding_provider", {}) or {}
+        src_id = ec.get("provider_source_id", "")
+        if src_id:
+            src = sources.get(src_id)
+            if src:
+                keys = src.get("key", [])
+                emb_key = (keys[0] if isinstance(keys, list) and keys else "") or None
+                emb_url = src.get("api_base", "")
+            emb_model = ec.get("model", "text-embedding-3-small")
+    # fallback: 未找到 embedding 提供商时复用 LLM
+    if not emb_key and llm_src:
+        keys = llm_src.get("key", [])
+        emb_key = (keys[0] if isinstance(keys, list) and keys else "") or None
+        emb_url = llm_src.get("api_base", "")
+        emb_model = llm_model
+    emb_src = None  # embedding 不再依赖 provider_sources，直接使用 emb_key/emb_url
+
+    # ── 构造新 api 配置 ──
+    api_cfg = {"retrieval": {"source": "astrbot", "astrbot_source_id": ""},
+               "post_analysis": {"source": "astrbot", "astrbot_source_id": llm_src_id}}
+
+    # 如能找到具体提供商则填入 custom_* 备用
+    # retrieval 可能来自 embedding provider（直接 key/url）或 fallback（从 sources 取 key）
+    def _set_custom(entry, key, url, mdl, default_mdl):
+        entry["custom_url"] = url or "https://api.openai.com/v1"
+        entry["custom_token"] = key or ""
+        entry["custom_model"] = mdl or default_mdl
+    _set_custom(api_cfg["retrieval"], emb_key, emb_url, emb_model, "text-embedding-3-small")
+    if llm_src:
+        keys = llm_src.get("key", [])
+        llm_key = (keys[0] if isinstance(keys, list) and keys else "") or ""
+        llm_url = llm_src.get("api_base", "https://api.openai.com/v1")
+    _set_custom(api_cfg["post_analysis"], llm_key, llm_url, llm_model, "gpt-4o-mini")
+
+    # ── 写入 RCMS config.json ──
+    try:
+        with open(rcms_config_path, encoding="utf-8") as f:
+            rcms_cfg = json.load(f)
+    except Exception:
+        rcms_cfg = {}
+
+    if "api" not in rcms_cfg:
+        rcms_cfg["api"] = {}
+    rcms_cfg["api"] = api_cfg
+
+    with open(rcms_config_path, "w", encoding="utf-8") as f:
+        json.dump(rcms_cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    print(f"  [✓] API 配置已导入")
+    print(f"      Embedding: url={api_cfg['retrieval']['custom_url']} model={api_cfg['retrieval']['custom_model']}")
+    print(f"      LLM:       url={api_cfg['post_analysis']['custom_url']} model={api_cfg['post_analysis']['custom_model']}")
+    if emb_key or llm_src_id:
+        print(f"      source=astrbot（自动读取 AstrBot 提供商）")
+
+
+def install(target_dir: str, force: bool = False, forward_api: bool = False):
     plugin_dir = os.path.join(target_dir, PLUGIN_DIR_NAME)
 
     # 已存在则先提示
@@ -81,12 +180,15 @@ def install(target_dir: str, force: bool = False):
             shutil.copy2(src, os.path.join(plugin_dir, f))
             print(f"  [+] {f}")
 
-    # 复制 RCMS 核心
-    for f in _CORE_FILES:
-        src = os.path.join(_HERE, f)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(plugin_dir, f))
-            print(f"  [+] {f}")
+    # 复制 RCMS 核心（包目录）
+    for d in _CORE_DIRS:
+        src = os.path.join(_HERE, d)
+        dst = os.path.join(plugin_dir, d)
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+            print(f"  [+] {d}/")
 
     # 复制项目配置
     config_src = os.path.join(_HERE, "config.json")
@@ -108,7 +210,7 @@ def install(target_dir: str, force: bool = False):
         print(f"  [=] 已有 {len(existing_dbs)} 个数据库文件 (已保留)")
 
     # 扫描并提示人格信息
-    astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_HERE))))
     personas = scan_astrbot_personas(astrbot_root)
     if personas:
         print(f"  [i] 检测到 {len(personas)} 个人格: {', '.join(personas)}")
@@ -116,9 +218,41 @@ def install(target_dir: str, force: bool = False):
     else:
         print(f"  [i] 未检测到已配置的人格，将使用默认记忆库")
 
+    # ── 导入 AstrBot API 配置 ──
+    if forward_api:
+        rcms_config = os.path.join(plugin_dir, "config.json")
+        _forward_api_config(rcms_config, astrbot_root)
+    else:
+        # 仅检测并展示提供商信息
+        cmd_config_path = os.path.join(astrbot_root, "data", "cmd_config.json")
+        sources_found = []
+        if os.path.exists(cmd_config_path):
+            try:
+                with open(cmd_config_path, encoding="utf-8-sig") as f:
+                    cmd_cfg = json.load(f)
+                for s in cmd_cfg.get("provider_sources", []):
+                    sid = s.get("id", "?")
+                    stype = s.get("type", "?")
+                    base = s.get("api_base", "https://api.openai.com/v1")
+                    keys = s.get("key", [])
+                    has_key = "✓" if (keys and keys[0]) else "✗"
+                    sources_found.append((sid, stype, base, has_key))
+            except Exception:
+                pass
+
+        if sources_found:
+            print(f"\n  [i] 检测到 AstrBot 模型提供商 ({len(sources_found)} 个):")
+            for sid, stype, base, has_key in sources_found:
+                print(f"      {sid} ({stype}, {base}, API Key: {has_key})")
+
     print(f"\n安装完成: {plugin_dir}")
     print("重启 AstrBot 即可加载 RCMS 插件。")
     print("如需修改设置，请在 AstrBot 后台 -> 插件管理 -> RCMS 中配置。")
+    if not forward_api:
+        print("提示: 使用 --forward-api 可在安装时自动导入 AstrBot 的 API 配置。")
+    print("API 配置说明:")
+    print("  source=astrbot — 外部读取 AstrBot 已配置的提供商（默认）")
+    print("  source=custom  — 在 api 中手动填写 url / token / model")
 
 
 def main():
@@ -132,6 +266,11 @@ def main():
         action="store_true",
         help="覆盖安装，不提示确认",
     )
+    parser.add_argument(
+        "--forward-api",
+        action="store_true",
+        help="导入 AstrBot 的 API 配置（url / token / model）到 RCMS 的 api 段",
+    )
     args = parser.parse_args()
 
     target = args.plugin_dir or find_astrbot_plugin_dir()
@@ -140,7 +279,7 @@ def main():
         sys.exit(1)
 
     print(f"安装到: {target}")
-    install(target, force=args.force)
+    install(target, force=args.force, forward_api=args.forward_api)
 
 
 if __name__ == "__main__":
