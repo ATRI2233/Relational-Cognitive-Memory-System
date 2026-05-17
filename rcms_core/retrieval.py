@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import os
 import re
 from datetime import datetime
 
@@ -84,15 +85,42 @@ class RetrievalMixin:
         return row[0] if row else ''
 
     async def _channel_multi_resonance(self, user_id: str, user_input: str, limit: int = 3):
-        """通道 2：时间词过滤 → 图扩散增强 → 向量检索 → 情绪共振 → 重要性兜底"""
+        """通道 2：时间词过滤 → 图扩散扩词 → 向量余弦相似度 → 情绪共振 → 重要性兜底"""
+        # ── 1. 时间范围硬过滤 ──
         time_range = self._parse_time_filter(user_input)
 
-        # Graph diffusion 增强关键词
+        # ── 2. 图扩散扩充关键词 ──
         kws = self._extract_keywords(user_input)[:4]
         diffused = self._graph_activation_diffusion(user_id, kws)
         all_keywords = list(set(kws + [label for label, _ in diffused[:3]]))
 
-        # 构建 SQL 过滤
+        # ── 3. 向量检索：用原查询 + 扩散词构造 query，算余弦相似度 ──
+        emb_query = user_input
+        if all_keywords:
+            emb_query = user_input + " " + " ".join(all_keywords)
+
+        vec_results = {}   # content → cosine_sim
+        try:
+            if user_id not in self._emb_cache:
+                self._load_emb_cache(user_id)
+            cache = self._emb_cache[user_id]
+            if cache["vectors"].shape[0] > 0:
+                q_vec = await self._get_embedding(emb_query[:512])
+                if q_vec and len(q_vec) == cache["vectors"].shape[1]:
+                    q = np.array(q_vec, dtype=np.float32)
+                    norms = cache["vectors"] / (np.linalg.norm(cache["vectors"], axis=1, keepdims=True) + 1e-12)
+                    nq = q / (np.linalg.norm(q) + 1e-12)
+                    scores = norms @ nq
+                    for idx in np.argsort(-scores):
+                        if scores[idx] > 0.3:
+                            rid, content = cache["meta"][idx]
+                            vec_results[content[:80]] = float(scores[idx])
+                    logger.info(f"Resonance: user={user_id} vec_candidates={len(vec_results)}")
+        except Exception as e:
+            logger.warning(f"Resonance: vec search failed ({e}), fallback to kw")
+
+        # ── 4. 关键词 SQL 候选（用于补充 vec_results +
+        #        vec 无结果时的兜底） ──
         clauses = ["user_id = ?", "content NOT LIKE '[蒸馏]%'"]
         params = [user_id]
 
@@ -111,36 +139,65 @@ class RetrievalMixin:
         if kw_clauses:
             clauses.append(f"({' OR '.join(kw_clauses)})")
 
-        rows = self.conn.execute(
+        kw_rows = self.conn.execute(
             f"SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT 30",
             params,
         ).fetchall()
 
-        # 无结果 → 重要性兜底（不限关键词）
-        if not rows:
-            rows = self.conn.execute(
+        # 无向量 + 无关键词结果 → 重要性兜底
+        if not vec_results and not kw_rows:
+            kw_rows = self.conn.execute(
                 "SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE user_id = ? AND importance >= 0.5 AND content NOT LIKE '[蒸馏]%' ORDER BY created_at DESC LIMIT 5",
                 (user_id,),
             ).fetchall()
 
-        # 情绪共振加权
+        # ── 5. 评分融合: vec 余弦 × 0.6 + 时间衰减重要性 × 0.4，情绪共振加成 ──
         current_mood = self._get_current_mood(user_id)
         now = datetime.now()
-
         scored = []
-        for rid, content, created_at, importance, mood in rows:
-            days = 0
-            if created_at:
-                try:
-                    days = (now - datetime.fromisoformat(str(created_at))).days
-                except (ValueError, TypeError):
-                    days = 999
-            base = importance * self._time_decay(days)
 
-            if current_mood and mood and mood == current_mood:
-                base *= (1 + self._EMOTIONAL_RESONANCE_BONUS)
+        # vec_results 中有命中 → 用余弦为主分
+        if vec_results:
+            for rid, content, created_at, importance, mood in kw_rows:
+                key = content[:80]
+                cos_sim = vec_results.get(key, 0.0)
+                days = 0
+                if created_at:
+                    try:
+                        days = (now - datetime.fromisoformat(str(created_at))).days
+                    except (ValueError, TypeError):
+                        days = 999
+                imp_decay = importance * self._time_decay(days)
 
-            scored.append((self._fuzz_time(created_at) + '，' + content, base, 'resonance'))
+                if cos_sim > 0:
+                    score = cos_sim * 0.6 + imp_decay * 0.4
+                else:
+                    # vec 无此条但 kw 匹配到 → 靠关键词保底
+                    score = imp_decay * 0.5
+
+                if current_mood and mood and mood == current_mood:
+                    score *= (1 + self._EMOTIONAL_RESONANCE_BONUS)
+
+                scored.append((self._fuzz_time(created_at) + '，' + content, score, 'resonance'))
+
+            # vec 中还有 kw_rows 未覆盖的条目
+            for content, cos_sim in vec_results.items():
+                if not any(content == c[:80] for _, c, _, _, _ in kw_rows):
+                    score = cos_sim * 0.6
+                    scored.append((content, score, 'resonance'))
+        else:
+            # 无向量 → 纯重要性 + 时间 + 情绪
+            for rid, content, created_at, importance, mood in kw_rows:
+                days = 0
+                if created_at:
+                    try:
+                        days = (now - datetime.fromisoformat(str(created_at))).days
+                    except (ValueError, TypeError):
+                        days = 999
+                score = importance * self._time_decay(days)
+                if current_mood and mood and mood == current_mood:
+                    score *= (1 + self._EMOTIONAL_RESONANCE_BONUS)
+                scored.append((self._fuzz_time(created_at) + '，' + content, score, 'resonance'))
 
         scored.sort(key=lambda x: -x[1])
         return scored[:limit]
@@ -148,7 +205,7 @@ class RetrievalMixin:
     # ── 通道 3：图谱骨架事实 ──
 
     def _channel_graph_skeleton(self, user_id: str, user_input: str, limit: int = 2):
-        """通道 3：纯图边查询，不查蒸馏表，输出自然语言陈述"""
+        """通道 3：纯图边查询（relation 语义优先），输出「A」--[关系]--> 「B」"""
         kws = self._extract_keywords(user_input)[:4]
         if not kws:
             return []
@@ -163,26 +220,30 @@ class RetrievalMixin:
             return []
 
         ph2 = ','.join('?' * len(seed_ids))
+        # 优先取带 relation 的边（LLM 分析出的逻辑关系），再取高权重共现边
         edges = self.conn.execute(f"""
-            SELECT n1.label AS a, n2.label AS b, e.weight
+            SELECT n1.label AS a, n2.label AS b, e.weight, e.relation
             FROM memory_graph_edges e
             JOIN memory_graph_nodes n1 ON e.from_node_id = n1.node_id
             JOIN memory_graph_nodes n2 ON e.to_node_id = n2.node_id
             WHERE (e.from_node_id IN ({ph2}) OR e.to_node_id IN ({ph2}))
               AND n1.user_id = ? AND n2.user_id = ?
-            ORDER BY e.weight DESC
+            ORDER BY CASE WHEN e.relation != '' THEN 0 ELSE 1 END, e.weight DESC
             LIMIT ?
-        """, (*seed_ids, *seed_ids, user_id, user_id, limit * 3)).fetchall()
+        """, (*seed_ids, *seed_ids, user_id, user_id, limit * 4)).fetchall()
 
         seen = set()
         results = []
-        for a, b, weight in edges:
+        for a, b, weight, relation in edges:
             pair = (min(a, b), max(a, b))
             if pair in seen:
                 continue
             seen.add(pair)
-            stmt = f"[图谱] 话题「{a}」与「{b}」常被一起提及（相关度 {weight:.1f}）"
-            results.append((stmt, weight, 'skeleton'))
+            if relation:
+                stmt = f"[图谱] 「{a}」--[{relation}]--> 「{b}」"
+            else:
+                stmt = f"[图谱] 话题「{a}」与「{b}」常被一起提及（相关度 {weight:.1f}）"
+            results.append((stmt, weight if not relation else weight + 2.0, 'skeleton'))
 
         return results[:limit]
 

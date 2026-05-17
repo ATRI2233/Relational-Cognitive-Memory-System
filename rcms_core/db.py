@@ -66,6 +66,7 @@ class DBMixin:
             CREATE TABLE IF NOT EXISTS memory_graph_edges (
                 from_node_id INTEGER, to_node_id INTEGER, weight REAL DEFAULT 1.0,
                 encounter_count INTEGER DEFAULT 1, last_seen TIMESTAMP,
+                relation TEXT DEFAULT '',
                 PRIMARY KEY (from_node_id, to_node_id)
             );
             CREATE INDEX IF NOT EXISTS idx_mgn_user_label ON memory_graph_nodes(user_id, label);
@@ -98,6 +99,10 @@ class DBMixin:
                 self.conn.execute(f"ALTER TABLE session_state {col}")
             except Exception:
                 pass
+        try:
+            self.conn.execute("ALTER TABLE memory_graph_edges ADD COLUMN relation TEXT DEFAULT ''")
+        except Exception:
+            pass
         # Migration: relationship_arc 去重 + 加 UNIQUE 约束
         dup_count = self.conn.execute(
             "SELECT COUNT(*) - COUNT(DISTINCT user_id) FROM relationship_arc"
