@@ -39,7 +39,13 @@ class DBMixin:
             );
             CREATE TABLE IF NOT EXISTS identity_memory (
                 user_id TEXT PRIMARY KEY, traits TEXT DEFAULT '[]',
-                voice_hint TEXT DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                voice_hint TEXT DEFAULT '',
+                preferences TEXT DEFAULT '{}',
+                communication_style TEXT DEFAULT '',
+                self_identity TEXT DEFAULT '[]',
+                boundaries TEXT DEFAULT '[]',
+                core_identity TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS emotional_trace (
@@ -103,6 +109,17 @@ class DBMixin:
             self.conn.execute("ALTER TABLE memory_graph_edges ADD COLUMN relation TEXT DEFAULT ''")
         except Exception:
             pass
+        for col in [
+            "ADD COLUMN preferences TEXT DEFAULT '{}'",
+            "ADD COLUMN communication_style TEXT DEFAULT ''",
+            "ADD COLUMN self_identity TEXT DEFAULT '[]'",
+            "ADD COLUMN boundaries TEXT DEFAULT '[]'",
+            "ADD COLUMN core_identity TEXT DEFAULT '{}'",
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE identity_memory {col}")
+            except Exception:
+                pass
         # Migration: relationship_arc 去重 + 加 UNIQUE 约束
         dup_count = self.conn.execute(
             "SELECT COUNT(*) - COUNT(DISTINCT user_id) FROM relationship_arc"

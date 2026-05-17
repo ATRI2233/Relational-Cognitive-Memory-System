@@ -70,9 +70,18 @@ class AnalysisMixin:
         lt_hint = ""
         if long_term:
             arc = long_term.get("arc_stage", "stranger")
-            traits = long_term.get("identity_traits", [])
-            if traits:
-                lt_hint += f"\n已知特质: {json.dumps(traits, ensure_ascii=False)}"
+            if long_term.get("identity_traits"):
+                lt_hint += f"\n已知特质: {json.dumps(long_term['identity_traits'], ensure_ascii=False)}"
+            if long_term.get("preferences"):
+                lt_hint += f"\n已知喜好: {json.dumps(long_term['preferences'], ensure_ascii=False)}"
+            if long_term.get("communication_style"):
+                lt_hint += f"\n沟通风格: {long_term['communication_style']}"
+            if long_term.get("self_identity"):
+                lt_hint += f"\n自我认同: {json.dumps(long_term['self_identity'], ensure_ascii=False)}"
+            if long_term.get("core_identity"):
+                lt_hint += f"\n核心身份: {json.dumps(long_term['core_identity'], ensure_ascii=False)}"
+            if long_term.get("boundaries"):
+                lt_hint += f"\n已知雷区: {json.dumps(long_term['boundaries'], ensure_ascii=False)}"
             if arc != "stranger":
                 lt_hint += f"\n关系阶段: {arc}"
         return f"""你是一个对话分析器。分析以下对话，输出 JSON。
@@ -90,8 +99,11 @@ class AnalysisMixin:
   "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
   "traits_updates": ["新观察到的用户特质（避免和已知特质重复）"],
   "speech_quirks": ["说话特点"],
-  "shared_jokes": [{{"trigger": "关键词", "context": "梗/黑话的描述"}}],
-  "boundary_hits": ["避免做的事"],
+  "preferences": {{"likes": ["喜欢的事物"], "dislikes": ["不喜欢的事物"]}},
+  "communication_style": "总结用户的说话方式和沟通习惯",
+  "self_identity": ["用户如何看待自己，如理性派、不善社交等"],
+  "core_identity": {{"职业": "", "角色": "", "标签": ""}},
+  "boundary_hits": ["避免做的事、雷区"],
   "dangling_threads": ["未完成的话题"],
   "importance": 0.0~1.0,
   "entities": [{{"name": "人名", "relation": "关系", "fact": "相关事实"}}]
@@ -187,6 +199,28 @@ class AnalysisMixin:
                     (json.dumps(new_traits_json, ensure_ascii=False), now_str, user_id),
                 )
 
+        # 4b. 结构化身份字段（覆盖写，LLM 每次产出完整快照）
+        id_updates = []
+        id_params = []
+        for col, key, default in [
+            ("preferences", "preferences", "{}"),
+            ("communication_style", "communication_style", ""),
+            ("self_identity", "self_identity", "[]"),
+            ("core_identity", "core_identity", "{}"),
+        ]:
+            val = data.get(key)
+            if val is not None:
+                if isinstance(val, (dict, list)):
+                    val = json.dumps(val, ensure_ascii=False)
+                id_updates.append(f"{col} = ?")
+                id_params.append(val)
+        if id_updates:
+            id_params.extend([now_str, user_id])
+            self.conn.execute(
+                f"UPDATE identity_memory SET {', '.join(id_updates)}, updated_at = ? WHERE user_id = ?",
+                id_params,
+            )
+
         # 5. Shared jokes/context
         for joke in data.get("shared_jokes", []):
             trigger = joke.get("trigger", "")
@@ -207,16 +241,23 @@ class AnalysisMixin:
                         (user_id, f"[梗] {trigger} → {ctx}"),
                     )
 
-        # 6. Boundary hits
-        for bh in data.get("boundary_hits", []):
-            existing = self.conn.execute(
-                "SELECT context_id FROM shared_context WHERE user_id = ? AND context_body LIKE ?",
-                (user_id, f"%{bh}%"),
+        # 6. Boundary hits → identity_memory.boundaries
+        bh_list = data.get("boundary_hits", [])
+        if bh_list:
+            row = self.conn.execute(
+                "SELECT boundaries FROM identity_memory WHERE user_id = ?", (user_id,)
             ).fetchone()
-            if not existing:
+            existing = set()
+            if row and row[0]:
+                try:
+                    existing = set(json.loads(row[0]))
+                except Exception:
+                    pass
+            merged = list(existing | set(bh_list))
+            if merged != list(existing):
                 self.conn.execute(
-                    "INSERT INTO shared_context (user_id, context_body, omission_count, confirmed) VALUES (?, ?, 1, 1)",
-                    (user_id, f"[边界] {bh}"),
+                    "UPDATE identity_memory SET boundaries = ?, updated_at = ? WHERE user_id = ?",
+                    (json.dumps(merged, ensure_ascii=False), now_str, user_id),
                 )
 
         # 7. Dangling threads → cognitive_distill

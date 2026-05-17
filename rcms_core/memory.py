@@ -48,7 +48,10 @@ class MemoryMixin:
         self.conn.commit()
 
     def _load_long_term_context(self, user_id: str) -> dict:
-        identity = self.conn.execute("SELECT traits, voice_hint FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
+        identity = self.conn.execute(
+            "SELECT traits, voice_hint, preferences, communication_style, self_identity, boundaries, core_identity FROM identity_memory WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
         recent_events = self.conn.execute("SELECT summary, importance FROM cognitive_distill WHERE user_id = ? AND summary IS NOT NULL ORDER BY created_at DESC LIMIT 2", (user_id,)).fetchall()
         recent_trace = self.conn.execute("SELECT prose_hint, warmth, tension FROM emotional_trace WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,)).fetchone()
         arc = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
@@ -62,10 +65,24 @@ class MemoryMixin:
             elif isinstance(item, dict):
                 trait_details.append({"text": item.get("t", ""), "strength": item.get("s", 0), "count": item.get("c", 0)})
         trait_details = [p for p in trait_details if p["text"] and p["strength"] > 0]
+        # 结构化身份字段
+        def _safe_json(val, default):
+            if not val:
+                return default
+            try:
+                return json.loads(val)
+            except Exception:
+                return default
+
         return {
             'identity_traits': [p["text"] for p in trait_details],
             'trait_details': trait_details,
             'voice_hint': identity[1] if identity else '',
+            'preferences': _safe_json(identity[2], {}) if identity else {},
+            'communication_style': identity[3] if identity and identity[3] else '',
+            'self_identity': _safe_json(identity[4], []) if identity else [],
+            'boundaries': _safe_json(identity[5], []) if identity else [],
+            'core_identity': _safe_json(identity[6], {}) if identity else {},
             'events': [{'hint': r[0], 'delta': 1 if r[1] and r[1] > 0.5 else 0} for r in recent_events],
             'trace': {'prose': recent_trace[0] if recent_trace else '', 'warmth': recent_trace[1] if recent_trace else 0.0, 'tension': recent_trace[2] if recent_trace else 0.0},
             'arc_stage': arc[0] if arc else 'stranger', 'arc_score': arc[1] if arc else 0.0,

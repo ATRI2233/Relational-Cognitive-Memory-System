@@ -85,6 +85,31 @@ class ContextMixin:
         if profile_lines:
             parts.append("他是什么样的:\n" + '\n'.join(f'  · {t}' for t in profile_lines))
 
+        # ── 结构化画像: 喜好 / 沟通风格 / 自我认同 / 雷区 / 核心身份 ──
+        struct_lines = []
+        if long_term:
+            prefs = long_term.get('preferences', {})
+            if prefs.get('likes'):
+                struct_lines.append(f"喜好: {'、'.join(prefs['likes'][:5])}")
+            if prefs.get('dislikes'):
+                struct_lines.append(f"不喜欢: {'、'.join(prefs['dislikes'][:3])}")
+            cs = long_term.get('communication_style', '')
+            if cs:
+                struct_lines.append(f"沟通风格: {cs}")
+            si = long_term.get('self_identity', [])
+            if si:
+                struct_lines.append(f"自我认同: {'、'.join(si[:3])}")
+            ci = long_term.get('core_identity', {})
+            if ci:
+                ci_parts = [v for v in ci.values() if v]
+                if ci_parts:
+                    struct_lines.append(f"身份: {'·'.join(ci_parts)}")
+            bounds = long_term.get('boundaries', [])
+            if bounds:
+                struct_lines.append(f"雷区: {'、'.join(bounds[:3])}")
+        if struct_lines:
+            parts.append("结构化画像:\n" + '\n'.join(f'  · {s}' for s in struct_lines))
+
         # ── 共同语境: 梗 / 上下文 / 实体 / 话题 ──
         ctx_lines = []
         if long_term:
@@ -175,6 +200,21 @@ class ContextMixin:
                 quirks = [t for t in traits if t.startswith('[口癖]')][:2]
                 if quirks:
                     lt_block += f"\n【说话特点】{'；'.join(q.replace('[口癖] ', '') for q in quirks)}"
+            prefs = long_term.get('preferences', {})
+            if prefs.get('likes') or prefs.get('dislikes'):
+                likes = '、'.join(prefs['likes'][:3]) if prefs.get('likes') else ''
+                dislikes = '、'.join(prefs['dislikes'][:2]) if prefs.get('dislikes') else ''
+                parts = [f"喜欢{likes}" if likes else '', f"不喜欢{dislikes}" if dislikes else '']
+                lt_block += f"\n【喜好】{'，'.join(p for p in parts if p)}"
+            cs = long_term.get('communication_style', '')
+            if cs:
+                lt_block += f"\n【沟通风格】{cs}"
+            si = long_term.get('self_identity', [])
+            if si:
+                lt_block += f"\n【自我认同】{'、'.join(si[:2])}"
+            bounds = long_term.get('boundaries', [])
+            if bounds:
+                lt_block += f"\n【雷区】{'、'.join(bounds[:2])}"
         prompt = "【当前心理状态】\n自然地聊"
         if mem_block:
             prompt += f"\n\n【相关记忆】\n{mem_block}"
