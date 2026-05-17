@@ -169,6 +169,37 @@
             "hint": "开启后使用 Embedding API 进行语义检索，替代关键词 LIKE 检索。API 凭证在 api.retrieval 中配置。",
             "type": "bool",
             "default": true
+          },
+          "total_cap": {
+            "description": "三通道融合召回总上限",
+            "hint": "三通道合并去重后的总召回条数，默认 5",
+            "type": "int",
+            "default": 5,
+            "min": 1,
+            "max": 20
+          },
+          "channel_min": {
+            "description": "每通道最低保底条数",
+            "hint": "三个通道各自的最低保障数量，格式为 [ch1, ch2, ch3]，默认 [1, 1, 1]",
+            "type": "list",
+            "default": [1, 1, 1],
+            "items": {"type": "int", "min": 0, "max": 10}
+          },
+          "time_decay_halflife": {
+            "description": "重要性半衰期（天）",
+            "hint": "importance 的时间衰减半衰期，默认 30 天。值越小旧记忆衰减越快。",
+            "type": "int",
+            "default": 30,
+            "min": 1,
+            "max": 365
+          },
+          "emotional_resonance_bonus": {
+            "description": "情绪共振加成系数",
+            "hint": "当前情绪与记忆情绪匹配时的分数倍率加成，默认 0.15（即 ×1.15）",
+            "type": "float",
+            "default": 0.15,
+            "min": 0,
+            "max": 1.0
           }
         }
       },

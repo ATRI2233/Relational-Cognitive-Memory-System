@@ -35,7 +35,11 @@
   },
   "analysis": {
     "retrieval": {
-      "enabled": true
+      "enabled": true,
+      "total_cap": 5,
+      "channel_min": [1, 1, 1],
+      "time_decay_halflife": 30,
+      "emotional_resonance_bonus": 0.15
     },
     "post_analysis": {
       "mode": "rule",

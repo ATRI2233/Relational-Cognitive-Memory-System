@@ -13,9 +13,6 @@ logger = logging.getLogger("rcms")
 class RetrievalMixin:
     """三通道融合召回引擎"""
 
-    _TIME_DECAY_HALFLIFE = 30     # 重要性半衰期（天）
-    _EMOTIONAL_RESONANCE_BONUS = 0.15
-
     _TIME_WORDS = {
         '今天': (0, 0), '今日': (0, 0),
         '昨天': (1, 1), '昨日': (1, 1),
@@ -24,24 +21,40 @@ class RetrievalMixin:
         '上周': (7, 13), '上星期': (7, 13),
     }
 
+    # ── 可调参数（硬编码默认，可被 config.json analysis.retrieval 覆盖） ──
+
+    def _get_retrieval_params(self) -> dict:
+        rc = self.analysis_config.get("retrieval", {})
+        return {
+            "total_cap": rc.get("total_cap", 5),
+            "channel_min": rc.get("channel_min", [1, 1, 1]),
+            "time_decay_halflife": rc.get("time_decay_halflife", 30),
+            "emotional_resonance_bonus": rc.get("emotional_resonance_bonus", 0.15),
+        }
+
     # ── 公共入口 ──
 
-    async def retrieve_memories(self, user_id: str, user_input: str, stance: str, total_cap: int = 5):
-        """三通道融合，每通道保底 1 条，总数不超过 total_cap"""
+    async def retrieve_memories(self, user_id: str, user_input: str, stance: str, total_cap: int | None = None):
+        """三通道融合，参数从 config.json analysis.retrieval 读取，可被调用方 total_cap 覆盖"""
         if stance == 'casual':
             return []
 
-        ch1 = self._channel_time_importance(user_id, limit=2)
-        ch2 = await self._channel_multi_resonance(user_id, user_input, limit=3)
-        ch3 = self._channel_graph_skeleton(user_id, user_input, limit=2)
+        p = self._get_retrieval_params()
+        total_cap = total_cap or p["total_cap"]
+        ch_min = p["channel_min"]
 
-        return self._fusion([ch1, ch2, ch3], total_cap)
+        ch1 = self._channel_time_importance(user_id, limit=ch_min[0] + 1)
+        ch2 = await self._channel_multi_resonance(user_id, user_input, limit=ch_min[1] + 2)
+        ch3 = self._channel_graph_skeleton(user_id, user_input, limit=ch_min[2] + 1)
+
+        return self._fusion([ch1, ch2, ch3], total_cap, ch_min)
 
     # ── 通道 1：时间重要性锚点 ──
 
     def _time_decay(self, days_ago: int) -> float:
-        """指数衰减，半衰期 _TIME_DECAY_HALFLIFE 天"""
-        lam = math.log(2) / self._TIME_DECAY_HALFLIFE
+        """指数衰减，半衰期从 config 读取（默认 30 天）"""
+        p = self._get_retrieval_params()
+        lam = math.log(2) / p["time_decay_halflife"]
         return math.exp(-lam * max(0, days_ago))
 
     def _channel_time_importance(self, user_id: str, limit: int = 2):
@@ -86,6 +99,8 @@ class RetrievalMixin:
 
     async def _channel_multi_resonance(self, user_id: str, user_input: str, limit: int = 3):
         """通道 2：时间词过滤 → 图扩散扩词 → 向量余弦相似度 → 情绪共振 → 重要性兜底"""
+        p = self._get_retrieval_params()
+        resonance_bonus = p["emotional_resonance_bonus"]
         # ── 1. 时间范围硬过滤 ──
         time_range = self._parse_time_filter(user_input)
 
@@ -176,7 +191,7 @@ class RetrievalMixin:
                     score = imp_decay * 0.5
 
                 if current_mood and mood and mood == current_mood:
-                    score *= (1 + self._EMOTIONAL_RESONANCE_BONUS)
+                    score *= (1 + resonance_bonus)
 
                 scored.append((self._fuzz_time(created_at) + '，' + content, score, 'resonance'))
 
@@ -196,7 +211,7 @@ class RetrievalMixin:
                         days = 999
                 score = importance * self._time_decay(days)
                 if current_mood and mood and mood == current_mood:
-                    score *= (1 + self._EMOTIONAL_RESONANCE_BONUS)
+                    score *= (1 + resonance_bonus)
                 scored.append((self._fuzz_time(created_at) + '，' + content, score, 'resonance'))
 
         scored.sort(key=lambda x: -x[1])
@@ -249,31 +264,37 @@ class RetrievalMixin:
 
     # ── 融合 ──
 
-    def _fusion(self, channels: list[list], total_cap: int = 5):
-        """三通道融合：每通道保底 1 条 → 去重 → 排序 → 截断"""
+    def _fusion(self, channels: list[list], total_cap: int = 5, ch_min: list | None = None):
+        """三通道融合：每通道保底 ch_min[i] 条 → 去重 → 排序 → 截断不超过 total_cap"""
+        ch_min = ch_min or [1, 1, 1]
         seen = set()
         merged = []
 
-        # Phase 1：每通道保底 1 条
-        for ch in channels:
+        # Phase 1：每通道保底
+        for i, ch in enumerate(channels):
+            taken = 0
             for item in ch:
+                if taken >= ch_min[i]:
+                    break
                 key = item[0][:25]
                 if key not in seen:
                     seen.add(key)
                     merged.append(item)
-                    break
+                    taken += 1
 
-        # Phase 2：填剩余名额
+        # Phase 2：填剩余名额（按分排序）
+        all_items = []
         for ch in channels:
-            for item in ch:
-                if len(merged) >= total_cap:
-                    break
-                key = item[0][:25]
-                if key not in seen:
-                    seen.add(key)
-                    merged.append(item)
+            all_items.extend(ch)
+        all_items.sort(key=lambda x: -x[1])
+
+        for item in all_items:
             if len(merged) >= total_cap:
                 break
+            key = item[0][:25]
+            if key not in seen:
+                seen.add(key)
+                merged.append(item)
 
         merged.sort(key=lambda x: -x[1])
         return [(content, tag) for content, score, tag in merged[:total_cap]]
