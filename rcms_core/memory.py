@@ -79,6 +79,21 @@ class MemoryMixin:
         self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
         self._decay_residue(session_id)
         self._update_relationship_arc(user_id, 'attentive')
+        # 悬案自动过期：超过 _DANGLING_EXPIRE_TURNS 轮无人提起则归档
+        dt_row = self.conn.execute(
+            "SELECT dangling_threads, turn_count FROM session_state WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if dt_row and dt_row[0]:
+            try:
+                dt_data = json.loads(dt_row[0])
+                if isinstance(dt_data, dict) and dt_data.get("threads"):
+                    since_turn = dt_data.get("turn", 0)
+                    current_turn = dt_row[1] or 0
+                    expire = getattr(self, '_DANGLING_EXPIRE_TURNS', 15)
+                    if current_turn - since_turn >= expire:
+                        self._archive_dangling(user_id, session_id, now_str, reason="过期")
+            except Exception:
+                pass
         if reply:
             self._build_shared_context(user_id, user_input, reply)
         if reply and len(user_input) > 15:
@@ -142,7 +157,35 @@ class MemoryMixin:
             "UPDATE session_state SET last_distill_turn = ?, last_distill_at = ? WHERE session_id = ?",
             (turn_count, now_str, session_id),
         )
+        # 蒸馏时同时收容悬案：写入蒸馏记忆后清空 session_state
+        self._archive_dangling(user_id, session_id, now_str, reason="蒸馏")
         logger.info(f"RCMS: 蒸馏触发 user={user_id} session={session_id} turn={turn_count} entries={len(lines)}")
+
+    def _archive_dangling(self, user_id: str, session_id: str, now_str: str, reason: str = ""):
+        """将未结悬案归档到 cognitive_distill 并清空 session_state"""
+        row = self.conn.execute(
+            "SELECT dangling_threads FROM session_state WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if not row or not row[0]:
+            return
+        try:
+            data = json.loads(row[0])
+            if not isinstance(data, dict) or not data.get("threads"):
+                return
+            threads = data["threads"]
+            tag = f"[悬案归档·{reason}]" if reason else "[悬案归档]"
+            content = f"{tag} " + "、".join(threads[:3])
+            self.conn.execute(
+                "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, session_id, content, content[:60], 0.7, now_str),
+            )
+            self.conn.execute(
+                "UPDATE session_state SET dangling_threads = ? WHERE session_id = ?",
+                ('[]', session_id),
+            )
+            logger.info(f"RCMS: dangling_threads archived ({reason}) user={user_id}")
+        except Exception:
+            pass
 
     def _build_graph_from_memory(self, user_id: str, content: str):
         kws = self._extract_keywords(content, max_kw=8)

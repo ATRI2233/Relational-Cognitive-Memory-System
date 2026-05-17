@@ -383,10 +383,12 @@ class RetrievalMixin:
             if depth >= self._GRAPH_BFS_DEPTH:
                 continue
             edges = self.conn.execute(
-                "SELECT from_node_id, to_node_id, weight FROM memory_graph_edges WHERE from_node_id = ? OR to_node_id = ?",
+                "SELECT from_node_id, to_node_id, weight, relation FROM memory_graph_edges WHERE from_node_id = ? OR to_node_id = ?",
                 (cid, cid)
             ).fetchall()
-            for frm, to, w in edges:
+            for frm, to, w, relation in edges:
+                # 无 relation 的共现边是噪音，扩散时严重降权
+                w = w * (1.0 if relation else 0.1)
                 nid = frm if frm != cid else to
                 if nid in visited:
                     activation_map[nid] += w * (self._GRAPH_ACTIVATION_DECAY ** (depth + 1))
