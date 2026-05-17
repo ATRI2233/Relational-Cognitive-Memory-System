@@ -58,8 +58,8 @@ CREATE TABLE IF NOT EXISTS cognitive_distill (
 
 ```
 每轮对话结束 → _post_update → _maybe_distill
-    ├─ turn_count - last_distill_turn >= 50?  → 触发
-    └─ elapsed >= 120 分钟?                    → 触发
+    ├─ turn_count - last_distill_turn >= 30?  → 触发
+    └─ elapsed >= 60 分钟?                     → 触发
          ↓
     合并上次蒸馏以来未总结的条目 → 写入 cognitive_distill (importance=0.7)
     → 更新 last_distill_turn / last_distill_at
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS cognitive_distill (
               ├─→ 关系 → relationship_arc
               ├─→ 特质/口癖 → identity_memory
               ├─→ 梗/边界 → shared_context
-              ├─→ 实体 → entity_relations + 图边（带 relation 语义字段）
+              ├─→ 实体 → 图边（memory_graph_edges.relation 语义字段）
               └─→ 事件/dangling → cognitive_distill
 ```
 
@@ -165,7 +165,7 @@ Configurable 参数（`config.json → analysis.retrieval`）：
 自由文本（traits_updates, speech_quirks, boundary_hits）→ 写入 identity_memory。
 `dangling_threads` → 写入 cognitive_distill。
 `shared_jokes` → 写入 shared_context。
-`entities` → 写入 `entity_relations` 表。
+`entities` → 写入 `memory_graph_edges` 图边。
 
 ## 补充机制
 

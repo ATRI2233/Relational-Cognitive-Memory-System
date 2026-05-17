@@ -209,8 +209,8 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
     if existing_dbs:
         print(f"  [=] 已有 {len(existing_dbs)} 个数据库文件 (已保留)")
 
-    # 扫描并提示人格信息
-    astrbot_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_HERE))))
+    # 扫描并提示人格信息（AstrBot 数据目录）
+    astrbot_root = os.path.expanduser("~/.astrbot")
     personas = scan_astrbot_personas(astrbot_root)
     if personas:
         print(f"  [i] 检测到 {len(personas)} 个人格: {', '.join(personas)}")
