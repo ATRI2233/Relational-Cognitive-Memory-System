@@ -68,7 +68,6 @@ class RcmsPlugin(star.Star):
         self.user_id = self._get_cfg("user_id", "default_user")
         self.enabled = self._get_cfg("enabled", True)
         self.persona_separated = self._get_cfg("persona_separated", True)
-        self.max_memories = self._get_cfg("max_memories_per_prompt", 2)
         self.injection_method = self._get_cfg("injection_method", "system_prompt")
         if self.injection_method not in _INJECTION_METHODS:
             logger.warning(f"RCMS: 未知注入方式 {self.injection_method}，使用 system_prompt")

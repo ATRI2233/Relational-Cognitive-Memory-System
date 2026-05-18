@@ -286,8 +286,7 @@ CREATE TABLE IF NOT EXISTS entity_relations (
     "injection_method": "system_prompt"
   },
   "memory": {
-    "enable_auto_save": true,
-    "max_memories_per_prompt": 2
+    "enable_auto_save": true
   },
   "output_log": {
     "enabled": true,

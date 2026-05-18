@@ -39,14 +39,6 @@
         "hint": "每次对话后是否自动将内容写入长期记忆。",
         "type": "bool",
         "default": true
-      },
-      "max_memories_per_prompt": {
-        "description": "每次注入最大记忆数",
-        "hint": "每次 LLM 请求最多注入几条相关记忆到 system_prompt。",
-        "type": "int",
-        "default": 2,
-        "min": 0,
-        "max": 10
       }
     }
   },
