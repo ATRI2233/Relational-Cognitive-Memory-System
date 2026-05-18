@@ -8,9 +8,49 @@ logger = logging.getLogger("rcms")
 class ContextMixin:
     """Narrative Context / Prompt Compressor — 供 AstrBot 注入 / standalone chat 使用"""
 
+    def _session_warmup(self, user_id: str, session_id: str, turn_count: int) -> str:
+        """新 session 预热：读取上一个 session 的 focus_topic + dangling + 最近蒸馏摘要"""
+        if turn_count > 1 or not user_id or not session_id:
+            return ""
+        row = self.conn.execute("""
+            SELECT focus_topic, dangling_threads, last_active
+            FROM session_state
+            WHERE session_id != ? AND last_active IS NOT NULL
+            ORDER BY last_active DESC LIMIT 1
+        """, (session_id,)).fetchone()
+        if not row:
+            return ""
+        topic, dangling, last_active = row
+        if not topic and not dangling:
+            return ""
+        parts = []
+        if topic:
+            parts.append(f"话题：{topic}")
+        if dangling:
+            try:
+                dt = json.loads(dangling)
+                if isinstance(dt, dict) and dt.get("threads"):
+                    parts.append("未完成：" + "、".join(dt["threads"][:3]))
+            except Exception:
+                pass
+        if last_active:
+            try:
+                days = (datetime.now() - datetime.fromisoformat(str(last_active))).days
+                if days == 0:
+                    parts.append("距上次对话：今天")
+                elif days == 1:
+                    parts.append("距上次对话：昨天")
+                else:
+                    parts.append(f"距上次对话：{days} 天前")
+            except Exception:
+                pass
+        if not parts:
+            return ""
+        return "\n".join(f"  · {p}" for p in parts)
+
     def narrative_context(self, stance: str, session_id: str | None = None,
                            memories: list | None = None, long_term: dict | None = None,
-                           user_input: str = "") -> str:
+                           user_input: str = "", user_id: str = "") -> str:
         parts = []
 
         # ── 会话统计 ──
@@ -29,6 +69,11 @@ class ContextMixin:
                     dangling = row[2] or ""
             except Exception:
                 pass
+
+        # ── 新 session 预热 ──
+        warmup = self._session_warmup(user_id, session_id, turn_count)
+        if warmup:
+            parts.append("[上次聊到]\n" + warmup)
 
         # ── 轮数 ──
         if turn_count:

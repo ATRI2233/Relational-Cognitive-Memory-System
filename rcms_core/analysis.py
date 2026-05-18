@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from openai import AsyncOpenAI
 
@@ -184,11 +184,24 @@ class AnalysisMixin:
 
         # 10. Key facts → cognitive_distill（保底 importance 0.5 防止被碎片清理删除）
         kf_imp = max(importance, 0.5)
-        for kf in data.get("key_facts", [])[:3]:
-            if kf:
+        kfs = data.get("key_facts", []) or data.get("key_facts_structured", [])
+        for kf in kfs[:3]:
+            if isinstance(kf, str):
+                content = kf
+                expires_at = None
+            elif isinstance(kf, dict):
+                content = kf.get("content", "")
+                temporal = kf.get("temporal", "permanent")
+                if temporal == "transient" and kf.get("expires_after_days"):
+                    expires_at = (datetime.now() + timedelta(days=int(kf["expires_after_days"]))).strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    expires_at = None
+            else:
+                continue
+            if content:
                 self.conn.execute(
-                    "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, kf, kf[:60], kf_imp, now_str),
+                    "INSERT INTO cognitive_distill (user_id, content, summary, importance, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, content, content[:60], kf_imp, expires_at, now_str),
                 )
 
         log_parts = []
@@ -293,6 +306,10 @@ class AnalysisMixin:
     "key_facts": [
       "从对话中提取的精确事实列表。每一条是一个独立、完整的陈述：主语+事件+细节。例如「攒抽进行中360沉迷MC搞建筑，尝试先复刻后创作」而非「有人在玩MC」"
     ],
+    "key_facts_structured": [
+      {"content": "完整可独立理解的事实", "temporal": "permanent"},
+      {"content": "临时性事件如面试计划等", "temporal": "transient", "expires_after_days": 14}
+    ],
     "mood": "温暖|低落|焦虑|平静|兴奋|防御|疏远",
     "mood_intensity": 0.0~1.0,
     "topic_shift": true/false,
@@ -315,6 +332,7 @@ class AnalysisMixin:
 
 要求：
 · summary 要像人聊天时复述事情一样，有叙事感
-· key_facts 每条必须完整可独立理解，不依赖上下文
+· key_facts 与 key_facts_structured 任选一种输出，后者可指定时效性
+· key_facts_structured[].temporal 为 permanent 永久保留，transient 到期自动清理
 · entities 优先提取反复提及或带有强烈情感的人物/事物
 · 只输出 JSON，不要其他文字"""

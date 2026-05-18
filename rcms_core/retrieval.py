@@ -66,6 +66,7 @@ class RetrievalMixin:
             SELECT content, created_at, importance, session_id
             FROM cognitive_distill
             WHERE user_id = ? AND importance > 0.1
+              AND (expires_at IS NULL OR expires_at > datetime('now'))
             ORDER BY created_at DESC LIMIT 50
         """, (user_id,)).fetchall()
 
@@ -159,6 +160,7 @@ class RetrievalMixin:
             params.append(f'%{kw}%')
         if kw_clauses:
             clauses.append(f"({' OR '.join(kw_clauses)})")
+        clauses.append("(expires_at IS NULL OR expires_at > datetime('now'))")
 
         kw_rows = self.conn.execute(
             f"SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT 30",
@@ -168,7 +170,7 @@ class RetrievalMixin:
         # 无向量 + 无关键词结果 → 重要性兜底
         if not vec_results and not kw_rows:
             kw_rows = self.conn.execute(
-                "SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE user_id = ? AND importance >= 0.5 ORDER BY created_at DESC LIMIT 5",
+                "SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE user_id = ? AND importance >= 0.5 AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY created_at DESC LIMIT 5",
                 (user_id,),
             ).fetchall()
 

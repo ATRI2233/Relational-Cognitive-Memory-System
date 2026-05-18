@@ -439,7 +439,8 @@ class RcmsPlugin(star.Star):
         traits_count = len(long_term.get("identity_traits", []))
         logger.info(f"RCMS: [{persona_name}] context traits={traits_count} shared={len(long_term.get('shared_contexts',[]))} entities={len(long_term.get('entities',[]))}")
         context_part = rcms.narrative_context('open', session_id,
-                                               memories=memories, long_term=long_term)
+                                               memories=memories, long_term=long_term,
+                                               user_id=user_id)
 
         # 按配置的注入方式插入
         if self.injection_method == "system_prompt":

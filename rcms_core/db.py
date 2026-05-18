@@ -126,6 +126,10 @@ CREATE TABLE IF NOT EXISTS shared_context (
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cd_mood ON cognitive_distill(user_id, mood) WHERE mood IS NOT NULL")
         except Exception:
             pass
+        try:
+            self.conn.execute("ALTER TABLE cognitive_distill ADD COLUMN expires_at TIMESTAMP DEFAULT NULL")
+        except Exception:
+            pass
         # Migration: 旧表 → cognitive_distill
         self._migrate_to_cognitive_distill()
         self.conn.commit()

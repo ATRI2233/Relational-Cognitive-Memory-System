@@ -125,7 +125,7 @@ class MemoryMixin:
         return (True, last_turn, turn_count, snapshot_text)
 
     def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str):
-        """写入 LLM 蒸馏摘要 + 低重要性碎片清理 + 图谱维护"""
+        """写入 LLM 蒸馏摘要 + 过期清理 + 低重要性碎片清理 + 图谱维护"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         # 1. 写入蒸馏摘要
         self.conn.execute(
@@ -139,6 +139,13 @@ class MemoryMixin:
         )
         # 3. 悬案归档
         self._archive_dangling(user_id, session_id, now_str, reason="蒸馏")
+        # 3b. 清理已过期的 transient 记忆（不受 importance 限制）
+        expired = self.conn.execute(
+            "DELETE FROM cognitive_distill WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
+            (user_id, now_str),
+        ).rowcount
+        if expired:
+            logger.info(f"RCMS: 已清理 {expired} 条过期记忆 user={user_id}")
         # 4. 规则摘要归并：保留最新 KEEP_RULE_SUMMARY 条 importance=0.3 的碎片
         KEEP_RULE_SUMMARY = 10
         self.conn.execute("""

@@ -34,7 +34,8 @@
                 ├─ _apply_distill
                 │     ├─ 写入精炼摘要（importance=0.8）
                 │     ├─ 归档悬案
-                │     ├─ 清理低重要性碎片（< 0.5，跨窗口）
+                │     ├─ 清理过期 transient 记忆
+                │     ├─ 规则摘要归并（保留最新 10 条 importance=0.3）
                 │     └─ 图衰减 + 孤立节点清理
                 └─ _apply_analysis
                       ├─ 用户状态 → session_state.stance
@@ -68,8 +69,12 @@
 | LLM 精炼摘要 | 0.8 | `_apply_distill` 蒸馏触发 | 长期记忆核心 |
 | 事件记忆 | ≥ 0.5 | `_apply_analysis` | 重要事件存档 |
 | 悬案归档 | 0.5~0.7 | 过期归档 / 蒸馏归档 | 未完成话题存档 |
+| key_facts（永久） | ≥ 0.5 | `_apply_analysis` | 用户持久特质（temporal=permanent） |
+| key_facts（临时） | ≥ 0.5 | `_apply_analysis` | 临时事件，expires_at 到期自动清理 |
 
-每行带完整元数据：`created_at`、`mood`、`mood_intensity`、`importance`、`embedding`。
+每行带完整元数据：`created_at`、`mood`、`mood_intensity`、`importance`、`embedding`、`expires_at`。
+
+时效列 `expires_at`：为 NULL 表示永久保留，非 NULL 的条目超出该时间后从召回和存储中自动清理。
 
 ### 用户画像：identity_memory
 
@@ -291,6 +296,10 @@ Phase 2: 剩余名额按分排序填充
   "summary": "连贯的叙事摘要（非要点罗列）",
   "analysis": {
     "key_facts": ["完整可独立理解的事实"],
+    "key_facts_structured": [
+      {"content": "永久特质如用户是 INFJ", "temporal": "permanent"},
+      {"content": "临时事件如下周面试", "temporal": "transient", "expires_after_days": 14}
+    ],
     "mood": "温暖|低落|焦虑|...",
     "mood_intensity": 0.0~1.0,
     "topic_shift": true/false,
@@ -316,6 +325,7 @@ Phase 2: 剩余名额按分排序填充
 1. 写精炼摘要到 `cognitive_distill`（importance=0.8）
 2. 更新 `session_state.last_distill_turn/at`
 3. 归档当前悬案到 `cognitive_distill`
+3b. 清理已过期的 transient 记忆（expires_at ≤ 当前时间，不限 importance）
 4. 规则摘要归并：保留该用户最新 10 条 importance=0.3 的规则摘要，其余删除（事件/精炼摘要/悬案归档不碰）
 5. 图维护：共现边 weight × 0.8，< 0.3 删除；孤立节点删除
 
@@ -334,6 +344,21 @@ Phase 2: 剩余名额按分排序填充
 ---
 
 ## 七、narrative_context 输出结构
+
+### Session 预热（新对话接续）
+
+新 session 首个请求时自动读取上一个 session 的收尾状态：
+
+```
+[上次聊到]
+  · 话题：工作压力
+  · 未完成：面试结果
+  · 距上次对话：2 天前
+```
+
+触发条件：`turn_count ≤ 1` 且存在其他有数据的 session。仅向 LLM 提示"上次聊到哪"，不修改任何存储状态。
+
+### 完整输出示例
 
 ```
 [RCMS 关系上下文]
@@ -394,6 +419,7 @@ Phase 2: 剩余名额按分排序填充
 | dangling_threads | `cognitive_distill` + `session_state` |
 | entities | 图谱边 `memory_graph_edges.relation` |
 | key_facts | `cognitive_distill`（importance 保底 0.5，不被碎片清理） |
+| key_facts_structured | `cognitive_distill`（content → content, temporal → expires_at 计算） |
 | importance ≥ 0.5 | `cognitive_distill`（事件存档） |
 
 ---
