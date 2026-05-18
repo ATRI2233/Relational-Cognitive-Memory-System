@@ -330,6 +330,8 @@ class RetrievalMixin:
         return cur.lastrowid
 
     def _upsert_graph_edge(self, from_id: int, to_id: int, now_str: str, relation: str = ""):
+        if from_id == to_id:
+            return
         existing = self.conn.execute(
             "SELECT weight FROM memory_graph_edges WHERE from_node_id = ? AND to_node_id = ?",
             (from_id, to_id),

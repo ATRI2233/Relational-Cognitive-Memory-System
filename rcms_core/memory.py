@@ -210,7 +210,7 @@ class MemoryMixin:
             pass
 
     def _build_graph_from_memory(self, user_id: str, content: str):
-        kws = self._extract_keywords(content, max_kw=8)
+        kws = list(dict.fromkeys(self._extract_keywords(content, max_kw=8)))
         if len(kws) < 2:
             return
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -218,5 +218,6 @@ class MemoryMixin:
         for i in range(len(node_ids)):
             for j in range(i + 1, len(node_ids)):
                 a, b = sorted((node_ids[i], node_ids[j]))
-                self._upsert_graph_edge(a, b, now_str)
+                if a != b:
+                    self._upsert_graph_edge(a, b, now_str)
         self.conn.commit()

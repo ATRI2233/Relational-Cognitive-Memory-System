@@ -167,7 +167,8 @@ class AnalysisMixin:
                 continue
             from_id = self._upsert_graph_node(user_id, from_name, now_str)
             to_id = self._upsert_graph_node(user_id, to_name, now_str)
-            self._upsert_graph_edge(from_id, to_id, now_str, relation=rel)
+            if from_id != to_id:
+                self._upsert_graph_edge(from_id, to_id, now_str, relation=rel)
 
         # 9. Event memory (if important enough) → cognitive_distill
         importance = data.get("importance", 0.0)
