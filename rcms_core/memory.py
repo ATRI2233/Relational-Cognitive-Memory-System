@@ -139,11 +139,16 @@ class MemoryMixin:
         )
         # 3. 悬案归档
         self._archive_dangling(user_id, session_id, now_str, reason="蒸馏")
-        # 4. 跨窗口低重要性碎片清理（保留该用户最新一条记录）
-        self.conn.execute(
-            "DELETE FROM cognitive_distill WHERE user_id = ? AND importance < 0.5 AND id < (SELECT COALESCE(MAX(id), 0) FROM cognitive_distill WHERE user_id = ?)",
-            (user_id, user_id),
-        )
+        # 4. 规则摘要归并：保留最新 KEEP_RULE_SUMMARY 条 importance=0.3 的碎片
+        KEEP_RULE_SUMMARY = 10
+        self.conn.execute("""
+            DELETE FROM cognitive_distill WHERE user_id = ? AND importance = 0.3
+            AND id NOT IN (
+                SELECT id FROM cognitive_distill
+                WHERE user_id = ? AND importance = 0.3
+                ORDER BY created_at DESC LIMIT ?
+            )
+        """, (user_id, user_id, KEEP_RULE_SUMMARY))
         # 5. 图谱维护：共现边衰减 + 孤立节点清理
         self._maintain_graph(user_id)
         self.conn.commit()

@@ -120,9 +120,13 @@ class ContextMixin:
         if ev_lines:
             parts.append("最近事件:\n" + '\n'.join(f'  · {e}' for e in ev_lines))
 
-        # ── 相关记忆 ──
+        # ── 相关记忆（按 tag 标注时间层次） ──
         if memories:
-            lines = [f'  · {m[0]}' for m in memories[:2]]
+            tag_map = {'recent': '最近', 'resonance': '共鸣', 'skeleton': '图谱'}
+            lines = []
+            for content, tag in memories[:4]:
+                label = tag_map.get(tag, tag)
+                lines.append(f"  [{label}] {content}")
             parts.append("相关记忆:\n" + '\n'.join(lines))
 
         # ── 未完成话题（超 10 轮自动过期） ──
@@ -150,7 +154,7 @@ class ContextMixin:
                            memories: list | None = None,
                            long_term: dict | None = None) -> str:
         if memories is None:
-            memories = await self.retrieve_memories(user_id, user_input, 'engaged')
+            memories = await self.retrieve_memories(user_id, user_input, 'engaged', session_id=session_id)
         mem_lines = [f"- {m[0]}" for m in memories[:2]]
         mem_block = "\n".join(mem_lines) if mem_lines else ""
         lt_block = ""

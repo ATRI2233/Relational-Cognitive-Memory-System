@@ -117,6 +117,15 @@ CREATE TABLE IF NOT EXISTS shared_context (
                 self.conn.execute(f"ALTER TABLE identity_memory {col}")
             except Exception:
                 pass
+        # 联合索引（提升认知蒸馏检索性能）
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cd_user_imp ON cognitive_distill(user_id, importance DESC, created_at DESC)")
+        except Exception:
+            pass
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cd_mood ON cognitive_distill(user_id, mood) WHERE mood IS NOT NULL")
+        except Exception:
+            pass
         # Migration: 旧表 → cognitive_distill
         self._migrate_to_cognitive_distill()
         self.conn.commit()

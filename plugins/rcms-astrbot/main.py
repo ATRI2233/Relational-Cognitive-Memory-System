@@ -433,7 +433,7 @@ class RcmsPlugin(star.Star):
         user_id = sender_id or self.user_id
 
         # 三通道融合召回（通道 1：原始消息 × 时间，通道 2：蒸馏语义 + 情绪，通道 3：图谱骨架）
-        memories = await rcms.retrieve_memories(user_id, user_input, 'engaged')
+        memories = await rcms.retrieve_memories(user_id, user_input, 'engaged', session_id=session_id)
         logger.info(f"RCMS: [{persona_name}] retrieve_memories hits={len(memories)}")
         long_term = rcms._load_long_term_context(user_id)
         traits_count = len(long_term.get("identity_traits", []))

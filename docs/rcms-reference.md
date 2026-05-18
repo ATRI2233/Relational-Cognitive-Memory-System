@@ -199,12 +199,15 @@ speech_quirks → 以 "[口癖] 内容" 格式加入同一 traits 池，同等�
 数据源：`cognitive_distill`（WHERE importance > 0.1，最新 50 条）
 
 ```
-score = t × (0.5 + importance)
+score = (t + session_boost) × (0.5 + importance)
 t = 2^(-days / half_life)
+session_boost = 0.3 if 本条 session_id == 当前 session_id else 0.0
 ```
 
 半衰期默认 30 天。importance 在所有时间尺度有恒定比例影响。
-高重要性旧条目可压过低重要性新条目：`今天 imp=0.3 = 0.80 < 一周前 imp=0.8 = 1.10`
+高重要性旧条目可压过低重要性新条目：`今天 imp=0.3 = 0.80 < 一周前 imp=0.8 = 1.10`。
+
+**session_boost**：当前 session 的记忆额外 +0.3 时间加成，防止"刚才说的事"被旧条目压下去。
 
 ### 通道 2：多维共振
 
@@ -245,10 +248,21 @@ t = 2^(-days / half_life)
 ```
 Phase 1: 每通道保底 ch_min[i] 条
 Phase 2: 剩余名额按分排序填充
-全程: 前 25 字符去重
+全程: MD5 内容 hash 去重（strip 后全文 hash）
 截断: total_cap 条
 返回: [(content, tag), ...]  tag ∈ {recent, resonance, skeleton}
 ```
+
+### 索引
+
+| 索引名 | 表 | 用途 |
+|--------|-----|------|
+| `idx_cd_user` | cognitive_distill(user_id, created_at) | 通道 1 按用户+时间范围查询 |
+| `idx_cd_user_imp` | cognitive_distill(user_id, importance DESC, created_at DESC) | 通道 1 高重要性优先排序 |
+| `idx_cd_embed` | cognitive_distill(user_id) WHERE embedding IS NOT NULL | 通道 2 向量行快速定位 |
+| `idx_cd_mood` | cognitive_distill(user_id, mood) WHERE mood IS NOT NULL | 通道 2 情绪共振过滤 |
+| `idx_mgn_user_label` | memory_graph_nodes(user_id, label) | 图扩散节点定位 |
+| `idx_mge_from` / `idx_mge_to` | memory_graph_edges(from/to_node_id) | 图扩散边遍历 |
 
 ---
 
@@ -302,7 +316,7 @@ Phase 2: 剩余名额按分排序填充
 1. 写精炼摘要到 `cognitive_distill`（importance=0.8）
 2. 更新 `session_state.last_distill_turn/at`
 3. 归档当前悬案到 `cognitive_distill`
-4. 跨窗口低重要性碎片清理：删除该用户所有 importance < 0.5 的条目（保留最新一条），不限 session
+4. 规则摘要归并：保留该用户最新 10 条 importance=0.3 的规则摘要，其余删除（事件/精炼摘要/悬案归档不碰）
 5. 图维护：共现边 weight × 0.8，< 0.3 删除；孤立节点删除
 
 **_apply_analysis：**
@@ -341,8 +355,9 @@ Phase 2: 剩余名额按分排序填充
   · 最近总聊: 工作压力
 
 相关记忆:
-  · {记忆条目}
-  · {记忆条目}
+  · [最近] {最近发生的记忆条目}
+  · [共鸣] {情绪共振的记忆条目}
+  · [图谱] {图扩散召回的实体关系}
 
 未完成: ↘ 面试结果
 

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import math
@@ -36,7 +37,7 @@ class RetrievalMixin:
 
     # ── 公共入口 ──
 
-    async def retrieve_memories(self, user_id: str, user_input: str, stance: str, total_cap: int | None = None):
+    async def retrieve_memories(self, user_id: str, user_input: str, stance: str, total_cap: int | None = None, session_id: str | None = None):
         """三通道融合，参数从 config.json analysis.retrieval 读取，可被调用方 total_cap 覆盖"""
         if stance == 'casual':
             return []
@@ -45,7 +46,7 @@ class RetrievalMixin:
         total_cap = total_cap or p["total_cap"]
         ch_min = p["channel_min"]
 
-        ch1 = self._channel_time_importance(user_id, limit=ch_min[0] + 1)
+        ch1 = self._channel_time_importance(user_id, session_id=session_id, limit=ch_min[0] + 1)
         ch2 = await self._channel_multi_resonance(user_id, user_input, limit=ch_min[1] + 2)
         ch3 = self._channel_graph_skeleton(user_id, user_input, limit=ch_min[2] + 1)
 
@@ -59,10 +60,10 @@ class RetrievalMixin:
         lam = math.log(2) / p["time_decay_halflife"]
         return math.exp(-lam * max(0, days_ago))
 
-    def _channel_time_importance(self, user_id: str, limit: int = 2):
-        """通道 1：时间衰减 × 恒定的 importance 加成"""
+    def _channel_time_importance(self, user_id: str, session_id: str | None = None, limit: int = 2):
+        """通道 1：时间衰减 × 恒定的 importance 加成，当前 session 条目额外推高"""
         rows = self.conn.execute("""
-            SELECT content, created_at, importance
+            SELECT content, created_at, importance, session_id
             FROM cognitive_distill
             WHERE user_id = ? AND importance > 0.1
             ORDER BY created_at DESC LIMIT 50
@@ -70,7 +71,7 @@ class RetrievalMixin:
 
         now = datetime.now()
         scored = []
-        for content, created_at, importance in rows:
+        for content, created_at, importance, row_sid in rows:
             days = 0
             if created_at:
                 try:
@@ -78,8 +79,9 @@ class RetrievalMixin:
                 except (ValueError, TypeError):
                     days = 999
             t = self._time_decay(days)
-            # 时间衰减 × (0.5 + importance)，importance 在所有时间尺度都有恒定比例影响
-            score = t * (0.5 + importance)
+            # 当前 session 条目加 session_boost，避免被旧高 importance 条目压过
+            session_boost = 0.3 if session_id and row_sid == session_id else 0.0
+            score = (t + session_boost) * (0.5 + importance)
             scored.append((self._fuzz_time(created_at) + '，' + content, score, 'recent'))
 
         scored.sort(key=lambda x: -x[1])
@@ -269,10 +271,13 @@ class RetrievalMixin:
     # ── 融合 ──
 
     def _fusion(self, channels: list[list], total_cap: int = 5, ch_min: list | None = None):
-        """三通道融合：每通道保底 ch_min[i] 条 → 去重 → 排序 → 截断不超过 total_cap"""
+        """三通道融合：每通道保底 ch_min[i] 条 → 内容 hash 去重 → 排序 → 截断不超过 total_cap"""
         ch_min = ch_min or [1, 1, 1]
         seen = set()
         merged = []
+
+        def _hash_key(content: str) -> str:
+            return hashlib.md5(content.strip().encode('utf-8')).hexdigest()
 
         # Phase 1：每通道保底
         for i, ch in enumerate(channels):
@@ -280,7 +285,7 @@ class RetrievalMixin:
             for item in ch:
                 if taken >= ch_min[i]:
                     break
-                key = item[0][:25]
+                key = _hash_key(item[0])
                 if key not in seen:
                     seen.add(key)
                     merged.append(item)
@@ -295,7 +300,7 @@ class RetrievalMixin:
         for item in all_items:
             if len(merged) >= total_cap:
                 break
-            key = item[0][:25]
+            key = _hash_key(item[0])
             if key not in seen:
                 seen.add(key)
                 merged.append(item)
