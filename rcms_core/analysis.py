@@ -182,12 +182,13 @@ class AnalysisMixin:
                     (user_id, summary, summary[:40] + "...", mood, intensity, importance, now_str),
                 )
 
-        # 10. Key facts → cognitive_distill
+        # 10. Key facts → cognitive_distill（保底 importance 0.5 防止被碎片清理删除）
+        kf_imp = max(importance, 0.5)
         for kf in data.get("key_facts", [])[:3]:
             if kf:
                 self.conn.execute(
                     "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, kf, kf[:60], importance or 0.5, now_str),
+                    (user_id, kf, kf[:60], kf_imp, now_str),
                 )
 
         log_parts = []

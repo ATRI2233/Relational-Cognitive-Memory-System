@@ -125,7 +125,7 @@ class MemoryMixin:
         return (True, last_turn, turn_count, snapshot_text)
 
     def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str):
-        """写入 LLM 蒸馏摘要 + 清理低重要性碎片"""
+        """写入 LLM 蒸馏摘要 + 低重要性碎片清理 + 图谱维护"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         # 1. 写入蒸馏摘要
         self.conn.execute(
@@ -139,13 +139,35 @@ class MemoryMixin:
         )
         # 3. 悬案归档
         self._archive_dangling(user_id, session_id, now_str, reason="蒸馏")
-        # 4. 清理本次蒸馏窗口内的低重要性碎片（importance < 0.5）
+        # 4. 跨窗口低重要性碎片清理（保留该用户最新一条记录）
         self.conn.execute(
-            "DELETE FROM cognitive_distill WHERE user_id = ? AND session_id = ? AND importance < 0.5 AND id < (SELECT COALESCE(MAX(id), 0) FROM cognitive_distill WHERE session_id = ?)",
-            (user_id, session_id, session_id),
+            "DELETE FROM cognitive_distill WHERE user_id = ? AND importance < 0.5 AND id < (SELECT COALESCE(MAX(id), 0) FROM cognitive_distill WHERE user_id = ?)",
+            (user_id, user_id),
         )
+        # 5. 图谱维护：共现边衰减 + 孤立节点清理
+        self._maintain_graph(user_id)
         self.conn.commit()
         logger.info(f"RCMS: 蒸馏完成 user={user_id} session={session_id} turn={turn_count} summary={summary[:60]}")
+
+    def _maintain_graph(self, user_id: str):
+        """图衰减与清理：共现边降权删除 + 孤立节点清理"""
+        # 共现边 weight 衰减 0.8，低于 0.3 的删除
+        self.conn.execute("""
+            UPDATE memory_graph_edges SET weight = ROUND(weight * 0.8, 2)
+            WHERE from_node_id IN (SELECT node_id FROM memory_graph_nodes WHERE user_id = ?)
+        """, (user_id,))
+        self.conn.execute("""
+            DELETE FROM memory_graph_edges WHERE relation = '' AND weight < 0.3
+        """)
+        # 语义边（relation != ''）不做自动删除，留待 LLM 蒸馏决策
+        # 孤立节点清理（无任何边连接的节点）
+        self.conn.execute("""
+            DELETE FROM memory_graph_nodes WHERE user_id = ? AND node_id NOT IN (
+                SELECT from_node_id FROM memory_graph_edges
+                UNION
+                SELECT to_node_id FROM memory_graph_edges
+            )
+        """, (user_id,))
 
     def _archive_dangling(self, user_id: str, session_id: str, now_str: str, reason: str = ""):
         """将未结悬案归档到 cognitive_distill 并清空 session_state"""

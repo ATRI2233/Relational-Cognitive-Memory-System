@@ -34,8 +34,8 @@
                 ├─ _apply_distill
                 │     ├─ 写入精炼摘要（importance=0.8）
                 │     ├─ 归档悬案
-                │     ├─ 清理低重要性碎片（< 0.5）
-                │     └─ 回灌 mood/importance 到 chat_history
+                │     ├─ 清理低重要性碎片（< 0.5，跨窗口）
+                │     └─ 图衰减 + 孤立节点清理
                 └─ _apply_analysis
                       ├─ 用户画像（traits/结构化字段/边界）
                       ├─ 实体 → 图谱语义边
