@@ -23,15 +23,54 @@ _BACKEND_DIR = os.path.join(_HERE, "backends")
 PLUGIN_DIR_NAME = "astrbot_plugin_rcms"
 
 
-def find_astrbot_plugin_dir() -> str | None:
-    """常见的 AstrBot 插件目录位置"""
+def _find_root_by_config() -> str | None:
+    """扫描可能位置，查找含 data/cmd_config.json 的 AstrBot 根目录"""
     candidates = [
-        os.path.expanduser("~/.astrbot/data/plugins"),
-        os.path.join(_HERE, "data", "plugins"),  # dev 模式
+        os.path.expanduser("~/.astrbot"),
+        _HERE,
     ]
     for p in candidates:
+        if os.path.isfile(os.path.join(p, "data", "cmd_config.json")):
+            return p
+
+    # 未命中标准路径 → 扫描常见部署目录（/www/xxxAstrBotxxx/）
+    for root in ["/www", "/var/www", "/opt", "/home"]:
+        if not os.path.isdir(root):
+            continue
+        try:
+            for entry in os.listdir(root):
+                full = os.path.join(root, entry)
+                if os.path.isdir(full) and "AstrBot" in entry:
+                    if os.path.isfile(os.path.join(full, "data", "cmd_config.json")):
+                        return full
+        except PermissionError:
+            continue
+    return None
+
+
+def derive_astrbot_root(target_dir: str) -> str | None:
+    """从插件目录向上推导 AstrBot 根目录"""
+    for d in [target_dir, os.path.dirname(target_dir),
+              os.path.dirname(os.path.dirname(target_dir))]:
+        if os.path.isfile(os.path.join(d, "data", "cmd_config.json")):
+            return d
+    return None
+
+
+def find_astrbot_plugin_dir() -> str | None:
+    """扫描所有能找到的 AstrBot 插件目录"""
+    # 1. 用 cmd_config.json 定位根目录
+    root = _find_root_by_config()
+    if root:
+        p = os.path.join(root, "data", "plugins")
         if os.path.isdir(p):
             return p
+
+    # 2. dev 模式
+    p = os.path.join(_HERE, "data", "plugins")
+    if os.path.isdir(p):
+        return p
+
     return None
 
 
@@ -63,7 +102,7 @@ def scan_astrbot_personas(astrbot_root: str) -> list[str]:
 
 
 def _forward_api_config(rcms_config_path: str, astrbot_root: str):
-    """从 AstrBot cmd_config.json 读取 API 配置，写入 RCMS 的 api 段"""
+    """从 AstrBot cmd_config.json 读取 API 配置，写入 RCMS 的 analysis 段"""
     cmd_path = os.path.join(astrbot_root, "data", "cmd_config.json")
     if not os.path.exists(cmd_path):
         print("  [!] 未找到 AstrBot cmd_config.json，跳过 API 导入")
@@ -121,9 +160,9 @@ def _forward_api_config(rcms_config_path: str, astrbot_root: str):
         emb_model = llm_model
     emb_src = None  # embedding 不再依赖 provider_sources，直接使用 emb_key/emb_url
 
-    # ── 构造新 api 配置 ──
-    api_cfg = {"retrieval": {"source": "astrbot", "astrbot_source_id": ""},
-               "post_analysis": {"source": "astrbot", "astrbot_source_id": llm_src_id}}
+    # ── 构造新 analysis 配置 ──
+    analysis_retrieval = {"source": "astrbot", "astrbot_source_id": ""}
+    analysis_post = {"source": "astrbot", "astrbot_source_id": llm_src_id}
 
     # 如能找到具体提供商则填入 custom_* 备用
     # retrieval 可能来自 embedding provider（直接 key/url）或 fallback（从 sources 取 key）
@@ -131,12 +170,12 @@ def _forward_api_config(rcms_config_path: str, astrbot_root: str):
         entry["custom_url"] = url or "https://api.openai.com/v1"
         entry["custom_token"] = key or ""
         entry["custom_model"] = mdl or default_mdl
-    _set_custom(api_cfg["retrieval"], emb_key, emb_url, emb_model, "text-embedding-3-small")
+    _set_custom(analysis_retrieval, emb_key, emb_url, emb_model, "text-embedding-3-small")
     if llm_src:
         keys = llm_src.get("key", [])
         llm_key = (keys[0] if isinstance(keys, list) and keys else "") or ""
         llm_url = llm_src.get("api_base", "https://api.openai.com/v1")
-    _set_custom(api_cfg["post_analysis"], llm_key, llm_url, llm_model, "gpt-4o-mini")
+    _set_custom(analysis_post, llm_key, llm_url, llm_model, "gpt-4o-mini")
 
     # ── 写入 RCMS config.json ──
     try:
@@ -145,17 +184,17 @@ def _forward_api_config(rcms_config_path: str, astrbot_root: str):
     except Exception:
         rcms_cfg = {}
 
-    if "api" not in rcms_cfg:
-        rcms_cfg["api"] = {}
-    rcms_cfg["api"] = api_cfg
+    rcms_cfg.setdefault("analysis", {})
+    rcms_cfg["analysis"]["retrieval"] = analysis_retrieval
+    rcms_cfg["analysis"]["post_analysis"] = analysis_post
 
     with open(rcms_config_path, "w", encoding="utf-8") as f:
         json.dump(rcms_cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
     print(f"  [✓] API 配置已导入")
-    print(f"      Embedding: url={api_cfg['retrieval']['custom_url']} model={api_cfg['retrieval']['custom_model']}")
-    print(f"      LLM:       url={api_cfg['post_analysis']['custom_url']} model={api_cfg['post_analysis']['custom_model']}")
+    print(f"      Embedding: url={analysis_retrieval['custom_url']} model={analysis_retrieval['custom_model']}")
+    print(f"      LLM:       url={analysis_post['custom_url']} model={analysis_post['custom_model']}")
     if emb_key or llm_src_id:
         print(f"      source=astrbot（自动读取 AstrBot 提供商）")
 
@@ -210,7 +249,7 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
         print(f"  [=] 已有 {len(existing_dbs)} 个数据库文件 (已保留)")
 
     # 扫描并提示人格信息（AstrBot 数据目录）
-    astrbot_root = os.path.expanduser("~/.astrbot")
+    astrbot_root = derive_astrbot_root(target_dir) or os.path.expanduser("~/.astrbot")
     personas = scan_astrbot_personas(astrbot_root)
     if personas:
         print(f"  [i] 检测到 {len(personas)} 个人格: {', '.join(personas)}")
@@ -252,7 +291,7 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
         print("提示: 使用 --forward-api 可在安装时自动导入 AstrBot 的 API 配置。")
     print("API 配置说明:")
     print("  source=astrbot — 外部读取 AstrBot 已配置的提供商（默认）")
-    print("  source=custom  — 在 api 中手动填写 url / token / model")
+    print("  source=custom  — 在 analysis 中手动填写 url / token / model")
 
 
 def main():
@@ -269,7 +308,7 @@ def main():
     parser.add_argument(
         "--forward-api",
         action="store_true",
-        help="导入 AstrBot 的 API 配置（url / token / model）到 RCMS 的 api 段",
+        help="导入 AstrBot 的 API 配置（url / token / model）到 RCMS 的 analysis 段",
     )
     args = parser.parse_args()
 

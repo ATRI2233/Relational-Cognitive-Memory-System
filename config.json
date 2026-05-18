@@ -9,33 +9,14 @@
     "enable_auto_save": true,
     "max_memories_per_prompt": 2
   },
-  "output_log": {
-    "enabled": true,
-    "max_size_mb": 5,
-    "path": "rcms_output.jsonl"
-  },
-  "debug": {
-    "log_level": "info"
-  },
-  "api": {
-    "retrieval": {
-      "source": "astrbot",
-      "astrbot_source_id": "",
-      "custom_url": "https://api.openai.com/v1",
-      "custom_token": "",
-      "custom_model": "text-embedding-3-small"
-    },
-    "post_analysis": {
-      "source": "astrbot",
-      "astrbot_source_id": "",
-      "custom_url": "https://api.openai.com/v1",
-      "custom_token": "",
-      "custom_model": "gpt-4o-mini"
-    }
-  },
   "analysis": {
     "retrieval": {
       "enabled": true,
+      "source": "astrbot",
+      "astrbot_source_id": "",
+      "custom_url": "https://api.openai.com/v1",
+      "custom_token": "",
+      "custom_model": "text-embedding-3-small",
       "total_cap": 5,
       "channel_min": [1, 1, 1],
       "time_decay_halflife": 30,
@@ -43,7 +24,20 @@
     },
     "post_analysis": {
       "mode": "rule",
-      "sampling": 0.1
+      "sampling": 0.1,
+      "source": "astrbot",
+      "astrbot_source_id": "",
+      "custom_url": "https://api.openai.com/v1",
+      "custom_token": "",
+      "custom_model": "gpt-4o-mini"
     }
+  },
+  "output_log": {
+    "enabled": true,
+    "max_size_mb": 5,
+    "path": "rcms_output.jsonl"
+  },
+  "debug": {
+    "log_level": "info"
   }
 }

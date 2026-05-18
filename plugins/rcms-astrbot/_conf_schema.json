@@ -50,40 +50,20 @@
       }
     }
   },
-  "output_log": {
-    "description": "输出日志",
-    "type": "object",
-    "items": {
-      "enabled": {
-        "description": "启用输出日志",
-        "hint": "每次回复后记录 JSONL 日志，用于分析对话模式。",
-        "type": "bool",
-        "default": true
-      },
-      "max_size_mb": {
-        "description": "日志最大体积 (MB)",
-        "hint": "超出后自动从头部删除最旧条目。",
-        "type": "int",
-        "default": 5,
-        "min": 1,
-        "max": 100
-      },
-      "path": {
-        "description": "日志文件路径",
-        "hint": "相对插件目录或绝对路径。",
-        "type": "string",
-        "default": "rcms_output.jsonl"
-      }
-    }
-  },
-  "api": {
-    "description": "API 配置（外部读取 / 自定义）",
+  "analysis": {
+    "description": "分析与检索（含 API 凭证）",
     "type": "object",
     "items": {
       "retrieval": {
-        "description": "语义检索 Embedding API 配置",
+        "description": "语义检索：行为参数 + Embedding API 凭证",
         "type": "object",
         "items": {
+          "enabled": {
+            "description": "启用语义检索",
+            "hint": "开启后使用 Embedding API 进行语义检索，替代关键词 LIKE 检索。需要下方配置有效的 API 凭证。",
+            "type": "bool",
+            "default": true
+          },
           "source": {
             "description": "API 来源",
             "hint": "astrbot：外部读取 AstrBot 已配置的模型提供商；custom：手动输入 URL/Token/模型",
@@ -114,13 +94,59 @@
             "hint": "仅在 source=custom 时生效",
             "type": "string",
             "default": "text-embedding-3-small"
+          },
+          "total_cap": {
+            "description": "三通道融合召回总上限",
+            "hint": "三通道合并去重后的总召回条数",
+            "type": "int",
+            "default": 5,
+            "min": 1,
+            "max": 20
+          },
+          "channel_min": {
+            "description": "每通道最低保底条数",
+            "hint": "三个通道各自的最低保障数量，格式为 [ch1, ch2, ch3]",
+            "type": "list",
+            "default": [1, 1, 1],
+            "items": {"type": "int", "min": 0, "max": 10}
+          },
+          "time_decay_halflife": {
+            "description": "重要性半衰期（天）",
+            "hint": "importance 的时间衰减半衰期，值越小旧记忆衰减越快",
+            "type": "int",
+            "default": 30,
+            "min": 1,
+            "max": 365
+          },
+          "emotional_resonance_bonus": {
+            "description": "情绪共振加成系数",
+            "hint": "当前情绪与记忆情绪匹配时的分数倍率加成，0.15 表示 ×1.15",
+            "type": "float",
+            "default": 0.15,
+            "min": 0,
+            "max": 1.0
           }
         }
       },
       "post_analysis": {
-        "description": "事后分析 LLM API 配置",
+        "description": "事后分析：行为参数 + LLM API 凭证",
         "type": "object",
         "items": {
+          "mode": {
+            "description": "分析模式",
+            "hint": "rule：纯规则（免费）；llm：调用 LLM 分析对话并更新长期记忆表。需要下方配置有效的 API 凭证。",
+            "type": "string",
+            "default": "rule",
+            "options": ["rule", "llm"]
+          },
+          "sampling": {
+            "description": "LLM 分析采样率",
+            "hint": "1.0=每次都分析，0.1=平均每10轮一次，0=永不。仅在 mode=llm 时生效。",
+            "type": "float",
+            "default": 0.1,
+            "min": 0,
+            "max": 1.0
+          },
           "source": {
             "description": "API 来源",
             "hint": "astrbot：外部读取 AstrBot 已配置的模型提供商；custom：手动输入 URL/Token/模型",
@@ -156,73 +182,29 @@
       }
     }
   },
-  "analysis": {
-    "description": "检索与分析行为设置（不含 API 凭证）",
+  "output_log": {
+    "description": "输出日志",
     "type": "object",
     "items": {
-      "retrieval": {
-        "description": "语义检索行为",
-        "type": "object",
-        "items": {
-          "enabled": {
-            "description": "启用语义检索",
-            "hint": "开启后使用 Embedding API 进行语义检索，替代关键词 LIKE 检索。API 凭证在 api.retrieval 中配置。",
-            "type": "bool",
-            "default": true
-          },
-          "total_cap": {
-            "description": "三通道融合召回总上限",
-            "hint": "三通道合并去重后的总召回条数，默认 5",
-            "type": "int",
-            "default": 5,
-            "min": 1,
-            "max": 20
-          },
-          "channel_min": {
-            "description": "每通道最低保底条数",
-            "hint": "三个通道各自的最低保障数量，格式为 [ch1, ch2, ch3]，默认 [1, 1, 1]",
-            "type": "list",
-            "default": [1, 1, 1],
-            "items": {"type": "int", "min": 0, "max": 10}
-          },
-          "time_decay_halflife": {
-            "description": "重要性半衰期（天）",
-            "hint": "importance 的时间衰减半衰期，默认 30 天。值越小旧记忆衰减越快。",
-            "type": "int",
-            "default": 30,
-            "min": 1,
-            "max": 365
-          },
-          "emotional_resonance_bonus": {
-            "description": "情绪共振加成系数",
-            "hint": "当前情绪与记忆情绪匹配时的分数倍率加成，默认 0.15（即 ×1.15）",
-            "type": "float",
-            "default": 0.15,
-            "min": 0,
-            "max": 1.0
-          }
-        }
+      "enabled": {
+        "description": "启用输出日志",
+        "hint": "每次回复后记录 JSONL 日志，用于分析对话模式。",
+        "type": "bool",
+        "default": true
       },
-      "post_analysis": {
-        "description": "事后分析行为",
-        "type": "object",
-        "items": {
-          "mode": {
-            "description": "分析模式",
-            "hint": "rule：纯规则（免费）；llm：调用 LLM 分析对话并更新长期记忆表。LLM API 凭证在 api.post_analysis 中配置。",
-            "type": "string",
-            "default": "rule",
-            "options": ["rule", "llm"]
-          },
-          "sampling": {
-            "description": "采样率",
-            "hint": "1.0=每次都分析，0.1=平均每10轮一次，0=永不。",
-            "type": "float",
-            "default": 0.1,
-            "min": 0,
-            "max": 1.0
-          }
-        }
+      "max_size_mb": {
+        "description": "日志最大体积 (MB)",
+        "hint": "超出后自动从头部删除最旧条目。",
+        "type": "int",
+        "default": 5,
+        "min": 1,
+        "max": 100
+      },
+      "path": {
+        "description": "日志文件路径",
+        "hint": "相对插件目录或绝对路径。",
+        "type": "string",
+        "default": "rcms_output.jsonl"
       }
     }
   },

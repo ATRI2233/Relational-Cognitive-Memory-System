@@ -75,6 +75,7 @@ class RcmsPlugin(star.Star):
             self.injection_method = "system_prompt"
         self._persona_cache: dict[str, str] = {}  # session_id → persona_name
         self._write_count = 0
+        self._provider_callbacks = None  # 首次构建后缓存
 
         # 数据库存放目录：项目根目录下的 data/
         _project_root = os.path.dirname(os.path.dirname(_self))
@@ -117,43 +118,41 @@ class RcmsPlugin(star.Star):
         return merged
 
     def _get_cfg(self, key: str, default):
-        for cat in ["general", "memory", "debug", "analysis", "api"]:
+        for cat in ["general", "memory", "analysis", "output_log", "debug"]:
             cat_obj = self.config.get(cat)
             if isinstance(cat_obj, dict) and key in cat_obj:
                 return cat_obj[key]
         return self.config.get(key, default)
 
     def _get_analysis_config(self) -> dict:
-        """返回合并后的分析配置（含 API 字段，供 rcms_core 使用）"""
+        """返回分析配置（含 API 字段，供 rcms_core 使用）"""
         cfg = self.config.get("analysis", {}).copy()
-        api_cfg = self.config.get("api", {})
         for key in ("retrieval", "post_analysis"):
-            sub = api_cfg.get(key, {})
-            if sub:
-                merged = dict(cfg.get(key, {}))
-                source = sub.get("source", "astrbot")
-                merged["source"] = source
-                merged["astrbot_source_id"] = sub.get("astrbot_source_id", "")
-                if source == "custom":
-                    merged["custom_api_key"] = sub.get("custom_token", "")
-                    merged["custom_base_url"] = sub.get("custom_url", "https://api.openai.com/v1")
-                    merged["custom_model"] = sub.get("custom_model", "")
+            sub = cfg.get(key, {})
+            if isinstance(sub, dict):
+                merged = dict(sub)
+                merged["custom_api_key"] = sub.get("custom_token", "")
+                merged["custom_base_url"] = sub.get("custom_url", "https://api.openai.com/v1")
                 cfg[key] = merged
         return cfg
 
     def _build_provider_callbacks(self):
         """从 AstrBot 配置或自定义设置构造 LLM/Embedding 回调
 
-        从 config.api 段读取来源配置：
+        从 config.analysis.{retrieval,post_analysis} 读取来源配置：
           - source=astrbot: 外部读取 AstrBot cmd_config.json
             astrbot_source_id 指定 provider source ID，留空自动匹配
-          - source=custom: 使用 api.* 中的 custom_url / custom_token / custom_model
+          - source=custom: 使用 custom_url / custom_token / custom_model
+
+        AstrBot 配置运行时不变，首次构建后缓存复用。
         """
-        api_cfg = self.config.get("api", {})
+        if self._provider_callbacks is not None:
+            return self._provider_callbacks
+        analysis_cfg = self.config.get("analysis", {})
 
         def _read_api(key: str) -> tuple:
             """读取某功能的 API 配置，返回 (token, url, model, source, src_id)"""
-            sub = api_cfg.get(key, {})
+            sub = analysis_cfg.get(key, {})
             source = sub.get("source", "astrbot")
             token = sub.get("custom_token", "") or None if source == "custom" else None
             url = sub.get("custom_url", "https://api.openai.com/v1")
@@ -256,6 +255,7 @@ class RcmsPlugin(star.Star):
                 return resp.choices[0].message.content or "{}"
             llm_callable = _llm
 
+        self._provider_callbacks = (llm_callable, emb_callable)
         return llm_callable, emb_callable
 
     def _get_rcms(self, persona_name: str) -> MinimalRCMS:
@@ -396,6 +396,11 @@ class RcmsPlugin(star.Star):
             logger.warning(f"RCMS: 日志轮换失败 ({e})")
 
     async def initialize(self) -> None:
+        # 预热 default 人格：第一条消息不用等建库
+        try:
+            self._get_rcms("default")
+        except Exception:
+            pass
         logger.info("RCMS: 插件初始化完成")
 
     async def terminate(self) -> None:
@@ -510,9 +515,12 @@ class RcmsPlugin(star.Star):
                             context_prompt=context_prompt,
                             system_prompt=system_prompt)
 
-        rcms._post_update(user_id, session_id, user_input, stance, reply)
+        # 事后处理异步化（不阻塞回复）
+        asyncio.create_task(self._async_post_update(
+            rcms, user_id, session_id, user_input, stance, reply
+        ))
 
-        # 异步触发事后 ANALYSIS + 记忆向量化（fire-and-forget，不阻塞回复）
+        # 异步触发 ANALYSIS + 记忆向量化（fire-and-forget）
         analysis_cfg = self._get_analysis_config()
         retrieval_cfg = analysis_cfg.get("retrieval", {})
         post_cfg = analysis_cfg.get("post_analysis", {})
@@ -546,5 +554,13 @@ class RcmsPlugin(star.Star):
             if vec:
                 rcms._store_embedding(user_id, rec_id, vec)
                 rcms._load_emb_cache(user_id)
+        except Exception:
+            pass
+
+    async def _async_post_update(self, rcms: MinimalRCMS, user_id: str, session_id: str,
+                                  user_input: str, stance: str, reply: str):
+        """异步执行事后更新，不阻塞 LLM 回复返回"""
+        try:
+            rcms._post_update(user_id, session_id, user_input, stance, reply)
         except Exception:
             pass
