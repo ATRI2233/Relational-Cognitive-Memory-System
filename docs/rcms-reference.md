@@ -23,26 +23,24 @@
   │
   ├─ 5. save_turn → chat_history（规则 importance 计算）
   │
-  ├─ 6. post_update_rules（纯规则）
-  │      ├─ 写规则摘要（importance=0.3）到 cognitive_distill
-  │      ├─ 关键词共现建图
-  │      └─ 悬案自动过期检查
+  ├─ 6. post_update_rules（async）
+  │      └─ 悬案自动过期检查（不写任何记忆/图数据）
   │
-  └─ 7. check_distill_needed（每 30 轮 / 60 分钟）
-         └─ _run_distill_analysis
+  └─ 7. check_distill_needed（每 {max_turns} 轮 / {max_minutes} 分钟）
+         └─ _run_distill_analysis（async）
                 ├─ LLM 一次调用 → 叙事摘要 + 9 维 JSON
-                ├─ _apply_distill
-                │     ├─ 写入精炼摘要（importance=0.8）
-                │     ├─ 归档悬案
+                ├─ _apply_distill（async）
+                │     ├─ 写入精炼摘要（importance=0.8）+ embedding 存储
+                │     ├─ 归档悬案（importance=0.5~0.7）
                 │     ├─ 清理过期 transient 记忆
-                │     ├─ 规则摘要归并（保留最新 10 条 importance=0.3）
-                │     └─ 图衰减 + 孤立节点清理
+                │     ├─ 清理旧版规则摘要（保留最新 10 条 importance=0.3，兼容旧数据）
+                │     └─ 图衰减（所有边 ×0.8）+ 孤立节点清理
                 └─ _apply_analysis
                       ├─ 用户状态 → session_state.stance
                       ├─ 用户画像（traits/结构化字段/边界）
                       ├─ 实体 → 图谱语义边
-                      ├─ 事件记忆 + 悬案
-                      └─ key_facts → cognitive_distill
+                      ├─ 悬案归档
+                      └─ key_facts → cognitive_distill（importance 保底 0.5）+ embedding 存储
 ```
 
 ---
@@ -61,13 +59,11 @@
 
 ### 蒸馏记忆：cognitive_distill
 
-三通道中通道 1 和通道 2 的数据源。混合存储两种条目：
+三通道中通道 1 和通道 2 的数据源。混合存储多种条目：
 
 | 条目类型 | importance | 写入时机 | 用途 |
 |----------|-----------|----------|------|
-| 规则摘要 | 0.3 | `post_update_rules` 每轮 | 短期对话锚点 |
 | LLM 精炼摘要 | 0.8 | `_apply_distill` 蒸馏触发 | 长期记忆核心 |
-| 事件记忆 | ≥ 0.5 | `_apply_analysis` | 重要事件存档 |
 | 悬案归档 | 0.5~0.7 | 过期归档 / 蒸馏归档 | 未完成话题存档 |
 | key_facts（永久） | ≥ 0.5 | `_apply_analysis` | 用户持久特质（temporal=permanent） |
 | key_facts（临时） | ≥ 0.5 | `_apply_analysis` | 临时事件，expires_at 到期自动清理 |
@@ -93,14 +89,29 @@
 
 ### 图谱：memory_graph_nodes + memory_graph_edges
 
-建图双路径：
+单来源：LLM 蒸馏 `entities` 字段。每个实体节点带 `entity_type`（person/place/concept/activity/auto），每条边带 `relation`（语义关系）和 `created_at`（创建时间）。
 
-| 路径 | 数据来源 | 边类型 |
-|------|----------|--------|
-| 规则共现 | `_build_graph_from_memory` 关键词提取 | 纯共现边（relation = ''） |
-| LLM 语义 | `_apply_analysis` entities 字段 | 语义边（relation = '朋友'/'同事'/...） |
+写入格式：
+```json
+{"name": "小王", "type": "person", "relations": [
+  {"target": "摄影", "relation": "喜欢"},
+  {"target": "小李", "relation": "同事"}
+]}
+```
 
-通道 3 展示优先语义边，无 relation 的共现边降权。
+每个实体创建节点，对每个 relation 创建正向边 + 自动反向边（通过 `_INVERSE_RELATIONS` 映射）：
+
+| 正向 relation | 反向 relation |
+|--------------|--------------|
+| 朋友 | 朋友 |
+| 喜欢 | 被喜欢 |
+| 讨厌 | 被讨厌 |
+| 居住 | 居住地于 |
+| 属于 | 包含 |
+| 养了 | 主人是 |
+| (其他) | 相关于 |
+
+通道 3 展示优先有 relation 的语义边（额外 +2 排序分）。
 
 ### 共同语境：shared_context
 
@@ -181,18 +192,26 @@ speech_quirks → 以 "[口癖] 内容" 格式加入同一 traits 池，同等�
 
 写入自 LLM `entities`：
 ```json
-{"name": "小王", "relation": "朋友", "fact": "也喜欢摄影"}
-→ 图节点「小王」--[朋友]-->「也喜欢摄影」
+{"name": "小王", "type": "person", "relations": [
+  {"target": "摄影", "relation": "喜欢"},
+  {"target": "小李", "relation": "同事"}
+]}
 ```
+
+每个 relation 自动生成正向边 + 反向边（`_INVERSE_RELATIONS`）。图节点带 `entity_type`，边带 `created_at`。
 
 通道 3 召回时输出：
 ```
-[图谱] 「小王」--[朋友]--> 「也喜欢摄影」
+[图谱] 「小王」--[喜欢]--> 「摄影」
+[图谱] 「小王」--[同事]--> 「小李」
 ```
 
-`narrative_context` 展示：
+`narrative_context` 展示（按 entity_type 分组）：
 ```
-他提过的人/事: 小王 (朋友·也喜欢摄影)
+共同语境:
+  · 他提过的人: 小王 (同事)
+  · 他提过的概念: 摄影、独立游戏
+  · 最近总聊: 工作压力
 ```
 
 ---
@@ -219,8 +238,8 @@ session_boost = 0.3 if 本条 session_id == 当前 session_id else 0.0
 数据源：`cognitive_distill`
 
 ```
-① 时间词硬过滤（今天/昨天/最近/上周…）
-② 关键词提取 + 图扩散扩词（BFS depth=2, 每层激活衰减 ×0.5, 共现边额外 ×0.1）
+① 关键词提取（jieba 中文分词 + 停用词过滤）
+② 图扩散扩词（BFS depth=2, 每层激活衰减 ×0.5, 共现边额外 ×0.1）
 ③ 向量余弦检索（原词 + 扩散词拼装 query）
 ④ 关键词 SQL 候选 + 时间过滤
 ⑤ 评分:
@@ -238,6 +257,10 @@ session_boost = 0.3 if 本条 session_id == 当前 session_id else 0.0
 
 当前情绪读取自最近一条 `cognitive_distill.mood`（蒸馏 LLM 写入），不走单独情绪表。
 
+**中文分词**: `_extract_keywords` 使用 `jieba.lcut()` 对中文片段分词，结合 `_STOP_WORDS`（64 个停用词，含时间副词、代词、虚词、语气词、纯情绪感知词）和 `_TRIVIAL_MARKERS` 过滤无效关键词。无中文的 token 走原始正则分割。英文/数字 token 长度 > 1 且不在停用词表中则保留。
+
+**向量存储挂载点**: `_store_embedding` 在两处写入点分别调用—— `_apply_distill`（精炼摘要）、`_apply_analysis`（key_facts + danglings）。所有新写入 `cognitive_distill` 的条目都立即生成向量。
+
 ### 通道 3：图谱骨架
 
 数据源：`memory_graph_edges`
@@ -246,7 +269,12 @@ session_boost = 0.3 if 本条 session_id == 当前 session_id else 0.0
 输入关键词 → 图节点 → BFS 取关联边
 排序: relation != '' 优先（额外 +2），其次 weight DESC
 输出: 「A」--[关系]-->「B」 或 「A」与「B」常被一起提及（权重 x.x）
+tag 由融合器添加为 skeleton（不在内容前缀打 [图谱] 标记）
 ```
+
+### 叙事摘要保底
+
+`retrieve_memories` 最终输出中如果三通道所有内容都不足 150 字（无叙事密度），自动从 `cognitive_distill` 拉取一条 importance ≥ 0.7 的最新蒸馏摘要作为保底，确保 LLM 至少看到一条有上下文连贯性的记忆。
 
 ### 融合器 fusion
 
@@ -256,6 +284,7 @@ Phase 2: 剩余名额按分排序填充
 全程: MD5 内容 hash 去重（strip 后全文 hash）
 截断: total_cap 条
 返回: [(content, tag), ...]  tag ∈ {recent, resonance, skeleton}
+      保持首次出现通道顺序（不是固定 recent→resonance→skeleton）
 ```
 
 ### 索引
@@ -314,7 +343,7 @@ Phase 2: 剩余名额按分排序填充
     "boundaries": ["雷区"],
     "dangling_threads": ["未完成话题"],
     "importance": 0.0~1.0,
-    "entities": [{"name":"","relation":"","fact":""}]
+    "entities": [{"name": "小王", "type": "person", "relations": [{"target": "摄影", "relation": "喜欢"}]}]
   }
 }
 ```
@@ -326,8 +355,8 @@ Phase 2: 剩余名额按分排序填充
 2. 更新 `session_state.last_distill_turn/at`
 3. 归档当前悬案到 `cognitive_distill`
 3b. 清理已过期的 transient 记忆（expires_at ≤ 当前时间，不限 importance）
-4. 规则摘要归并：保留该用户最新 10 条 importance=0.3 的规则摘要，其余删除（事件/精炼摘要/悬案归档不碰）
-5. 图维护：共现边 weight × 0.8，< 0.3 删除；孤立节点删除
+4. 清理旧版规则摘要：保留该用户最新 10 条 importance=0.3 的旧规则摘要，其余删除（兼容旧数据，新系统不再写入）
+5. 图维护：所有边 weight × 0.8，< 0.3 删除；孤立节点删除
 
 **_apply_analysis：**
 1. 焦点话题更新（topic_shift + key_points → focus_topic）
@@ -337,7 +366,7 @@ Phase 2: 剩余名额按分排序填充
 5. 结构化字段覆盖写（preferences/style/identity/core/boundaries）
 6. shared_jokes 写入 shared_context
 7. dangling_threads 写入 cognitive_distill + session_state
-8. entities 写入图谱语义边
+8. entities 写入图谱语义边（含 entity_type + 正向/反向 relation + created_at）
 9. 高重要性事件（importance ≥ 0.5）写入 cognitive_distill
 10. key_facts 写入 cognitive_distill（importance 保底 0.5，不被碎片清理误删）
 
@@ -376,13 +405,18 @@ Phase 2: 剩余名额按分排序填充
 
 共同语境:
   · 梗: 喵 → 哈基米梗
-  · 他提过的人/事: 小王 (朋友·也喜欢摄影)
+  · 他提过的人: 小王 (同事)
+  · 他提过的概念: 摄影、独立游戏
   · 最近总聊: 工作压力
 
 相关记忆:
-  · [最近] {最近发生的记忆条目}
-  · [共鸣] {情绪共振的记忆条目}
-  · [图谱] {图扩散召回的实体关系}
+【时间·重要性】
+  · {通道 1 条目}
+【语义检索】
+  · {通道 2 条目}
+  · {通道 2 条目}
+【图谱关联】
+  · {通道 3 条目}
 
 未完成: ↘ 面试结果
 
@@ -417,7 +451,7 @@ Phase 2: 剩余名额按分排序填充
 | shared_jokes | `shared_context`（追加/计数） |
 | boundaries | `identity_memory.boundaries`（覆盖写） |
 | dangling_threads | `cognitive_distill` + `session_state` |
-| entities | 图谱边 `memory_graph_edges.relation` |
+| entities | 图谱节点 `memory_graph_nodes(entity_type)` + 图谱边 `memory_graph_edges(relation, created_at)`，每条 relation 生成正向 + 反向边 |
 | key_facts | `cognitive_distill`（importance 保底 0.5，不被碎片清理） |
 | key_facts_structured | `cognitive_distill`（content → content, temporal → expires_at 计算） |
 | importance ≥ 0.5 | `cognitive_distill`（事件存档） |
@@ -448,6 +482,9 @@ Phase 2: 剩余名额按分排序填充
 | `Embedding: ok dim=...` | 向量生成成功（首次需等待） |
 
 ### 数据库检查
+
+插件模式 DB 路径：`plugins/rcms-astrbot/data/rcms_memory_*.db`
+Standalone 模式：由 `db_path` 参数指定（默认 `memory.db`）
 
 ```bash
 # 蒸馏记忆概览
@@ -551,6 +588,21 @@ sqlite3 data/rcms_memory_*.db "
 | 当前 | `retrieval+post_analysis.custom_api_key/base_url`（旧 `custom_token/url` 兼容） |
 | 当前 | `post_analysis.max_turns/max_minutes/dangling_expire_turns` 新增可配置 |
 | 当前 | `post_analysis.mode/sampling` 已删除 |
+| 当前 | 中文分词: `_extract_keywords` 接入 jieba，加 `_STOP_WORDS` 64 词 |
+| 当前 | 三通道展示: `narrative_context` 改为分组区块标题（【时间·重要性】/【语义检索】/【图谱关联】），按融合分排序 |
+| 当前 | 事件记忆移除: 旧 step 9（`summary[:80]` 写入事件内存）已删除，key_facts 承载同等功能 |
+| 当前 | 叙事摘要保底: 三通道全部短于 150 字时自动拉取一条 importance ≥ 0.7 的蒸馏摘要 |
+| 当前 | 向量存储: `_store_embedding` 挂载到 _apply_distill / _apply_analysis 两处（post_update_rules 不再写入） |
+| 当前 | 插件 DB 路径: `plugins/rcms-astrbot/data/` 而非项目根目录 `data/` |
+| 当前 | post_update_rules / _apply_distill 改为 async |
+| 当前 | key_facts prompt: 要求保留具体细节（时间/原因/经过/结果）而非干巴巴的单句摘要 |
+| 当前 | entities 格式: 从 `{"name","relation","fact"}` 改为 `{"name","type","relations":[{"target","relation"}]}`，支持多关系 + 反向边 |
+| 当前 | 图建边: 从双路径（规则共现 + LLM 语义）改为纯 LLM entities 单来源 |
+| 当前 | 图节点: 新增 `entity_type` 列（person/place/concept/activity/auto） |
+| 当前 | 图边: 新增 `created_at` 列，所有边统一衰减 ×0.8（不再区分共现/语义） |
+| 当前 | mood 情绪共振修复: `_apply_distill` 写入 `cognitive_distill.mood/mood_intensity`，通道 2 情绪共振现在有数据源 |
+| 当前 | post_update_rules 精简: 仅做 identity init + session update + 悬案过期检查，不再写入任何记忆/图数据 |
+| 当前 | narrative_context 实体展示: 从平铺"他提过的人/事"改为按 entity_type 分组展示（人/地方/概念/活动） |
 
 ### 已移除完整清单
 
@@ -566,3 +618,6 @@ sqlite3 data/rcms_memory_*.db "
 - 规则分析层（stance/momentum/engagement）
 - 常量 `_ARC_STAGES` / `_RESIDUE_DECAY` / `_last_silent_recall`
 - 配置项 `mode` / `sampling`（旧每轮分析开关）
+- 事件内存 step 9（`summary[:80]` → cognitive_distill 事件存档，由 key_facts 替代）
+- 规则摘要（importance=0.3）写入 `cognitive_distill`（post_update_rules 每轮写，已移除）
+- `_build_graph_from_memory`（关键词共现建图，已废弃为 no-op）

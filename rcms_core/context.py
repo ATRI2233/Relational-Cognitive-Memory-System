@@ -138,16 +138,22 @@ class ContextMixin:
 
             entities = long_term.get('entities', [])
             if entities:
-                ent_strs = []
-                for e in entities[:4]:
-                    if not e.get('name'):
+                grouped_ents = {}
+                seen_names = set()
+                for e in entities:
+                    name = e.get('name', '')
+                    if not name or name in seen_names:
                         continue
-                    tag = ""
-                    if e.get('relation') or e.get('fact'):
-                        tag = " (" + "·".join(filter(None, [e.get('relation', ''), e.get('fact', '')])) + ")"
-                    ent_strs.append(f"{e['name']}{tag}")
-                if ent_strs:
-                    ctx_lines.append(f"他提过的人/事: {'、'.join(ent_strs)}")
+                    seen_names.add(name)
+                    etype = e.get('type', 'auto')
+                    if etype not in grouped_ents:
+                        grouped_ents[etype] = []
+                    tag = f" ({e.get('relation', '')})" if e.get('relation') else ""
+                    grouped_ents[etype].append(f"{name}{tag}")
+                type_labels = {'person': '人', 'place': '地方', 'concept': '概念', 'activity': '活动', 'auto': '相关'}
+                for etype, items in grouped_ents.items():
+                    label = type_labels.get(etype, etype)
+                    ctx_lines.append(f"他提过的{label}: {'、'.join(items[:4])}")
             if focus:
                 ctx_lines.append(f"最近总聊: {focus}")
         if ctx_lines:

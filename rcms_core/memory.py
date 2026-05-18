@@ -20,12 +20,12 @@ class MemoryMixin:
         ).fetchone()
         recent_events = self.conn.execute("SELECT summary, importance FROM cognitive_distill WHERE user_id = ? AND summary IS NOT NULL ORDER BY created_at DESC LIMIT 2", (user_id,)).fetchall()
         entities = self.conn.execute("""
-            SELECT n1.label, e.relation, n2.label
+            SELECT n1.label, n1.entity_type, e.relation, n2.label
             FROM memory_graph_edges e
             JOIN memory_graph_nodes n1 ON e.from_node_id = n1.node_id
             JOIN memory_graph_nodes n2 ON e.to_node_id = n2.node_id
             WHERE n1.user_id = ? AND e.relation != ''
-            ORDER BY e.weight DESC LIMIT 5
+            ORDER BY e.weight DESC LIMIT 10
         """, (user_id,)).fetchall()
         shared_rows = self.conn.execute(
             "SELECT context_body FROM shared_context WHERE user_id = ? ORDER BY context_id DESC LIMIT 4",
@@ -56,12 +56,12 @@ class MemoryMixin:
             'self_identity': _safe_json(identity[3], []) if identity else [],
             'boundaries': _safe_json(identity[4], []) if identity else [],
             'core_identity': _safe_json(identity[5], {}) if identity else {},
-            'entities': [{'name': r[0], 'relation': r[1], 'fact': r[2]} for r in entities],
+            'entities': [{'name': r[0], 'type': r[1] or 'auto', 'relation': r[2], 'fact': r[3]} for r in entities],
             'shared_contexts': [r[0] for r in shared_rows],
         }
 
     async def post_update_rules(self, user_id: str, session_id: str, user_input: str, stance: str, reply: str = ""):
-        """纯规则事后更新（不含 LLM 蒸馏触发）"""
+        """纯管理操作（不做任何 LLM 替代的写入）"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self._init_identity(user_id)
         self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
@@ -80,23 +80,7 @@ class MemoryMixin:
                         self._archive_dangling(user_id, session_id, now_str, reason="过期")
             except Exception:
                 pass
-        new_rule_id = None
-        if reply and len(user_input) > 15:
-            summary = f"{user_input[:80]} → {reply[:80]}"
-            recent = self.conn.execute("SELECT content FROM cognitive_distill WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", (session_id,)).fetchone()
-            if not recent or recent[0] != summary:
-                self.conn.execute(
-                    "INSERT INTO cognitive_distill (user_id, session_id, content, importance, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, session_id, summary, 0.3, now_str),
-                )
-                new_rule_id = self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                self._build_graph_from_memory(user_id, summary)
         self.conn.commit()
-        # 规则摘要也需要向量，否则向量检索通道永远找不到它们
-        if new_rule_id and summary:
-            vec = await self._get_embedding(summary[:512])
-            if vec:
-                self._store_embedding(user_id, new_rule_id, vec)
 
     def check_distill_needed(self, session_id: str) -> tuple:
         """检查是否需要触发蒸馏。返回 (triggered, last_turn, turn_count, snapshot_text)"""
@@ -131,13 +115,13 @@ class MemoryMixin:
         snapshot_text = "\n".join(lines[:30])
         return (True, last_turn, turn_count, snapshot_text)
 
-    async def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str):
-        """写入 LLM 蒸馏摘要 + 过期清理 + 低重要性碎片清理 + 图谱维护"""
+    async def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str, mood: str = "", mood_intensity: float = 0.0):
+        """写入 LLM 蒸馏摘要（带 mood，供通道 2 情绪共振）+ 过期清理 + 图谱维护"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        # 1. 写入蒸馏摘要
+        # 1. 写入蒸馏摘要（带 mood/mood_intensity）
         self.conn.execute(
-            "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, session_id, summary, summary[:80], 0.8, now_str),
+            "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, mood, mood_intensity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, session_id, summary, summary[:80], 0.8, mood, mood_intensity, now_str),
         )
         distill_id = self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         # 2. 更新 last_distill_turn/at
@@ -154,7 +138,7 @@ class MemoryMixin:
         ).rowcount
         if expired:
             logger.info(f"RCMS: 已清理 {expired} 条过期记忆 user={user_id}")
-        # 4. 规则摘要归并：保留最新 KEEP_RULE_SUMMARY 条 importance=0.3 的碎片
+        # 4. 清理遗漏的旧规则摘要（兼容旧数据，新系统不再写入 importance=0.3）
         KEEP_RULE_SUMMARY = 10
         self.conn.execute("""
             DELETE FROM cognitive_distill WHERE user_id = ? AND importance = 0.3
@@ -174,17 +158,16 @@ class MemoryMixin:
         logger.info(f"RCMS: 蒸馏完成 user={user_id} session={session_id} turn={turn_count} summary={summary[:60]}")
 
     def _maintain_graph(self, user_id: str):
-        """图衰减与清理：共现边降权删除 + 孤立节点清理"""
-        # 共现边 weight 衰减 0.8，低于 0.3 的删除
+        """图衰减与清理：语义边也衰减，孤立节点清理"""
+        # 所有边 weight 衰减 0.8
         self.conn.execute("""
             UPDATE memory_graph_edges SET weight = ROUND(weight * 0.8, 2)
             WHERE from_node_id IN (SELECT node_id FROM memory_graph_nodes WHERE user_id = ?)
         """, (user_id,))
         dead_edges = self.conn.execute("""
-            DELETE FROM memory_graph_edges WHERE relation = '' AND weight < 0.3
+            DELETE FROM memory_graph_edges WHERE weight < 0.3
         """).rowcount
-        # 语义边（relation != ''）不做自动删除，留待 LLM 蒸馏决策
-        # 孤立节点清理（无任何边连接的节点）
+        # 孤立节点清理
         orphan_nodes = self.conn.execute("""
             DELETE FROM memory_graph_nodes WHERE user_id = ? AND node_id NOT IN (
                 SELECT from_node_id FROM memory_graph_edges
@@ -222,14 +205,5 @@ class MemoryMixin:
             pass
 
     def _build_graph_from_memory(self, user_id: str, content: str):
-        kws = list(dict.fromkeys(self._extract_keywords(content, max_kw=8)))
-        if len(kws) < 2:
-            return
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        node_ids = [self._upsert_graph_node(user_id, kw, now_str) for kw in kws]
-        for i in range(len(node_ids)):
-            for j in range(i + 1, len(node_ids)):
-                a, b = sorted((node_ids[i], node_ids[j]))
-                if a != b:
-                    self._upsert_graph_edge(a, b, now_str)
-        self.conn.commit()
+        """已废弃——不再写入规则共现边，图仅由 LLM 蒸馏 entities 填充语义边"""
+        pass

@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS shared_context (
             except Exception:
                 pass
         try:
+            self.conn.execute("ALTER TABLE memory_graph_nodes ADD COLUMN entity_type TEXT DEFAULT 'auto'")
+        except Exception:
+            pass
+        try:
+            self.conn.execute("ALTER TABLE memory_graph_edges ADD COLUMN created_at TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ch_session ON chat_history(session_id)")
         except Exception:
             pass

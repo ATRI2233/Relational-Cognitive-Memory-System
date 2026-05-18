@@ -11,6 +11,16 @@ logger = logging.getLogger("rcms")
 class AnalysisMixin:
     """LLM 事后分析：配置 / prompt / 运行 / 写入"""
 
+    _INVERSE_RELATIONS = {
+        "朋友": "朋友",
+        "同事": "同事",
+        "喜欢": "被喜欢",
+        "讨厌": "被讨厌",
+        "居住": "居住地于",
+        "属于": "包含",
+        "养了": "主人是",
+    }
+
     def _get_post_analysis_config(self) -> dict:
         pa = self.analysis_config.get("post_analysis", {})
         return {
@@ -158,17 +168,23 @@ class AnalysisMixin:
                 (json.dumps({"threads": data["dangling_threads"], "turn": current_turn}, ensure_ascii=False), session_id),
             )
 
-        # 8. Entities → 图谱边（entity_relations 已废弃，统一由图谱带 relation 的边承载）
+        # 8. Entities → 图谱（带 type 的多关系节点 + 反向边）
         for ent in data.get("entities", []):
-            from_name = ent.get("name", "")
-            rel = ent.get("relation", "")
-            to_name = ent.get("fact", "")
-            if not from_name or not rel or not to_name:
+            name = ent.get("name", "")
+            entity_type = ent.get("type", "auto")
+            relations = ent.get("relations", [])
+            if not name or not relations:
                 continue
-            from_id = self._upsert_graph_node(user_id, from_name, now_str)
-            to_id = self._upsert_graph_node(user_id, to_name, now_str)
-            if from_id != to_id:
-                self._upsert_graph_edge(from_id, to_id, now_str, relation=rel)
+            from_id = self._upsert_graph_node(user_id, name, now_str, entity_type=entity_type)
+            for rel in relations:
+                target = rel.get("target", "")
+                relation = rel.get("relation", "")
+                if not target or not relation:
+                    continue
+                to_id = self._upsert_graph_node(user_id, target, now_str)
+                self._upsert_graph_edge(from_id, to_id, now_str, relation=relation, created_at=now_str)
+                inv = self._INVERSE_RELATIONS.get(relation, "相关于")
+                self._upsert_graph_edge(to_id, from_id, now_str, relation=inv, created_at=now_str)
 
         # 10. Key facts → cognitive_distill（保底 importance 0.5 防止被碎片清理删除）
         importance = data.get("importance", 0.0)
@@ -257,8 +273,10 @@ class AnalysisMixin:
             logger.warning(f"DISTILL: invalid JSON: {content[:200]}")
             return
 
-        # 写入蒸馏摘要 + 清理碎片
-        await self._apply_distill(user_id, session_id, last_turn, turn_count, summary)
+        # 写入蒸馏摘要 + 清理碎片（带 mood，让通道 2 情绪共振真正工作）
+        mood = analysis.get("mood", "")
+        mood_intensity = analysis.get("mood_intensity", 0.0)
+        await self._apply_distill(user_id, session_id, last_turn, turn_count, summary, mood, mood_intensity)
 
         # 写入 9 维分析（情感/特质/实体等）
         await self._apply_analysis(user_id, session_id, summary[:80], "", analysis)
@@ -321,7 +339,9 @@ class AnalysisMixin:
     "dangling_threads": ["未完成的话题"],
     "importance": 0.0~1.0,
     "entities": [
-      {{"name": "人物/事物名", "relation": "与用户的关系", "fact": "关键事实"}}
+      {{"name": "人物/事物名", "type": "person|place|concept|activity", "relations": [
+        {{"target": "相关的人/物", "relation": "朋友|喜欢|讨厌|属于|..."}}
+      ]}}
     ]
   }}
 }}
@@ -330,5 +350,5 @@ class AnalysisMixin:
 · summary 要像人聊天时复述事情一样，有叙事感
 · key_facts 与 key_facts_structured 任选一种输出，后者可指定时效性
 · key_facts_structured[].temporal 为 permanent 永久保留，transient 到期自动清理
-· entities 优先提取反复提及或带有强烈情感的人物/事物
+· entities 优先提取反复提及或带有强烈情感的人物/事物，type 分类（person/place/concept/activity），relations 列出该实体与其他事物的关系
 · 只输出 JSON，不要其他文字"""

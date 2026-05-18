@@ -325,24 +325,26 @@ class RetrievalMixin:
 
     # ── 图操作 helper（消除 duplication） ──
 
-    def _upsert_graph_node(self, user_id: str, label: str, now_str: str) -> int:
+    def _upsert_graph_node(self, user_id: str, label: str, now_str: str, entity_type: str = 'auto') -> int:
         row = self.conn.execute(
-            "SELECT node_id FROM memory_graph_nodes WHERE user_id = ? AND label = ?",
+            "SELECT node_id, entity_type FROM memory_graph_nodes WHERE user_id = ? AND label = ?",
             (user_id, label),
         ).fetchone()
         if row:
+            old_type = row[1] or 'auto'
+            new_type = entity_type if entity_type != 'auto' else old_type
             self.conn.execute(
-                "UPDATE memory_graph_nodes SET freq = freq + 1, last_seen = ? WHERE node_id = ?",
-                (now_str, row[0]),
+                "UPDATE memory_graph_nodes SET freq = freq + 1, last_seen = ?, entity_type = ? WHERE node_id = ?",
+                (now_str, new_type, row[0]),
             )
             return row[0]
         cur = self.conn.execute(
-            "INSERT INTO memory_graph_nodes (user_id, label, freq, last_seen) VALUES (?, ?, 1, ?)",
-            (user_id, label, now_str),
+            "INSERT INTO memory_graph_nodes (user_id, label, entity_type, freq, last_seen) VALUES (?, ?, ?, 1, ?)",
+            (user_id, label, entity_type, now_str),
         )
         return cur.lastrowid
 
-    def _upsert_graph_edge(self, from_id: int, to_id: int, now_str: str, relation: str = ""):
+    def _upsert_graph_edge(self, from_id: int, to_id: int, now_str: str, relation: str = "", created_at: str = ""):
         if from_id == to_id:
             return
         existing = self.conn.execute(
@@ -359,8 +361,8 @@ class RetrievalMixin:
             )
         else:
             self.conn.execute(
-                "INSERT INTO memory_graph_edges (from_node_id, to_node_id, weight, encounter_count, last_seen, relation) VALUES (?, ?, 1.0, 1, ?, ?)",
-                (from_id, to_id, now_str, relation),
+                "INSERT INTO memory_graph_edges (from_node_id, to_node_id, weight, encounter_count, last_seen, relation, created_at) VALUES (?, ?, 1.0, 1, ?, ?, ?)",
+                (from_id, to_id, now_str, relation, created_at or now_str),
             )
 
     # ── 辅助：原始工具 ──
