@@ -14,6 +14,10 @@ import os
 import shutil
 import sys
 
+# Windows GBK 兼容
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 # 源文件: RCMS 项目根目录
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SRC_PLUGIN = os.path.join(_HERE, "plugins", "rcms-astrbot")
@@ -192,7 +196,7 @@ def _forward_api_config(rcms_config_path: str, astrbot_root: str):
         json.dump(rcms_cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
-    print(f"  [✓] API 配置已导入")
+    print(f"  [OK] API 配置已导入")
     print(f"      Embedding: url={analysis_retrieval['custom_url']} model={analysis_retrieval['custom_model']}")
     print(f"      LLM:       url={analysis_post['custom_url']} model={analysis_post['custom_model']}")
     if emb_key or llm_src_id:
@@ -274,7 +278,7 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
                     stype = s.get("type", "?")
                     base = s.get("api_base", "https://api.openai.com/v1")
                     keys = s.get("key", [])
-                    has_key = "✓" if (keys and keys[0]) else "✗"
+                    has_key = "Y" if (keys and keys[0]) else "N"
                     sources_found.append((sid, stype, base, has_key))
             except Exception:
                 pass
