@@ -130,8 +130,11 @@ class RcmsPlugin(star.Star):
             sub = cfg.get(key, {})
             if isinstance(sub, dict):
                 merged = dict(sub)
-                merged["custom_api_key"] = sub.get("custom_token", "")
-                merged["custom_base_url"] = sub.get("custom_url", "https://api.openai.com/v1")
+                # 新 key 优先，旧 key 回退兼容
+                if not merged.get("custom_api_key"):
+                    merged["custom_api_key"] = sub.get("custom_token", "")
+                if not merged.get("custom_base_url"):
+                    merged["custom_base_url"] = sub.get("custom_url", "https://api.openai.com/v1")
                 cfg[key] = merged
         return cfg
 
@@ -153,8 +156,8 @@ class RcmsPlugin(star.Star):
             """读取某功能的 API 配置，返回 (token, url, model, source, src_id)"""
             sub = analysis_cfg.get(key, {})
             source = sub.get("source", "astrbot")
-            token = sub.get("custom_token", "") or None if source == "custom" else None
-            url = sub.get("custom_url", "https://api.openai.com/v1")
+            token = (sub.get("custom_api_key", "") or sub.get("custom_token", "")) or None if source == "custom" else None
+            url = sub.get("custom_base_url", "") or sub.get("custom_url", "https://api.openai.com/v1")
             model = sub.get("custom_model", "")
             return token, url, model, source, sub.get("astrbot_source_id", "")
 
@@ -429,24 +432,12 @@ class RcmsPlugin(star.Star):
         sender_id = event.get_sender_id()
         user_id = sender_id or self.user_id
 
-        # 检索记忆 + 长期上下文
-        analysis_cfg = self._get_analysis_config()
-        retrieval_cfg = analysis_cfg.get("retrieval", {})
-        use_emb = retrieval_cfg.get("enabled", False)
-        if use_emb:
-            memories, emb_source = await rcms.retrieve_by_embedding(user_id, user_input, limit=2)
-            logger.info(f"RCMS: [{persona_name}] emb_retrieve source={emb_source} hits={len(memories)}")
-            # embedding 暂无缓存时降级到关键词
-            if not memories and emb_source in ("no_vectors", "emb_failed"):
-                memories = await rcms.retrieve_memories(user_id, user_input, 'engaged')
-                logger.info(f"RCMS: [{persona_name}] emb_fallback kw hits={len(memories)}")
-        else:
-            memories = await rcms.retrieve_memories(user_id, user_input, 'engaged')
-            logger.info(f"RCMS: [{persona_name}] kw_retrieve hits={len(memories)}")
+        # 三通道融合召回（通道 1：原始消息 × 时间，通道 2：蒸馏语义 + 情绪，通道 3：图谱骨架）
+        memories = await rcms.retrieve_memories(user_id, user_input, 'engaged')
+        logger.info(f"RCMS: [{persona_name}] retrieve_memories hits={len(memories)}")
         long_term = rcms._load_long_term_context(user_id)
-        arc = long_term.get("arc_stage", "stranger")
         traits_count = len(long_term.get("identity_traits", []))
-        logger.info(f"RCMS: [{persona_name}] context arc={arc} traits={traits_count} events={len(long_term.get('events',[]))} shared={len(long_term.get('shared_contexts',[]))} entities={len(long_term.get('entities',[]))}")
+        logger.info(f"RCMS: [{persona_name}] context traits={traits_count} shared={len(long_term.get('shared_contexts',[]))} entities={len(long_term.get('entities',[]))}")
         context_part = rcms.narrative_context('open', session_id,
                                                memories=memories, long_term=long_term)
 
@@ -519,23 +510,17 @@ class RcmsPlugin(star.Star):
             rcms, user_id, session_id, user_input, stance, reply
         ))
 
-        # 异步触发 ANALYSIS + 记忆向量化（fire-and-forget）
+        # 蒸馏分析 + 记忆向量化（fire-and-forget）
         analysis_cfg = self._get_analysis_config()
         retrieval_cfg = analysis_cfg.get("retrieval", {})
-        post_cfg = analysis_cfg.get("post_analysis", {})
 
         # Embedding：新记忆入库后异步向量化
-        if retrieval_cfg.get("enabled", False) and len(user_input) > 15:
+        if retrieval_cfg.get("embedding_enabled", retrieval_cfg.get("enabled", False)) and len(user_input) > 15:
             logger.debug(f"RCMS: [{persona_name}] schedule_embed")
             asyncio.create_task(self._delayed_embed(rcms, user_id, session_id, user_input))
 
-        # ANALYSIS LLM
-        if post_cfg.get("mode") == "llm":
-            logger.info(f"RCMS: [{persona_name}] schedule_analysis mode=llm sampling={post_cfg.get('sampling',0)}")
-            long_term = rcms._load_long_term_context(user_id)
-            asyncio.create_task(rcms._run_analysis(user_id, session_id, user_input, reply, long_term))
-        else:
-            logger.debug(f"RCMS: [{persona_name}] post_analysis=rule (skip LLM)")
+        # 蒸馏检查：post_update_rules 后触发 LLM 蒸馏分析
+        asyncio.create_task(self._check_and_distill(rcms, user_id, session_id, persona_name))
 
         logger.info(f"RCMS: [{persona_name}] done turn_len={len(user_input)+len(reply)}")
 
@@ -558,8 +543,22 @@ class RcmsPlugin(star.Star):
 
     async def _async_post_update(self, rcms: MinimalRCMS, user_id: str, session_id: str,
                                   user_input: str, stance: str, reply: str):
-        """异步执行事后更新，不阻塞 LLM 回复返回"""
+        """异步执行事后更新（纯规则），不阻塞 LLM 回复返回"""
         try:
-            rcms._post_update(user_id, session_id, user_input, stance, reply)
+            rcms.post_update_rules(user_id, session_id, user_input, stance, reply)
         except Exception:
             pass
+
+    async def _check_and_distill(self, rcms: MinimalRCMS, user_id: str, session_id: str,
+                                  persona_name: str):
+        """检查蒸馏条件，触发 LLM 蒸馏分析"""
+        try:
+            triggered, last_turn, turn_count, snapshot = rcms.check_distill_needed(session_id)
+            if triggered:
+                logger.info(f"RCMS: [{persona_name}] distill triggered turn={last_turn}→{turn_count}")
+                long_term = rcms._load_long_term_context(user_id)
+                await rcms._run_distill_analysis(user_id, session_id, snapshot, long_term, last_turn, turn_count)
+            else:
+                logger.debug(f"RCMS: [{persona_name}] distill not needed")
+        except Exception:
+            logger.exception(f"RCMS: [{persona_name}] distill check failed")

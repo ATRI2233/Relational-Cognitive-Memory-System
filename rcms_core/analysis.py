@@ -3,7 +3,6 @@ import logging
 import os
 from datetime import datetime
 
-import numpy as np
 from openai import AsyncOpenAI
 
 logger = logging.getLogger("rcms")
@@ -15,101 +14,12 @@ class AnalysisMixin:
     def _get_post_analysis_config(self) -> dict:
         pa = self.analysis_config.get("post_analysis", {})
         return {
-            "mode": pa.get("mode", "rule"),
-            "sampling": pa.get("sampling", 0.0),
             "source": pa.get("source", "astrbot"),
-            "api_key": pa.get("custom_api_key", "") or pa.get("api_key", os.environ.get("OPENAI_API_KEY", "")),
-            "base_url": pa.get("custom_base_url", "") or pa.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+            "api_key": pa.get("custom_api_key", "") or pa.get("api_key", os.environ.get("OPENAI_API_KEY", "")) or pa.get("custom_token", ""),
+            "base_url": pa.get("custom_base_url", "") or pa.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")) or pa.get("custom_url", ""),
             "model": pa.get("custom_model", "") if pa.get("source") == "custom" else "",
             "astrbot_source_id": pa.get("astrbot_source_id", ""),
         }
-
-    async def _run_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, long_term: dict):
-        cfg = self._get_post_analysis_config()
-        if cfg["mode"] != "llm":
-            return
-        if cfg["sampling"] < 1.0 and np.random.random() > cfg["sampling"]:
-            logger.debug(f"ANALYSIS: user={user_id} skipped by sampling (rate={cfg['sampling']})")
-            return
-
-        logger.info(f"ANALYSIS: start user={user_id} model={cfg['model']}")
-        prompt = self._build_analysis_prompt(user_id, user_input, reply, long_term)
-        content = None
-        try:
-            if self._llm_call:
-                content = await self._llm_call(prompt, model=cfg["model"])
-                logger.debug(f"ANALYSIS: via callback len={len(content or '')}")
-            else:
-                client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
-                try:
-                    resp = await client.chat.completions.create(
-                        model=cfg["model"],
-                        messages=[{"role": "user", "content": prompt}],
-                        response_format={"type": "json_object"},
-                    )
-                    content = resp.choices[0].message.content or "{}"
-                finally:
-                    await client.close()
-        except Exception as e:
-            logger.warning(f"ANALYSIS: LLM call failed ({e})")
-            return
-
-        if not content:
-            logger.warning("ANALYSIS: empty response")
-            return
-        try:
-            data = json.loads(content)
-            logger.info(f"ANALYSIS: ok mood={data.get('mood','?')} delta={data.get('relationship_delta',0)} importance={data.get('importance',0)}")
-        except json.JSONDecodeError:
-            logger.warning(f"ANALYSIS: invalid JSON: {content[:200]}")
-            return
-
-        await self._apply_analysis(user_id, session_id, user_input, reply, data)
-
-    def _build_analysis_prompt(self, user_id: str, user_input: str, reply: str, long_term: dict) -> str:
-        lt_hint = ""
-        if long_term:
-            arc = long_term.get("arc_stage", "stranger")
-            if long_term.get("identity_traits"):
-                lt_hint += f"\n已知特质: {json.dumps(long_term['identity_traits'], ensure_ascii=False)}"
-            if long_term.get("preferences"):
-                lt_hint += f"\n已知喜好: {json.dumps(long_term['preferences'], ensure_ascii=False)}"
-            if long_term.get("communication_style"):
-                lt_hint += f"\n沟通风格: {long_term['communication_style']}"
-            if long_term.get("self_identity"):
-                lt_hint += f"\n自我认同: {json.dumps(long_term['self_identity'], ensure_ascii=False)}"
-            if long_term.get("core_identity"):
-                lt_hint += f"\n核心身份: {json.dumps(long_term['core_identity'], ensure_ascii=False)}"
-            if long_term.get("boundaries"):
-                lt_hint += f"\n已知雷区: {json.dumps(long_term['boundaries'], ensure_ascii=False)}"
-            if arc != "stranger":
-                lt_hint += f"\n关系阶段: {arc}"
-        return f"""你是一个对话分析器。分析以下对话，输出 JSON。
-
-用户说: {user_input}
-你回: {reply}{lt_hint}
-
-输出 JSON 格式（请严格按此结构）:
-{{
-  "mood": "温暖|低落|焦虑|平静|兴奋|防御|疏远",
-  "mood_intensity": 0.0~1.0,
-  "topic_shift": true/false,
-  "key_points": ["摘要1", "摘要2"],
-  "relationship_delta": -1|0|1,
-  "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
-  "traits_updates": ["新观察到的用户特质（避免和已知特质重复）"],
-  "speech_quirks": ["说话特点"],
-  "preferences": {{"likes": ["喜欢的事物"], "dislikes": ["不喜欢的事物"]}},
-  "communication_style": "总结用户的说话方式和沟通习惯",
-  "self_identity": ["用户如何看待自己，如理性派、不善社交等"],
-  "core_identity": {{"职业": "", "角色": "", "标签": ""}},
-  "boundary_hits": ["避免做的事、雷区"],
-  "dangling_threads": ["未完成的话题"],
-  "importance": 0.0~1.0,
-  "entities": [{{"name": "人名", "relation": "关系", "fact": "相关事实"}}]
-}}
-
-只输出 JSON，不要其他文字。"""
 
     async def _apply_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, data: dict):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -127,41 +37,18 @@ class AnalysisMixin:
                 (new_topic, session_id),
             )
 
-        # 2. Emotional trace
+        # 2. Mood & intensity
         mood = data.get("mood", "")
         intensity = data.get("mood_intensity", 0.0)
-        warmth_map = {"温暖": 0.5, "低落": -0.3, "焦虑": -0.4, "平静": 0.1, "兴奋": 0.6, "防御": -0.2, "疏远": -0.5}
-        tension_map = {"温暖": 0.0, "低落": 0.1, "焦虑": 0.7, "平静": 0.0, "兴奋": 0.3, "防御": 0.6, "疏远": 0.4}
-        warmth = warmth_map.get(mood, 0.0) * intensity
-        tension = tension_map.get(mood, 0.0) * intensity
-        self.conn.execute(
-            "INSERT INTO emotional_trace (user_id, warmth, tension, uncertainty, distance, prose_hint, created_at) VALUES (?, ?, ?, 0.0, 0.0, ?, ?)",
-            (user_id, warmth, tension, mood, now_str),
-        )
 
-        # 3. Relationship arc + 里程碑
-        rd = data.get("relationship_delta", 0)
-        if rd != 0:
-            row = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
-            if row:
-                old_stage = row[0]
-                new_score = max(0.0, row[1] + rd * 0.5)
-                stage = old_stage
-                thresholds = {"stranger": 4.0, "familiar": 10.0, "rapport": 20.0, "history": 35.0}
-                for s, th in thresholds.items():
-                    if new_score >= th and ["stranger", "familiar", "rapport", "history"].index(s) > ["stranger", "familiar", "rapport", "history"].index(stage):
-                        stage = s
-                self.conn.execute(
-                    "UPDATE relationship_arc SET stage = ?, stage_score = ?, updated_at = ? WHERE user_id = ?",
-                    (stage, new_score, now_str, user_id),
-                )
-                if stage != old_stage:
-                    stage_label = {"familiar": "认识一阵了", "rapport": "算熟了", "history": "老熟人"}.get(stage, stage)
-                    old_label = {"familiar": "认识一阵了", "rapport": "算熟了", "history": "老熟人"}.get(old_stage, old_stage)
-                    self.conn.execute(
-                        "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
-                        (user_id, f"[里程碑] 关系阶段: {old_label} → {stage_label}", f"关系里程碑: → {stage_label}", 0.9, now_str),
-                    )
+        # 2b. User state → session_state.stance
+        if data.get("user_state") and session_id:
+            self.conn.execute(
+                "UPDATE session_state SET stance = ? WHERE session_id = ?",
+                (data["user_state"], session_id),
+            )
+
+        # 3. (relationship arc removed)
 
         # 4. Identity traits + quirks — 单次 LLM 已产出语义去重，无需额外 embedding API
         identity = self.conn.execute("SELECT traits FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
@@ -249,24 +136,13 @@ class AnalysisMixin:
                         (user_id, f"[梗] {trigger} → {ctx}"),
                     )
 
-        # 6. Boundary hits → identity_memory.boundaries
-        bh_list = data.get("boundary_hits", [])
-        if bh_list:
-            row = self.conn.execute(
-                "SELECT boundaries FROM identity_memory WHERE user_id = ?", (user_id,)
-            ).fetchone()
-            existing = set()
-            if row and row[0]:
-                try:
-                    existing = set(json.loads(row[0]))
-                except Exception:
-                    pass
-            merged = list(existing | set(bh_list))
-            if merged != list(existing):
-                self.conn.execute(
-                    "UPDATE identity_memory SET boundaries = ?, updated_at = ? WHERE user_id = ?",
-                    (json.dumps(merged, ensure_ascii=False), now_str, user_id),
-                )
+        # 6. Boundaries — 覆盖写（LLM 已参考现有雷区，产出即完整快照）
+        boundaries = data.get("boundaries")
+        if boundaries is not None and isinstance(boundaries, list):
+            self.conn.execute(
+                "UPDATE identity_memory SET boundaries = ?, updated_at = ? WHERE user_id = ?",
+                (json.dumps(boundaries, ensure_ascii=False), now_str, user_id),
+            )
 
         # 7. Dangling threads → cognitive_distill
         for dt in data.get("dangling_threads", []):
@@ -306,12 +182,138 @@ class AnalysisMixin:
                     (user_id, summary, summary[:40] + "...", mood, intensity, importance, now_str),
                 )
 
+        # 10. Key facts → cognitive_distill
+        for kf in data.get("key_facts", [])[:3]:
+            if kf:
+                self.conn.execute(
+                    "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (user_id, kf, kf[:60], importance or 0.5, now_str),
+                )
+
         log_parts = []
         if data.get("traits_updates"): log_parts.append(f"traits+{len(data['traits_updates'])}")
         if data.get("shared_jokes"): log_parts.append(f"jokes+{len(data['shared_jokes'])}")
-        if data.get("boundary_hits"): log_parts.append(f"bounds+{len(data['boundary_hits'])}")
+        if data.get("boundaries"): log_parts.append(f"bounds+{len(data['boundaries'])}")
+        if data.get("key_facts"): log_parts.append(f"facts+{len(data['key_facts'])}")
         if data.get("entities"): log_parts.append(f"ents+{len(data['entities'])}")
         if data.get("importance", 0) >= 0.5: log_parts.append("event")
         logger.info(f"ANALYSIS: write user={user_id} {' | '.join(log_parts) if log_parts else 'no-updates'}")
 
         self.conn.commit()
+
+    # ── 蒸馏版 LLM 分析（单次调用产出摘要 + 9 维 JSON） ──
+
+    async def _run_distill_analysis(self, user_id: str, session_id: str, snapshot_text: str, long_term: dict, last_turn: int, turn_count: int):
+        """蒸馏触发的 LLM 分析：一次调用产出摘要 + 9 维 JSON，然后写入"""
+        cfg = self._get_post_analysis_config()
+        if not cfg["api_key"] and not self._llm_call:
+            logger.warning("DISTILL: no LLM configured, skipping")
+            return
+
+        logger.info(f"DISTILL: start user={user_id} turns={last_turn}→{turn_count}")
+        prompt = self._build_distill_prompt(snapshot_text, long_term)
+        content = None
+        try:
+            if self._llm_call:
+                content = await self._llm_call(prompt, model=cfg["model"])
+            else:
+                client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+                try:
+                    resp = await client.chat.completions.create(
+                        model=cfg["model"],
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"},
+                    )
+                    content = resp.choices[0].message.content or "{}"
+                finally:
+                    await client.close()
+        except Exception as e:
+            logger.warning(f"DISTILL: LLM call failed ({e})")
+            return
+
+        if not content:
+            logger.warning("DISTILL: empty response")
+            return
+
+        try:
+            result = json.loads(content)
+            summary = result.get("summary", "")
+            analysis = result.get("analysis", {})
+            if not summary:
+                logger.warning("DISTILL: no summary in response")
+                return
+            logger.info(f"DISTILL: ok summary={summary[:60]} mood={analysis.get('mood','?')}")
+        except json.JSONDecodeError:
+            logger.warning(f"DISTILL: invalid JSON: {content[:200]}")
+            return
+
+        # 写入蒸馏摘要 + 清理碎片
+        self._apply_distill(user_id, session_id, last_turn, turn_count, summary)
+
+        # 写入 9 维分析（情感/特质/实体等）
+        await self._apply_analysis(user_id, session_id, summary[:80], "", analysis)
+
+    def _build_distill_prompt(self, snapshot_text: str, long_term: dict) -> str:
+        """两阶段蒸馏分析 prompt：先理解对话脉络，再精确提取信息"""
+        lt_hint = ""
+        if long_term:
+            if long_term.get("identity_traits"):
+                lt_hint += f"\n已知特质: {json.dumps(long_term['identity_traits'], ensure_ascii=False)}"
+            if long_term.get("preferences"):
+                lt_hint += f"\n已知喜好: {json.dumps(long_term['preferences'], ensure_ascii=False)}"
+            if long_term.get("communication_style"):
+                lt_hint += f"\n沟通风格: {long_term['communication_style']}"
+            if long_term.get("self_identity"):
+                lt_hint += f"\n自我认同: {json.dumps(long_term['self_identity'], ensure_ascii=False)}"
+            if long_term.get("core_identity"):
+                lt_hint += f"\n核心身份: {json.dumps(long_term['core_identity'], ensure_ascii=False)}"
+            if long_term.get("boundaries"):
+                lt_hint += f"\n已知雷区: {json.dumps(long_term['boundaries'], ensure_ascii=False)}"
+
+        return f"""你是一个对话分析系统。以下是最近多轮对话的完整记录：
+
+{snapshot_text}
+{lt_hint}
+
+请按两阶段分析：
+
+第一阶段：理解对话脉络
+通读整段对话，理解：
+· 发生了什么事——谁说了什么、做了什么、事件顺序
+· 情绪基调——整体氛围轻松/紧张/热烈/冷淡
+· 人物关系——参与者之间的互动模式
+
+第二阶段：精确提取
+基于对对话的理解，产出以下 JSON：
+
+{{
+  "summary": "像人复述一样概括这段对话。不要干巴巴的要点罗列，而是连贯叙述：谁做了什么、说了什么、气氛如何。保留对话中的生动细节和转折。",
+  "analysis": {{
+    "key_facts": [
+      "从对话中提取的精确事实列表。每一条是一个独立、完整的陈述：主语+事件+细节。例如「攒抽进行中360沉迷MC搞建筑，尝试先复刻后创作」而非「有人在玩MC」"
+    ],
+    "mood": "温暖|低落|焦虑|平静|兴奋|防御|疏远",
+    "mood_intensity": 0.0~1.0,
+    "topic_shift": true/false,
+    "key_points": ["事件脉络的简要概括（2-4条）"],
+    "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
+    "traits_updates": ["从对话中发现的用户特质"],
+    "speech_quirks": ["说话特点"],
+    "preferences": {{"likes": ["喜欢的事物"], "dislikes": ["不喜欢的事物"]}},
+    "communication_style": "总结用户的说话方式",
+    "self_identity": ["用户如何看待自己"],
+    "core_identity": {{"职业": "", "角色": "", "标签": ""}},
+    "boundaries": ["避免做的事、雷区（完整列表，参考已有雷区增删）"],
+    "dangling_threads": ["未完成的话题"],
+    "importance": 0.0~1.0,
+    "entities": [
+      {{"name": "人物/事物名", "relation": "与用户的关系", "fact": "关键事实"}}
+    ]
+  }}
+}}
+
+要求：
+· summary 要像人聊天时复述事情一样，有叙事感
+· key_facts 每条必须完整可独立理解，不依赖上下文
+· entities 优先提取反复提及或带有强烈情感的人物/事物
+· 只输出 JSON，不要其他文字"""

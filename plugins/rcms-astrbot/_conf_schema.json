@@ -17,73 +17,61 @@
       },
       "user_id": {
         "description": "用户标识（备用）",
-        "hint": "当无法从事件获取发送者 ID 时使用的备用用户 ID。正常情况下会自动使用实际发送者 ID。",
+        "hint": "当无法从事件获取发送者 ID 时使用的备用用户 ID。",
         "type": "string",
         "default": "default_user"
       },
       "injection_method": {
         "description": "RCMS 上下文注入方式",
-        "hint": "system_prompt：追加到人格提示词尾部；prompt_prefix：放在用户消息前；faketool：以工具调用结果注入，与人格完全隔离。",
+        "hint": "system_prompt：追加到人格提示词尾部；prompt_prefix：放在用户消息前；faketool：以工具调用结果注入。",
         "type": "string",
         "default": "system_prompt",
         "options": ["system_prompt", "prompt_prefix", "faketool"]
       }
     }
   },
-  "memory": {
-    "description": "记忆管理",
-    "type": "object",
-    "items": {
-      "enable_auto_save": {
-        "description": "自动保存对话到记忆",
-        "hint": "每次对话后是否自动将内容写入长期记忆。",
-        "type": "bool",
-        "default": true
-      }
-    }
-  },
   "analysis": {
-    "description": "分析与检索（含 API 凭证）",
+    "description": "检索 + 蒸馏分析（含 API 凭证）",
     "type": "object",
     "items": {
       "retrieval": {
         "description": "语义检索：行为参数 + Embedding API 凭证",
         "type": "object",
         "items": {
-          "enabled": {
-            "description": "启用语义检索",
-            "hint": "开启后使用 Embedding API 进行语义检索，替代关键词 LIKE 检索。需要下方配置有效的 API 凭证。",
+          "embedding_enabled": {
+            "description": "启用 Embedding 向量检索",
+            "hint": "开启后使用 Embedding API 进行语义检索。需要下方配置有效的 API 凭证。关闭后通道 2 退化为关键词匹配。",
             "type": "bool",
             "default": true
           },
           "source": {
             "description": "API 来源",
-            "hint": "astrbot：外部读取 AstrBot 已配置的模型提供商；custom：手动输入 URL/Token/模型",
+            "hint": "astrbot：从 AstrBot 配置读取；custom：手动输入",
             "type": "string",
             "default": "astrbot",
             "options": ["astrbot", "custom"]
           },
           "astrbot_source_id": {
-            "description": "AstrBot 提供商 ID（source=astrbot）",
-            "hint": "AstrBot cmd_config.json 中 provider_sources 的 id，留空自动匹配当前启用的提供商",
+            "description": "AstrBot 提供商 ID",
+            "hint": "AstrBot cmd_config.json 中 provider_sources 的 id，留空自动匹配",
             "type": "string",
             "default": ""
           },
-          "custom_url": {
-            "description": "自定义 API 地址（source=custom）",
+          "custom_api_key": {
+            "description": "API Key（source=custom）",
+            "hint": "仅在 source=custom 时生效",
+            "type": "string",
+            "default": ""
+          },
+          "custom_base_url": {
+            "description": "API 地址（source=custom）",
             "hint": "仅在 source=custom 时生效",
             "type": "string",
             "default": "https://api.openai.com/v1"
           },
-          "custom_token": {
-            "description": "自定义 API Token（source=custom）",
-            "hint": "仅在 source=custom 时生效",
-            "type": "string",
-            "default": ""
-          },
           "custom_model": {
-            "description": "自定义模型名（source=custom）",
-            "hint": "仅在 source=custom 时生效",
+            "description": "Embedding 模型名",
+            "hint": "默认 text-embedding-3-small",
             "type": "string",
             "default": "text-embedding-3-small"
           },
@@ -97,14 +85,14 @@
           },
           "channel_min": {
             "description": "每通道最低保底条数",
-            "hint": "三个通道各自的最低保障数量，格式为 [ch1, ch2, ch3]",
+            "hint": "[ch1, ch2, ch3] 各自的最低保障数量",
             "type": "list",
             "default": [1, 1, 1],
             "items": {"type": "int", "min": 0, "max": 10}
           },
           "time_decay_halflife": {
             "description": "重要性半衰期（天）",
-            "hint": "importance 的时间衰减半衰期，值越小旧记忆衰减越快",
+            "hint": "值越小旧记忆衰减越快",
             "type": "int",
             "default": 30,
             "min": 1,
@@ -121,54 +109,63 @@
         }
       },
       "post_analysis": {
-        "description": "事后分析：行为参数 + LLM API 凭证",
+        "description": "蒸馏分析：LLM API 凭证 + 行为参数",
         "type": "object",
         "items": {
-          "mode": {
-            "description": "分析模式",
-            "hint": "rule：纯规则（免费）；llm：调用 LLM 分析对话并更新长期记忆表。需要下方配置有效的 API 凭证。",
-            "type": "string",
-            "default": "rule",
-            "options": ["rule", "llm"]
-          },
-          "sampling": {
-            "description": "LLM 分析采样率",
-            "hint": "1.0=每次都分析，0.1=平均每10轮一次，0=永不。仅在 mode=llm 时生效。",
-            "type": "float",
-            "default": 0.1,
-            "min": 0,
-            "max": 1.0
-          },
           "source": {
             "description": "API 来源",
-            "hint": "astrbot：外部读取 AstrBot 已配置的模型提供商；custom：手动输入 URL/Token/模型",
+            "hint": "astrbot：从 AstrBot 配置读取；custom：手动输入",
             "type": "string",
             "default": "astrbot",
             "options": ["astrbot", "custom"]
           },
           "astrbot_source_id": {
-            "description": "AstrBot 提供商 ID（source=astrbot）",
-            "hint": "AstrBot cmd_config.json 中 provider_sources 的 id，留空自动匹配当前启用的提供商",
+            "description": "AstrBot 提供商 ID",
+            "hint": "留空自动匹配当前启用的提供商",
             "type": "string",
             "default": ""
           },
-          "custom_url": {
-            "description": "自定义 API 地址（source=custom）",
+          "custom_api_key": {
+            "description": "API Key（source=custom）",
+            "hint": "仅在 source=custom 时生效",
+            "type": "string",
+            "default": ""
+          },
+          "custom_base_url": {
+            "description": "API 地址（source=custom）",
             "hint": "仅在 source=custom 时生效",
             "type": "string",
             "default": "https://api.openai.com/v1"
           },
-          "custom_token": {
-            "description": "自定义 API Token（source=custom）",
-            "hint": "仅在 source=custom 时生效",
-            "type": "string",
-            "default": ""
-          },
           "custom_model": {
-            "description": "自定义模型名（source=custom）",
-            "hint": "仅在 source=custom 时生效，推荐 gpt-4o-mini 成本低效果够",
+            "description": "蒸馏模型名",
+            "hint": "推荐 gpt-4o-mini 成本低效果够",
             "type": "string",
             "default": "gpt-4o-mini"
+          },
+          "max_turns": {
+            "description": "最大蒸馏间隔（轮数）",
+            "hint": "对话达到此轮数后自动触发 LLM 蒸馏分析",
+            "type": "int",
+            "default": 30,
+            "min": 5,
+            "max": 200
+          },
+          "max_minutes": {
+            "description": "最大蒸馏间隔（分钟）",
+            "hint": "距离上次蒸馏超过此分钟数则触发",
+            "type": "int",
+            "default": 60,
+            "min": 5,
+            "max": 1440
+          },
+          "dangling_expire_turns": {
+            "description": "悬案过期轮数",
+            "hint": "未完成话题超过此轮数无人提起则自动归档",
+            "type": "int",
+            "default": 15,
+            "min": 3,
+            "max": 100
           }
         }
       }
@@ -206,7 +203,7 @@
     "items": {
       "log_level": {
         "description": "日志级别",
-        "hint": "debug 会输出详细 pipeline 日志，info 只输出关键信息。",
+        "hint": "debug 输出详细 pipeline 日志，info 只输出关键信息。",
         "type": "string",
         "default": "info",
         "options": ["debug", "info", "warning"]

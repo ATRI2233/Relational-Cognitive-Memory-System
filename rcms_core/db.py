@@ -27,41 +27,26 @@ class DBMixin:
                 mood REAL DEFAULT 0, focus_topic TEXT, turn_count INTEGER DEFAULT 0,
                 stance_turns INTEGER DEFAULT 0, engagement_level TEXT DEFAULT 'coasting',
                 momentum_depth REAL DEFAULT 0.0, momentum_energy REAL DEFAULT 0.0,
-                last_active TIMESTAMP, residue_warmth REAL DEFAULT 0.0,
-                residue_tension REAL DEFAULT 0.0, dangling_threads TEXT DEFAULT '[]',
+                last_active TIMESTAMP, dangling_threads TEXT DEFAULT '[]',
                 embedding_updated INTEGER DEFAULT 0,
                 last_distill_turn INTEGER DEFAULT 0,
                 last_distill_at TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                turn_num INTEGER DEFAULT 0,
+                importance REAL DEFAULT 0.3,
+                mood TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS identity_memory (
                 user_id TEXT PRIMARY KEY, traits TEXT DEFAULT '[]',
-                voice_hint TEXT DEFAULT '',
                 preferences TEXT DEFAULT '{}',
                 communication_style TEXT DEFAULT '',
                 self_identity TEXT DEFAULT '[]',
                 boundaries TEXT DEFAULT '[]',
                 core_identity TEXT DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS emotional_trace (
-                trace_id INTEGER PRIMARY KEY, user_id TEXT, warmth REAL DEFAULT 0.0,
-                tension REAL DEFAULT 0.0, uncertainty REAL DEFAULT 0.0,
-                distance REAL DEFAULT 0.0, prose_hint TEXT DEFAULT '',
-                created_at TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS shared_context (
-                context_id INTEGER PRIMARY KEY, user_id TEXT, context_body TEXT,
-                omission_count INTEGER DEFAULT 0, confirmed INTEGER DEFAULT 0,
-                created_at TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS relationship_arc (
-                arc_id INTEGER PRIMARY KEY, user_id TEXT,
-                stage TEXT DEFAULT 'stranger', stage_score REAL DEFAULT 0.0,
                 updated_at TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS memory_graph_nodes (
@@ -78,14 +63,12 @@ class DBMixin:
             CREATE INDEX IF NOT EXISTS idx_mgn_user_label ON memory_graph_nodes(user_id, label);
             CREATE INDEX IF NOT EXISTS idx_mge_from ON memory_graph_edges(from_node_id);
             CREATE INDEX IF NOT EXISTS idx_mge_to ON memory_graph_edges(to_node_id);
-            CREATE TABLE IF NOT EXISTS entity_relations (
-                id INTEGER PRIMARY KEY, user_id TEXT, entity_name TEXT,
-                relation_type TEXT DEFAULT '', property TEXT DEFAULT '',
-                mention_count INTEGER DEFAULT 1, last_mentioned TIMESTAMP,
-                sentiment REAL DEFAULT 0.0,
-                UNIQUE(user_id, entity_name)
+CREATE TABLE IF NOT EXISTS shared_context (
+                context_id INTEGER PRIMARY KEY, user_id TEXT, context_body TEXT,
+                omission_count INTEGER DEFAULT 0, confirmed INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS idx_er_user ON entity_relations(user_id, entity_name);
+            CREATE INDEX IF NOT EXISTS idx_sc_user ON shared_context(user_id);
             CREATE INDEX IF NOT EXISTS idx_cd_user ON cognitive_distill(user_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_cd_embed ON cognitive_distill(user_id) WHERE embedding IS NOT NULL;
         """)
@@ -95,8 +78,6 @@ class DBMixin:
             "ADD COLUMN momentum_depth REAL DEFAULT 0.0",
             "ADD COLUMN momentum_energy REAL DEFAULT 0.0",
             "ADD COLUMN last_active TIMESTAMP",
-            "ADD COLUMN residue_warmth REAL DEFAULT 0.0",
-            "ADD COLUMN residue_tension REAL DEFAULT 0.0",
             "ADD COLUMN dangling_threads TEXT DEFAULT ''",
             "ADD COLUMN last_distill_turn INTEGER DEFAULT 0",
             "ADD COLUMN last_distill_at TIMESTAMP",
@@ -107,6 +88,22 @@ class DBMixin:
                 pass
         try:
             self.conn.execute("ALTER TABLE memory_graph_edges ADD COLUMN relation TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            self.conn.execute("ALTER TABLE chat_history ADD COLUMN turn_num INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        for col in [
+            "ADD COLUMN importance REAL DEFAULT 0.3",
+            "ADD COLUMN mood TEXT DEFAULT ''",
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE chat_history {col}")
+            except Exception:
+                pass
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ch_session ON chat_history(session_id)")
         except Exception:
             pass
         for col in [
@@ -120,24 +117,6 @@ class DBMixin:
                 self.conn.execute(f"ALTER TABLE identity_memory {col}")
             except Exception:
                 pass
-        # Migration: relationship_arc 去重 + 加 UNIQUE 约束
-        dup_count = self.conn.execute(
-            "SELECT COUNT(*) - COUNT(DISTINCT user_id) FROM relationship_arc"
-        ).fetchone()[0]
-        if dup_count > 0:
-            self.conn.execute("""
-                DELETE FROM relationship_arc WHERE arc_id NOT IN (
-                    SELECT arc_id FROM (
-                        SELECT arc_id, ROW_NUMBER() OVER (
-                            PARTITION BY user_id ORDER BY updated_at DESC
-                        ) AS rn FROM relationship_arc
-                    ) WHERE rn = 1
-                )
-            """)
-            logger.info(f"RCMS: relationship_arc 已去重 {dup_count} 行")
-        self.conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ra_user ON relationship_arc(user_id)"
-        )
         # Migration: 旧表 → cognitive_distill
         self._migrate_to_cognitive_distill()
         self.conn.commit()

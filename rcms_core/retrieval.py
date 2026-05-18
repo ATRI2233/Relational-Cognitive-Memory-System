@@ -60,11 +60,11 @@ class RetrievalMixin:
         return math.exp(-lam * max(0, days_ago))
 
     def _channel_time_importance(self, user_id: str, limit: int = 2):
-        """通道 1：importance × 时间衰减，不查向量"""
+        """通道 1：时间衰减 × 恒定的 importance 加成"""
         rows = self.conn.execute("""
             SELECT content, created_at, importance
             FROM cognitive_distill
-            WHERE user_id = ? AND importance > 0.1 AND content NOT LIKE '[蒸馏]%'
+            WHERE user_id = ? AND importance > 0.1
             ORDER BY created_at DESC LIMIT 50
         """, (user_id,)).fetchall()
 
@@ -77,7 +77,9 @@ class RetrievalMixin:
                     days = (now - datetime.fromisoformat(str(created_at))).days
                 except (ValueError, TypeError):
                     days = 999
-            score = importance * self._time_decay(days)
+            t = self._time_decay(days)
+            # 时间衰减 × (0.5 + importance)，importance 在所有时间尺度都有恒定比例影响
+            score = t * (0.5 + importance)
             scored.append((self._fuzz_time(created_at) + '，' + content, score, 'recent'))
 
         scored.sort(key=lambda x: -x[1])
@@ -94,7 +96,7 @@ class RetrievalMixin:
 
     def _get_current_mood(self, user_id: str) -> str:
         row = self.conn.execute(
-            "SELECT prose_hint FROM emotional_trace WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT mood FROM cognitive_distill WHERE user_id = ? AND mood != '' ORDER BY created_at DESC LIMIT 1",
             (user_id,),
         ).fetchone()
         return row[0] if row else ''
@@ -138,7 +140,7 @@ class RetrievalMixin:
 
         # ── 4. 关键词 SQL 候选（用于补充 vec_results +
         #        vec 无结果时的兜底） ──
-        clauses = ["user_id = ?", "content NOT LIKE '[蒸馏]%'"]
+        clauses = ["user_id = ?"]
         params = [user_id]
 
         if time_range:
@@ -164,7 +166,7 @@ class RetrievalMixin:
         # 无向量 + 无关键词结果 → 重要性兜底
         if not vec_results and not kw_rows:
             kw_rows = self.conn.execute(
-                "SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE user_id = ? AND importance >= 0.5 AND content NOT LIKE '[蒸馏]%' ORDER BY created_at DESC LIMIT 5",
+                "SELECT id, content, created_at, importance, mood FROM cognitive_distill WHERE user_id = ? AND importance >= 0.5 ORDER BY created_at DESC LIMIT 5",
                 (user_id,),
             ).fetchall()
 
@@ -423,10 +425,10 @@ class RetrievalMixin:
     def _get_retrieval_config(self) -> dict:
         rc = self.analysis_config.get("retrieval", {})
         return {
-            "enabled": rc.get("enabled", False),
+            "enabled": rc.get("embedding_enabled", rc.get("enabled", False)),
             "source": rc.get("source", "astrbot"),
-            "api_key": rc.get("custom_api_key", "") or rc.get("api_key", os.environ.get("OPENAI_API_KEY", "")),
-            "base_url": rc.get("custom_base_url", "") or rc.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+            "api_key": rc.get("custom_api_key", "") or rc.get("api_key", os.environ.get("OPENAI_API_KEY", "")) or rc.get("custom_token", ""),
+            "base_url": rc.get("custom_base_url", "") or rc.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")) or rc.get("custom_url", ""),
             "model": rc.get("custom_model", "") or rc.get("model", "text-embedding-3-small"),
             "astrbot_source_id": rc.get("astrbot_source_id", ""),
         }

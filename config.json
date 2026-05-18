@@ -5,16 +5,13 @@
     "user_id": "default_user",
     "injection_method": "system_prompt"
   },
-  "memory": {
-    "enable_auto_save": true
-  },
   "analysis": {
     "retrieval": {
-      "enabled": true,
+      "embedding_enabled": true,
       "source": "astrbot",
       "astrbot_source_id": "",
-      "custom_url": "https://api.openai.com/v1",
-      "custom_token": "",
+      "custom_api_key": "",
+      "custom_base_url": "https://api.openai.com/v1",
       "custom_model": "text-embedding-3-small",
       "total_cap": 5,
       "channel_min": [1, 1, 1],
@@ -22,13 +19,14 @@
       "emotional_resonance_bonus": 0.15
     },
     "post_analysis": {
-      "mode": "rule",
-      "sampling": 0.1,
       "source": "astrbot",
       "astrbot_source_id": "",
-      "custom_url": "https://api.openai.com/v1",
-      "custom_token": "",
-      "custom_model": "gpt-4o-mini"
+      "custom_api_key": "",
+      "custom_base_url": "https://api.openai.com/v1",
+      "custom_model": "gpt-4o-mini",
+      "max_turns": 30,
+      "max_minutes": 60,
+      "dangling_expire_turns": 15
     }
   },
   "output_log": {

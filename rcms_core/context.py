@@ -17,49 +17,24 @@ class ContextMixin:
         turn_count = 0
         dangling = ""
         focus = ""
-        warmth = 0.0
-        tension = 0.0
         if session_id:
             try:
                 row = self.conn.execute(
-                    "SELECT turn_count, focus_topic, dangling_threads, residue_warmth, residue_tension "
+                    "SELECT turn_count, focus_topic, dangling_threads "
                     "FROM session_state WHERE session_id = ?", (session_id,)
                 ).fetchone()
                 if row:
                     turn_count = row[0] or 0
                     focus = row[1] or ""
                     dangling = row[2] or ""
-                    warmth = row[3] or 0.0
-                    tension = row[4] or 0.0
             except Exception:
                 pass
 
-        # ── 关系 ──
-        arc_line = ""
-        if long_term:
-            arc = long_term.get('arc_stage', 'stranger')
-            score = long_term.get('arc_score', 0.0)
-            label = {'familiar': '认识一阵了', 'rapport': '算熟了',
-                     'history': '老熟人', 'drift': '冷淡过一阵',
-                     'reconnect': '重新联系上'}.get(arc, '初识')
-            arc_line = f"关系: {label} (分 {score:.1f})"
-            if turn_count:
-                arc_line += f"，聊了 {turn_count} 轮"
-            parts.append(arc_line)
+        # ── 轮数 ──
+        if turn_count:
+            parts.append(f"聊了 {turn_count} 轮")
 
-        # ── 当前氛围 ──
-        mood_map = {'reflective': '他在回想', 'guarded': '他话里有话',
-                    'playful': '气氛轻松带调侃', 'analytical': '他在理性分析',
-                    'distant': '他不太想深入', 'intimate': '他在敞开了说'}
-        mood = mood_map.get(stance, '气氛平静')
-        mood_suffix = ""
-        if abs(warmth) > 0.1:
-            mood_suffix += f" (warmth {warmth:.1f}"
-            mood_suffix += f" / tension {tension:.1f}" if tension > 0.1 else ""
-            mood_suffix += ")"
-        parts.append(f"当前: {mood}{mood_suffix}")
-
-        # ── 用户画像: traits + quirks + voice（强度排序，展示 top5 + 剩余汇总） ──
+        # ── 用户画像: traits + quirks（强度排序，展示 top5 + 剩余汇总） ──
         profile_lines = []
         if long_term:
             trait_details = long_term.get('trait_details', [])
@@ -79,9 +54,6 @@ class ContextMixin:
             if quirks:
                 q_mark = "↘ " if any(q[0] <= 2 for q in quirks) else ""
                 profile_lines.append(f"{q_mark}口癖: {'、'.join(q[1] for q in quirks[:2])}")
-            voice = long_term.get('voice_hint', '')
-            if voice and not all_traits:
-                profile_lines.append(voice)
         if profile_lines:
             parts.append("他是什么样的:\n" + '\n'.join(f'  · {t}' for t in profile_lines))
 
@@ -183,14 +155,9 @@ class ContextMixin:
         mem_block = "\n".join(mem_lines) if mem_lines else ""
         lt_block = ""
         if long_term:
-            arc = long_term.get('arc_stage', '')
-            if arc and arc != 'stranger':
-                stage_map = {'familiar': '已经认识一阵了', 'rapport': '已经很熟了',
-                             'history': '是老朋友了', 'drift': '有一阵没联系',
-                             'reconnect': '又重新联系上了'}
-                lt_block = f"\n【关系】{stage_map.get(arc, '')}"
-            if long_term.get('shared_contexts'):
-                ctx = '、'.join(long_term['shared_contexts'][:3])
+            shared_ctx = long_term.get('shared_contexts', [])
+            if shared_ctx:
+                ctx = '、'.join(shared_ctx[:3])
                 lt_block += f"\n【共同语境】{ctx}"
             traits = long_term.get('identity_traits', [])
             if traits:
@@ -200,12 +167,6 @@ class ContextMixin:
                 quirks = [t for t in traits if t.startswith('[口癖]')][:2]
                 if quirks:
                     lt_block += f"\n【说话特点】{'；'.join(q.replace('[口癖] ', '') for q in quirks)}"
-            prefs = long_term.get('preferences', {})
-            if prefs.get('likes') or prefs.get('dislikes'):
-                likes = '、'.join(prefs['likes'][:3]) if prefs.get('likes') else ''
-                dislikes = '、'.join(prefs['dislikes'][:2]) if prefs.get('dislikes') else ''
-                parts = [f"喜欢{likes}" if likes else '', f"不喜欢{dislikes}" if dislikes else '']
-                lt_block += f"\n【喜好】{'，'.join(p for p in parts if p)}"
             cs = long_term.get('communication_style', '')
             if cs:
                 lt_block += f"\n【沟通风格】{cs}"

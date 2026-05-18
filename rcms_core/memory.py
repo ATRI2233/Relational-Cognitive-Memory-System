@@ -1,69 +1,24 @@
 import json
 import logging
-import re
 from datetime import datetime
 
 logger = logging.getLogger("rcms")
 
 
 class MemoryMixin:
-    """长期记忆：identity / events / relationship / shared_context / graph builder"""
+    """长期记忆：identity / events / distill / graph builder"""
 
     def _init_identity(self, user_id: str):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        self.conn.execute("INSERT OR IGNORE INTO identity_memory (user_id, traits, voice_hint, updated_at) VALUES (?, '[]', '', ?)", (user_id, now_str))
-        self.conn.execute("INSERT OR IGNORE INTO relationship_arc (user_id, stage, stage_score, updated_at) VALUES (?, 'stranger', 0.0, ?)", (user_id, now_str))
-        self.conn.commit()
-
-    def _update_relationship_arc(self, user_id: str, level: str):
-        row = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
-        if not row:
-            return
-        stage, score = row
-        new_score = score + (0.05 if level == 'engaged_candidate' else 0.02)
-        new_stage = stage
-        thresholds = {'stranger': 4.0, 'familiar': 10.0, 'rapport': 20.0, 'history': 35.0}
-        if stage == 'stranger' and new_score >= thresholds['stranger']:
-            new_stage = 'familiar'
-        elif stage == 'familiar' and new_score >= thresholds['familiar']:
-            new_stage = 'rapport'
-        elif stage == 'rapport' and new_score >= thresholds['rapport']:
-            new_stage = 'history'
-        self.conn.execute("UPDATE relationship_arc SET stage = ?, stage_score = ?, updated_at = ? WHERE user_id = ?",
-                          (new_stage, new_score, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id))
-        if new_stage != stage:
-            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            stage_label = {"familiar": "认识一阵了", "rapport": "算熟了", "history": "老熟人"}.get(new_stage, new_stage)
-            old_label = {"familiar": "认识一阵了", "rapport": "算熟了", "history": "老熟人"}.get(stage, stage)
-            self.conn.execute(
-                "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, f"[里程碑] 关系阶段: {old_label} → {stage_label}", f"关系里程碑: → {stage_label}", 0.9, now_str),
-            )
-        self.conn.commit()
-
-    def _build_shared_context(self, user_id: str, user_input: str, reply: str):
-        tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', user_input)
-        kws = [w for w in tokens if len(w) > 2 and w not in self._TRIVIAL_MARKERS]
-        if not kws:
-            return
-        kw = kws[0]
-        existing = self.conn.execute("SELECT context_id, omission_count FROM shared_context WHERE user_id = ? AND context_body LIKE ?",
-                                      (user_id, f'%{kw}%')).fetchone()
-        if existing:
-            self.conn.execute("UPDATE shared_context SET omission_count = omission_count + 1 WHERE context_id = ?", (existing[0],))
-        else:
-            self.conn.execute("INSERT INTO shared_context (user_id, context_body, omission_count, confirmed) VALUES (?, ?, 1, 0)", (user_id, kw))
+        self.conn.execute("INSERT OR IGNORE INTO identity_memory (user_id, traits, updated_at) VALUES (?, '[]', ?)", (user_id, now_str))
         self.conn.commit()
 
     def _load_long_term_context(self, user_id: str) -> dict:
         identity = self.conn.execute(
-            "SELECT traits, voice_hint, preferences, communication_style, self_identity, boundaries, core_identity FROM identity_memory WHERE user_id = ?",
+            "SELECT traits, preferences, communication_style, self_identity, boundaries, core_identity FROM identity_memory WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         recent_events = self.conn.execute("SELECT summary, importance FROM cognitive_distill WHERE user_id = ? AND summary IS NOT NULL ORDER BY created_at DESC LIMIT 2", (user_id,)).fetchall()
-        recent_trace = self.conn.execute("SELECT prose_hint, warmth, tension FROM emotional_trace WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,)).fetchone()
-        arc = self.conn.execute("SELECT stage, stage_score FROM relationship_arc WHERE user_id = ?", (user_id,)).fetchone()
-        shared = self.conn.execute("SELECT context_body FROM shared_context WHERE user_id = ? AND confirmed = 1 ORDER BY omission_count DESC LIMIT 4", (user_id,)).fetchall()
         entities = self.conn.execute("""
             SELECT n1.label, e.relation, n2.label
             FROM memory_graph_edges e
@@ -72,6 +27,10 @@ class MemoryMixin:
             WHERE n1.user_id = ? AND e.relation != ''
             ORDER BY e.weight DESC LIMIT 5
         """, (user_id,)).fetchall()
+        shared_rows = self.conn.execute(
+            "SELECT context_body FROM shared_context WHERE user_id = ? ORDER BY context_id DESC LIMIT 4",
+            (user_id,),
+        ).fetchall()
         raw_traits = json.loads(identity[0]) if identity and identity[0] else []
         trait_details = []
         for item in raw_traits:
@@ -92,25 +51,20 @@ class MemoryMixin:
         return {
             'identity_traits': [p["text"] for p in trait_details],
             'trait_details': trait_details,
-            'voice_hint': identity[1] if identity else '',
-            'preferences': _safe_json(identity[2], {}) if identity else {},
-            'communication_style': identity[3] if identity and identity[3] else '',
-            'self_identity': _safe_json(identity[4], []) if identity else [],
-            'boundaries': _safe_json(identity[5], []) if identity else [],
-            'core_identity': _safe_json(identity[6], {}) if identity else {},
-            'events': [{'hint': r[0], 'delta': 1 if r[1] and r[1] > 0.5 else 0} for r in recent_events],
-            'trace': {'prose': recent_trace[0] if recent_trace else '', 'warmth': recent_trace[1] if recent_trace else 0.0, 'tension': recent_trace[2] if recent_trace else 0.0},
-            'arc_stage': arc[0] if arc else 'stranger', 'arc_score': arc[1] if arc else 0.0,
-            'shared_contexts': [r[0] for r in shared],
+            'preferences': _safe_json(identity[1], {}) if identity else {},
+            'communication_style': identity[2] if identity and identity[2] else '',
+            'self_identity': _safe_json(identity[3], []) if identity else [],
+            'boundaries': _safe_json(identity[4], []) if identity else [],
+            'core_identity': _safe_json(identity[5], {}) if identity else {},
             'entities': [{'name': r[0], 'relation': r[1], 'fact': r[2]} for r in entities],
+            'shared_contexts': [r[0] for r in shared_rows],
         }
 
-    def _post_update(self, user_id: str, session_id: str, user_input: str, stance: str, reply: str = ""):
+    def post_update_rules(self, user_id: str, session_id: str, user_input: str, stance: str, reply: str = ""):
+        """纯规则事后更新（不含 LLM 蒸馏触发）"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self._init_identity(user_id)
         self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
-        self._decay_residue(session_id)
-        self._update_relationship_arc(user_id, 'attentive')
         # 悬案自动过期：超过 _DANGLING_EXPIRE_TURNS 轮无人提起则归档
         dt_row = self.conn.execute(
             "SELECT dangling_threads, turn_count FROM session_state WHERE session_id = ?", (session_id,)
@@ -126,8 +80,6 @@ class MemoryMixin:
                         self._archive_dangling(user_id, session_id, now_str, reason="过期")
             except Exception:
                 pass
-        if reply:
-            self._build_shared_context(user_id, user_input, reply)
         if reply and len(user_input) > 15:
             summary = f"{user_input[:80]} → {reply[:80]}"
             recent = self.conn.execute("SELECT content FROM cognitive_distill WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", (session_id,)).fetchone()
@@ -137,61 +89,63 @@ class MemoryMixin:
                     (user_id, session_id, summary, 0.3, now_str),
                 )
                 self._build_graph_from_memory(user_id, summary)
-        # 双条件蒸馏触发：轮数或时间，先到先触发
-        self._maybe_distill(user_id, session_id)
         self.conn.commit()
 
-    def _maybe_distill(self, user_id: str, session_id: str):
-        """双条件蒸馏触发：轮数或时间，先到先触发"""
+    def check_distill_needed(self, session_id: str) -> tuple:
+        """检查是否需要触发蒸馏。返回 (triggered, last_turn, turn_count, snapshot_text)"""
         row = self.conn.execute(
             "SELECT turn_count, last_distill_turn, last_distill_at FROM session_state WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if not row:
-            return
+            return (False, 0, 0, "")
         turn_count, last_turn, last_at = row[0] or 0, row[1] or 0, row[2]
-        max_turns = getattr(self, '_DISTILL_MAX_TURNS', 50)
-        max_minutes = getattr(self, '_DISTILL_MAX_MINUTES', 120)
+        if turn_count == 0:
+            return (False, 0, 0, "")
+        max_turns = getattr(self, '_DISTILL_MAX_TURNS', 30)
+        max_minutes = getattr(self, '_DISTILL_MAX_MINUTES', 60)
         triggered = False
         if turn_count - last_turn >= max_turns:
             triggered = True
-        if last_at:
+        if not triggered and last_at:
             elapsed = (datetime.now() - datetime.fromisoformat(str(last_at))).total_seconds() / 60
             if elapsed >= max_minutes:
                 triggered = True
         if not triggered:
-            return
-        # 蒸馏：合并上次蒸馏以来的条目
-        since_turn = self.conn.execute(
-            "SELECT MIN(turn_num) FROM cognitive_distill WHERE session_id = ? AND id > COALESCE((SELECT MAX(id) FROM cognitive_distill WHERE session_id = ? AND summary IS NOT NULL AND importance >= 0.5), 0)",
-            (session_id, session_id),
-        ).fetchone()[0]
-        if since_turn:
-            snapshot = self.conn.execute(
-                "SELECT content, mood FROM cognitive_distill WHERE session_id = ? AND id >= ? ORDER BY id",
-                (session_id, since_turn),
-            ).fetchall()
-        else:
-            snapshot = []
-        if len(snapshot) < 3:
-            return  # 条目太少，等下次
-        # 合并为一条蒸馏摘要
-        lines = [s[0] for s in snapshot if s[0]]
-        if not lines:
-            return
-        body = " | ".join(lines[:10])
+            return (False, last_turn, turn_count, "")
+        # 读取本轮次以来的 chat_history 作为快照（至少 3 轮对话 = 6 行）
+        rows = self.conn.execute(
+            "SELECT role, content FROM chat_history WHERE session_id = ? AND turn_num > ? AND turn_num <= ? ORDER BY turn_num, id",
+            (session_id, last_turn, turn_count),
+        ).fetchall()
+        if len(rows) < 6:
+            return (False, last_turn, turn_count, "")
+        lines = [f"{r[0]}: {r[1][:200]}" for r in rows]
+        snapshot_text = "\n".join(lines[:30])
+        return (True, last_turn, turn_count, snapshot_text)
+
+    def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str):
+        """写入 LLM 蒸馏摘要 + 清理低重要性碎片"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # 1. 写入蒸馏摘要
         self.conn.execute(
             "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, session_id, f"[蒸馏] {turn_count}轮对话摘要", body, 0.7, now_str),
+            (user_id, session_id, summary, summary[:80], 0.8, now_str),
         )
+        # 2. 更新 last_distill_turn/at
         self.conn.execute(
             "UPDATE session_state SET last_distill_turn = ?, last_distill_at = ? WHERE session_id = ?",
             (turn_count, now_str, session_id),
         )
-        # 蒸馏时同时收容悬案：写入蒸馏记忆后清空 session_state
+        # 3. 悬案归档
         self._archive_dangling(user_id, session_id, now_str, reason="蒸馏")
-        logger.info(f"RCMS: 蒸馏触发 user={user_id} session={session_id} turn={turn_count} entries={len(lines)}")
+        # 4. 清理本次蒸馏窗口内的低重要性碎片（importance < 0.5）
+        self.conn.execute(
+            "DELETE FROM cognitive_distill WHERE user_id = ? AND session_id = ? AND importance < 0.5 AND id < (SELECT COALESCE(MAX(id), 0) FROM cognitive_distill WHERE session_id = ?)",
+            (user_id, session_id, session_id),
+        )
+        self.conn.commit()
+        logger.info(f"RCMS: 蒸馏完成 user={user_id} session={session_id} turn={turn_count} summary={summary[:60]}")
 
     def _archive_dangling(self, user_id: str, session_id: str, now_str: str, reason: str = ""):
         """将未结悬案归档到 cognitive_distill 并清空 session_state"""

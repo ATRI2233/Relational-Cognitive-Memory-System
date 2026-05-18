@@ -30,7 +30,7 @@ class MinimalRCMS(
 ):
     """MinimalRCMS — 关系认知记忆系统核心"""
 
-    # ── 常量 ──
+    # ── 常量（可被 post_analysis 配置覆盖） ──
     _EMOTIONAL_WORDS = [
         '累', '烦', '难过', '开心', '怕', '为什么', '怎么办',
         '焦虑', '迷茫', '失望', '生气', '感动', '孤独', '压力',
@@ -45,8 +45,6 @@ class MinimalRCMS(
                         '价格', '多少钱', '购物', '买了', '电影', '追剧',
                         '洗澡', '起床', '睡觉', '游戏']
 
-    _ARC_STAGES = ['stranger', 'familiar', 'rapport', 'history', 'drift', 'reconnect']
-    _RESIDUE_DECAY = 0.6
     _DISTILL_MAX_TURNS = 30
     _DISTILL_MAX_MINUTES = 60
     _DANGLING_EXPIRE_TURNS = 15
@@ -65,13 +63,17 @@ class MinimalRCMS(
         self._embed_call = embed_call
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._init_db()
-        self._last_silent_recall = []
         # Embedding 缓存
         self._emb_cache: dict[str, dict] = {}
         self._emb_client: Optional[AsyncOpenAI] = None
         rc = self.analysis_config.get("retrieval", {})
         self._emb_model = rc.get("custom_model", "") or rc.get("model", "text-embedding-3-small")
-        logger.info(f"RCMS init: db={db_path}, retrieval={self.analysis_config.get('retrieval', {}).get('enabled', False)}, post_analysis={self.analysis_config.get('post_analysis', {}).get('mode', 'rule')}")
+        # 从 post_analysis 配置覆盖蒸馏常量
+        pa = self.analysis_config.get("post_analysis", {})
+        if pa.get("max_turns"): self._DISTILL_MAX_TURNS = pa["max_turns"]
+        if pa.get("max_minutes"): self._DISTILL_MAX_MINUTES = pa["max_minutes"]
+        if pa.get("dangling_expire_turns"): self._DANGLING_EXPIRE_TURNS = pa["dangling_expire_turns"]
+        logger.info(f"RCMS init: db={db_path} distill_turns={self._DISTILL_MAX_TURNS}min={self._DISTILL_MAX_MINUTES}")
 
     def close(self):
         self.conn.close()
@@ -91,5 +93,10 @@ class MinimalRCMS(
             except Exception:
                 reply = "嗯。"
         self.save_turn(session_id, user_input, reply, 'open')
-        self._post_update(user_id, session_id, user_input, 'open', reply)
+        self.post_update_rules(user_id, session_id, user_input, 'open', reply)
+        # 蒸馏检查（standalone 模式下同步等待）
+        triggered, last_turn, turn_count, snapshot = self.check_distill_needed(session_id)
+        if triggered:
+            long_term = self._load_long_term_context(user_id)
+            await self._run_distill_analysis(user_id, session_id, snapshot, long_term, last_turn, turn_count)
         return reply
