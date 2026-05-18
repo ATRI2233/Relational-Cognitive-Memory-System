@@ -245,15 +245,22 @@ class RetrievalMixin:
     def _channel_graph_skeleton(self, user_id: str, user_input: str, limit: int = 2):
         """通道 3：纯图边查询（relation 语义优先），输出「A」--[关系]--> 「B」"""
         kws = self._extract_keywords(user_input)[:4]
+        logger.info(f"GraphSkeleton: keywords={kws} user={user_id}")
         if not kws:
             return []
 
-        ph = ','.join('?' * len(kws))
+        kw_clauses = []
+        params = [user_id]
+        for kw in kws:
+            kw_clauses.append("(label LIKE ? OR ? LIKE '%' || label || '%')")
+            params.append(f'%{kw}%')
+            params.append(kw)
         seed = self.conn.execute(
-            f"SELECT node_id FROM memory_graph_nodes WHERE user_id = ? AND label IN ({ph})",
-            (user_id, *kws),
+            f"SELECT node_id FROM memory_graph_nodes WHERE user_id = ? AND ({' OR '.join(kw_clauses)})",
+            params,
         ).fetchall()
         seed_ids = {r[0] for r in seed}
+        logger.info(f"GraphSkeleton: seed_nodes={len(seed_ids)} user={user_id}")
         if not seed_ids:
             return []
 
@@ -283,6 +290,7 @@ class RetrievalMixin:
                 stmt = f"话题「{a}」与「{b}」常被一起提及（相关度 {weight:.1f}）"
             results.append((stmt, weight if not relation else weight + 2.0, 'skeleton'))
 
+        logger.info(f"GraphSkeleton: returned={len(results[:limit])} user={user_id}")
         return results[:limit]
 
     # ── 融合 ──
@@ -413,14 +421,21 @@ class RetrievalMixin:
         return result[:max_kw]
 
     def _graph_activation_diffusion(self, user_id: str, seed_keywords: list[str]) -> list:
+        logger.info(f"GraphDiffusion: keywords={seed_keywords} user={user_id}")
         if not seed_keywords:
             return []
         now_dt = datetime.now()
-        placeholders = ','.join('?' * len(seed_keywords))
+        kw_clauses = []
+        params = [user_id]
+        for kw in seed_keywords:
+            kw_clauses.append("(label LIKE ? OR ? LIKE '%' || label || '%')")
+            params.append(f'%{kw}%')
+            params.append(kw)
         seed_nodes = self.conn.execute(
-            f"SELECT node_id, label, freq FROM memory_graph_nodes WHERE user_id = ? AND label IN ({placeholders})",
-            (user_id, *seed_keywords)
+            f"SELECT node_id, label, freq FROM memory_graph_nodes WHERE user_id = ? AND ({' OR '.join(kw_clauses)})",
+            params,
         ).fetchall()
+        logger.info(f"GraphDiffusion: seed_nodes={len(seed_nodes)} user={user_id}")
         if not seed_nodes:
             return []
         visited = set()
@@ -453,6 +468,7 @@ class RetrievalMixin:
             row = self.conn.execute("SELECT label FROM memory_graph_nodes WHERE node_id = ?", (nid,)).fetchone()
             if row:
                 results.append((row[0], score))
+        logger.info(f"GraphDiffusion: returned={len(results)} user={user_id}")
         return results
 
     def _graph_recall(self, user_id: str, user_input: str, engagement_level: str) -> dict:

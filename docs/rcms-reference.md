@@ -99,17 +99,24 @@
 ]}
 ```
 
-每个实体创建节点，对每个 relation 创建正向边 + 自动反向边（通过 `_INVERSE_RELATIONS` 映射）：
+每个实体创建节点，对每个 relation 创建正向边 + 自动反向边（通过 `_INVERSE_RELATIONS` 映射，无映射时不插反向边）：
 
 | 正向 relation | 反向 relation |
 |--------------|--------------|
 | 朋友 | 朋友 |
+| 同事 | 同事 |
 | 喜欢 | 被喜欢 |
+| 喜欢玩 | 被喜欢玩 |
+| 讨论过 | 被讨论过 |
 | 讨厌 | 被讨厌 |
 | 居住 | 居住地于 |
 | 属于 | 包含 |
+| 对立 | 对立 |
+| 同类 | 同类 |
+| 使用 | 被使用 |
+| 提及 | 被提及 |
 | 养了 | 主人是 |
-| (其他) | 相关于 |
+| (其他) | 不插反向边 |
 
 通道 3 展示优先有 relation 的语义边（额外 +2 排序分）。
 
@@ -266,7 +273,7 @@ session_boost = 0.3 if 本条 session_id == 当前 session_id else 0.0
 数据源：`memory_graph_edges`
 
 ```
-输入关键词 → 图节点 → BFS 取关联边
+输入关键词 → 图节点（双向模糊匹配 label LIKE kw OR kw LIKE label）→ BFS 取关联边
 排序: relation != '' 优先（额外 +2），其次 weight DESC
 输出: 「A」--[关系]-->「B」 或 「A」与「B」常被一起提及（权重 x.x）
 tag 由融合器添加为 skeleton（不在内容前缀打 [图谱] 标记）
@@ -607,6 +614,9 @@ sqlite3 data/rcms_memory_*.db "
 | 当前 | mood 情绪共振修复: `_apply_distill` 写入 `cognitive_distill.mood/mood_intensity`，通道 2 情绪共振现在有数据源 |
 | 当前 | post_update_rules 精简: 仅做 identity init + session update + 悬案过期检查，不再写入任何记忆/图数据 |
 | 当前 | narrative_context 实体展示: 从平铺"他提过的人/事"改为按 entity_type 分组展示（人/地方/概念/活动） |
+| 当前 | 图节点检索: 从 `label IN (...)` 精确匹配改为 `(label LIKE kw OR kw LIKE label)` 双向模糊匹配 |
+| 当前 | 反向边 fallback: 去掉"相关于"兜底，无映射时不插反向边；`_INVERSE_RELATIONS` 新增 5 条映射（喜欢玩/讨论过/对立/同类/使用/提及） |
+| 当前 | distill prompt: entities/relations 说明重写为结构化的实体消歧、客观关系、链式关系、跨领域示例，加防幻觉和禁止外部知识规则 |
 
 ### 已移除完整清单
 

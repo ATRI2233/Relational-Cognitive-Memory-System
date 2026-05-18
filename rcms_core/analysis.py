@@ -15,9 +15,15 @@ class AnalysisMixin:
         "朋友": "朋友",
         "同事": "同事",
         "喜欢": "被喜欢",
+        "喜欢玩": "被喜欢玩",
+        "讨论过": "被讨论过",
         "讨厌": "被讨厌",
         "居住": "居住地于",
         "属于": "包含",
+        "对立": "对立",
+        "同类": "同类",
+        "使用": "被使用",
+        "提及": "被提及",
         "养了": "主人是",
     }
 
@@ -183,8 +189,10 @@ class AnalysisMixin:
                     continue
                 to_id = self._upsert_graph_node(user_id, target, now_str)
                 self._upsert_graph_edge(from_id, to_id, now_str, relation=relation, created_at=now_str)
-                inv = self._INVERSE_RELATIONS.get(relation, "相关于")
-                self._upsert_graph_edge(to_id, from_id, now_str, relation=inv, created_at=now_str)
+                # 只在有明确反向映射时插入反向边，不兜底"相关于"
+                if relation in self._INVERSE_RELATIONS:
+                    inv = self._INVERSE_RELATIONS[relation]
+                    self._upsert_graph_edge(to_id, from_id, now_str, relation=inv, created_at=now_str)
 
         # 10. Key facts → cognitive_distill（保底 importance 0.5 防止被碎片清理删除）
         importance = data.get("importance", 0.0)
@@ -339,8 +347,8 @@ class AnalysisMixin:
     "dangling_threads": ["未完成的话题"],
     "importance": 0.0~1.0,
     "entities": [
-      {{"name": "人物/事物名", "type": "person|place|concept|activity", "relations": [
-        {{"target": "相关的人/物", "relation": "朋友|喜欢|讨厌|属于|..."}}
+      {{"name": "实体名", "type": "person|place|concept|activity", "relations": [
+        {{"target": "目标实体名", "relation": "关系类型（如属于、同类、任职于等，按需自定义）"}}
       ]}}
     ]
   }}
@@ -350,5 +358,28 @@ class AnalysisMixin:
 · summary 要像人聊天时复述事情一样，有叙事感
 · key_facts 与 key_facts_structured 任选一种输出，后者可指定时效性
 · key_facts_structured[].temporal 为 permanent 永久保留，transient 到期自动清理
-· entities 优先提取反复提及或带有强烈情感的人物/事物，type 分类（person/place/concept/activity），relations 列出该实体与其他事物的关系
-· 只输出 JSON，不要其他文字"""
+· 只输出 JSON，不要其他文字
+
+2. 实体（entities）
+   · 优先提取反复提及或带有强烈情感的实体
+   · type 分类：person（人物/组织）、place（地点）、concept（概念/品类/作品）、activity（行为/事件）
+   · 消歧：同一实体的不同表述只保留一个标准名，如"三角洲行动"和"三角洲"合并为概念节点"三角洲"
+
+3. 关系（relations）
+   · 优先提取"实体与实体之间"的客观关系，如：
+     - 概念层级：火锅 属于 川菜、三角洲 属于 战术射击游戏
+     - 同类并列：特斯拉 和 比亚迪 是同类、CS2 和 瓦罗兰特 是同类
+     - 归属关系：技巧X 属于 游戏Y
+     - 空间关联：事件A 发生在 地点B
+     - 人物关联：张三 任职于 公司C
+   · 不提取纯态度关系（如喜欢/讨厌/觉得好玩），除非该态度本身被文本反复讨论上升为概念
+   · 鼓励链式关系：若文本隐含 A→B 和 B→C，且 B→C 有上下文支撑（如同段提及、共享属性），即使未明说也要提取，让图谱能连成 A→B→C
+   · 非人节点（concept/activity）必须参与关系提取，不要只输出人物节点
+   · 关系方向：A 是 B 的"上位词"时，写成 A 属于 B（A→B），不要反向
+   · 只提取文本内实体：禁止引入外部知识补充文本未提及的实体或关系（如自动补全开发商、发行商等）
+
+4. 跨领域示例（防止过拟合到单一领域）
+   · 餐饮：重庆火锅（concept）属于 川菜（concept）
+   · 科技：特斯拉（concept）和 比亚迪（concept）是同类
+   · 游戏：三角洲（concept）属于 战术射击游戏（concept）
+   · 人物：张三（person）任职于 某科技公司（concept）"""
