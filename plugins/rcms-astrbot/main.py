@@ -76,9 +76,8 @@ class RcmsPlugin(star.Star):
         self._write_count = 0
         self._provider_callbacks = None  # 首次构建后缓存
 
-        # 数据库存放目录：项目根目录下的 data/
-        _project_root = os.path.dirname(os.path.dirname(_self))
-        self._data_dir = os.path.join(_project_root, "data")
+        # 数据库存放目录：插件目录下
+        self._data_dir = os.path.join(_self, "data")
         os.makedirs(self._data_dir, exist_ok=True)
 
         # 输出日志配置
