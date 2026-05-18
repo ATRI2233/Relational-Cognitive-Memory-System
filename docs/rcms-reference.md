@@ -84,6 +84,8 @@
 - `dangling_threads` — 悬案列表 JSON `{"threads": [...], "turn": N}`
 - `last_distill_turn` / `last_distill_at` — 蒸馏水位线
 
+遗留列（表定义中保留，代码不再写入）：`mood`、`stance_turns`、`engagement_level`、`momentum_depth`、`momentum_energy`、`embedding_updated`。
+
 ### 图谱：memory_graph_nodes + memory_graph_edges
 
 建图双路径：
@@ -210,7 +212,7 @@ t = 2^(-days / half_life)
 
 ```
 ① 时间词硬过滤（今天/昨天/最近/上周…）
-② 关键词提取 + 图扩散扩词（BFS depth=2, 共现边 ×0.1）
+② 关键词提取 + 图扩散扩词（BFS depth=2, 每层激活衰减 ×0.5, 共现边额外 ×0.1）
 ③ 向量余弦检索（原词 + 扩散词拼装 query）
 ④ 关键词 SQL 候选 + 时间过滤
 ⑤ 评分:
@@ -220,6 +222,10 @@ t = 2^(-days / half_life)
    无向量无关键词: importance ≥ 0.5 兜底
 
    情绪共振: 当前 mood == 条目 mood → score × (1 + resonance_bonus)
+
+   扩散词分类（激活值）:
+     surfaced (≥ 0.6): 强相关词，正常参与检索
+     silent (0.25~0.6): 弱相关词，仅做候选补充
 ```
 
 当前情绪读取自最近一条 `cognitive_distill.mood`（蒸馏 LLM 写入），不走单独情绪表。

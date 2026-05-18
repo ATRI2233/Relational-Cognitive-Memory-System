@@ -92,7 +92,7 @@ class MinimalRCMS(
                 reply = await backend.generate("简短回复，一句话以内。\n\n你:")
             except Exception:
                 reply = "嗯。"
-        self.save_turn(session_id, user_input, reply, 'open')
+        self.save_turn(session_id, user_input, reply)
         self.post_update_rules(user_id, session_id, user_input, 'open', reply)
         # 蒸馏检查（standalone 模式下同步等待）
         triggered, last_turn, turn_count, snapshot = self.check_distill_needed(session_id)
