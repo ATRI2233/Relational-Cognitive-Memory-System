@@ -165,14 +165,23 @@ class ContextMixin:
         if ev_lines:
             parts.append("最近事件:\n" + '\n'.join(f'  · {e}' for e in ev_lines))
 
-        # ── 相关记忆（按 tag 标注时间层次） ──
+        # ── 三通道记忆（按融合分数排序，最高分通道在前） ──
         if memories:
-            tag_map = {'recent': '最近', 'resonance': '共鸣', 'skeleton': '图谱'}
-            lines = []
-            for content, tag in memories[:4]:
-                label = tag_map.get(tag, tag)
-                lines.append(f"  [{label}] {content}")
-            parts.append("相关记忆:\n" + '\n'.join(lines))
+            channel_map = {'recent': '时间·重要性', 'resonance': '语义检索', 'skeleton': '图谱关联'}
+            grouped = {}
+            order = []
+            for content, tag in memories:
+                if tag not in grouped:
+                    grouped[tag] = []
+                    order.append(tag)
+                grouped[tag].append(content)
+            ch_lines = []
+            for key in order:
+                label = channel_map.get(key, key)
+                items = grouped[key][:2]
+                ch_lines.append(f"【{label}】\n" + "\n".join(f"  · {c}" for c in items))
+            if ch_lines:
+                parts.append("相关记忆:\n" + "\n\n".join(ch_lines))
 
         # ── 未完成话题（超 10 轮自动过期） ──
         if dangling:
@@ -200,8 +209,22 @@ class ContextMixin:
                            long_term: dict | None = None) -> str:
         if memories is None:
             memories = await self.retrieve_memories(user_id, user_input, 'engaged', session_id=session_id)
-        mem_lines = [f"- {m[0]}" for m in memories[:2]]
-        mem_block = "\n".join(mem_lines) if mem_lines else ""
+        channel_map = {'recent': '时间·重要性', 'resonance': '语义检索', 'skeleton': '图谱关联'}
+        grouped = {}
+        order = []
+        for content, tag in memories:
+            if tag not in grouped:
+                grouped[tag] = []
+                order.append(tag)
+            grouped[tag].append(content)
+        mem_lines = []
+        for key in order:
+            if key not in grouped:
+                continue
+            label = channel_map.get(key, key)
+            items = grouped[key][:2]
+            mem_lines.append(f"【{label}】\n" + "\n".join(f"  · {c}" for c in items))
+        mem_block = "\n\n".join(mem_lines) if mem_lines else ""
         lt_block = ""
         if long_term:
             shared_ctx = long_term.get('shared_contexts', [])

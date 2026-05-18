@@ -23,8 +23,7 @@ class AnalysisMixin:
 
     async def _apply_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, data: dict):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        # 0. Ensure session_state row exists for dangling_threads
+        new_entries = []  # (entry_id, text_for_embedding) 待写回向量
         if session_id:
             self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, now_str))
             self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
@@ -150,6 +149,7 @@ class AnalysisMixin:
                 "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
                 (user_id, dt, dt[:40] + "..." if len(dt) > 40 else dt, 0.5, now_str),
             )
+            new_entries.append((self.conn.execute("SELECT last_insert_rowid()").fetchone()[0], dt))
         if session_id and data.get("dangling_threads"):
             row = self.conn.execute("SELECT turn_count FROM session_state WHERE session_id = ?", (session_id,)).fetchone()
             current_turn = row[0] if row else 0
@@ -170,20 +170,8 @@ class AnalysisMixin:
             if from_id != to_id:
                 self._upsert_graph_edge(from_id, to_id, now_str, relation=rel)
 
-        # 9. Event memory (if important enough) → cognitive_distill
-        importance = data.get("importance", 0.0)
-        if importance >= 0.5:
-            summary = user_input[:80] + "..." if len(user_input) > 80 else user_input
-            existing = self.conn.execute(
-                "SELECT id FROM cognitive_distill WHERE user_id = ? AND content = ?", (user_id, summary)
-            ).fetchone()
-            if not existing:
-                self.conn.execute(
-                    "INSERT INTO cognitive_distill (user_id, content, summary, mood, mood_intensity, importance, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (user_id, summary, summary[:40] + "...", mood, intensity, importance, now_str),
-                )
-
         # 10. Key facts → cognitive_distill（保底 importance 0.5 防止被碎片清理删除）
+        importance = data.get("importance", 0.0)
         kf_imp = max(importance, 0.5)
         kfs = data.get("key_facts", []) or data.get("key_facts_structured", [])
         for kf in kfs[:3]:
@@ -204,6 +192,7 @@ class AnalysisMixin:
                     "INSERT INTO cognitive_distill (user_id, content, summary, importance, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (user_id, content, content[:60], kf_imp, expires_at, now_str),
                 )
+                new_entries.append((self.conn.execute("SELECT last_insert_rowid()").fetchone()[0], content[:512]))
 
         log_parts = []
         if data.get("traits_updates"): log_parts.append(f"traits+{len(data['traits_updates'])}")
@@ -215,6 +204,12 @@ class AnalysisMixin:
         logger.info(f"ANALYSIS: write user={user_id} {' | '.join(log_parts) if log_parts else 'no-updates'}")
 
         self.conn.commit()
+
+        # 10b. 批量写回 key_facts / events / dangling_threads 的向量
+        for eid, text in new_entries:
+            vec = await self._get_embedding(text)
+            if vec:
+                self._store_embedding(user_id, eid, vec)
 
     # ── 蒸馏版 LLM 分析（单次调用产出摘要 + 9 维 JSON） ──
 
@@ -263,7 +258,7 @@ class AnalysisMixin:
             return
 
         # 写入蒸馏摘要 + 清理碎片
-        self._apply_distill(user_id, session_id, last_turn, turn_count, summary)
+        await self._apply_distill(user_id, session_id, last_turn, turn_count, summary)
 
         # 写入 9 维分析（情感/特质/实体等）
         await self._apply_analysis(user_id, session_id, summary[:80], "", analysis)
@@ -305,11 +300,11 @@ class AnalysisMixin:
   "summary": "像人复述一样概括这段对话。不要干巴巴的要点罗列，而是连贯叙述：谁做了什么、说了什么、气氛如何。保留对话中的生动细节和转折。",
   "analysis": {{
     "key_facts": [
-      "从对话中提取的精确事实列表。每一条是一个独立、完整的陈述：主语+事件+细节。例如「攒抽进行中360沉迷MC搞建筑，尝试先复刻后创作」而非「有人在玩MC」"
+      "从对话中提取的关键事实。保留具体细节——时间、原因、经过、结果。例如「用户连续加班三天，经理今天又改了需求，用户吐槽说想辞职」而非「用户感到累」"
     ],
     "key_facts_structured": [
-      {"content": "完整可独立理解的事实", "temporal": "permanent"},
-      {"content": "临时性事件如面试计划等", "temporal": "transient", "expires_after_days": 14}
+      {{"content": "完整可独立理解的事实", "temporal": "permanent"}},
+      {{"content": "临时性事件如面试计划等", "temporal": "transient", "expires_after_days": 14}}
     ],
     "mood": "温暖|低落|焦虑|平静|兴奋|防御|疏远",
     "mood_intensity": 0.0~1.0,

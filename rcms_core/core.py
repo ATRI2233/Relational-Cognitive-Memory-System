@@ -45,6 +45,24 @@ class MinimalRCMS(
                         '价格', '多少钱', '购物', '买了', '电影', '追剧',
                         '洗澡', '起床', '睡觉', '游戏']
 
+    _STOP_WORDS = [
+        # 时间副词（不具备关键词区分度）
+        '最近', '今天', '明天', '昨天', '前天', '刚才', '已经', '正在',
+        '将要', '即将', '马上', '立刻', '刚刚', '忽然', '曾经', '往往',
+        # 代词/指示词
+        '什么', '怎么', '为什么', '哪个', '哪些', '谁', '这个', '那个',
+        '这些', '那些', '哪里', '这里', '那里', '如何', '何时',
+        # 虚词
+        '一个', '没有', '不是', '可以', '就是', '还是', '但是', '而且',
+        '因为', '所以', '虽然', '如果', '然后', '不过', '一定',
+        '一些', '有点', '一下', '非常',
+        '是否', '能够', '应该', '必须', '好像', '真是',
+        # 语气词
+        '好吧', '好了', '是的', '没错', '对了',
+        # 纯情绪感知词
+        '觉得', '感觉', '认为',
+    ]
+
     _DISTILL_MAX_TURNS = 30
     _DISTILL_MAX_MINUTES = 60
     _DANGLING_EXPIRE_TURNS = 15
@@ -93,7 +111,7 @@ class MinimalRCMS(
             except Exception:
                 reply = "嗯。"
         self.save_turn(session_id, user_input, reply)
-        self.post_update_rules(user_id, session_id, user_input, 'open', reply)
+        await self.post_update_rules(user_id, session_id, user_input, 'open', reply)
         # 蒸馏检查（standalone 模式下同步等待）
         triggered, last_turn, turn_count, snapshot = self.check_distill_needed(session_id)
         if triggered:

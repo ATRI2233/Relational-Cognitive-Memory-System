@@ -546,7 +546,7 @@ class RcmsPlugin(star.Star):
                                   user_input: str, stance: str, reply: str):
         """异步执行事后更新（纯规则），不阻塞 LLM 回复返回"""
         try:
-            rcms.post_update_rules(user_id, session_id, user_input, stance, reply)
+            await rcms.post_update_rules(user_id, session_id, user_input, stance, reply)
         except Exception:
             pass
 

@@ -60,7 +60,7 @@ class MemoryMixin:
             'shared_contexts': [r[0] for r in shared_rows],
         }
 
-    def post_update_rules(self, user_id: str, session_id: str, user_input: str, stance: str, reply: str = ""):
+    async def post_update_rules(self, user_id: str, session_id: str, user_input: str, stance: str, reply: str = ""):
         """纯规则事后更新（不含 LLM 蒸馏触发）"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self._init_identity(user_id)
@@ -80,6 +80,7 @@ class MemoryMixin:
                         self._archive_dangling(user_id, session_id, now_str, reason="过期")
             except Exception:
                 pass
+        new_rule_id = None
         if reply and len(user_input) > 15:
             summary = f"{user_input[:80]} → {reply[:80]}"
             recent = self.conn.execute("SELECT content FROM cognitive_distill WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", (session_id,)).fetchone()
@@ -88,8 +89,14 @@ class MemoryMixin:
                     "INSERT INTO cognitive_distill (user_id, session_id, content, importance, created_at) VALUES (?, ?, ?, ?, ?)",
                     (user_id, session_id, summary, 0.3, now_str),
                 )
+                new_rule_id = self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 self._build_graph_from_memory(user_id, summary)
         self.conn.commit()
+        # 规则摘要也需要向量，否则向量检索通道永远找不到它们
+        if new_rule_id and summary:
+            vec = await self._get_embedding(summary[:512])
+            if vec:
+                self._store_embedding(user_id, new_rule_id, vec)
 
     def check_distill_needed(self, session_id: str) -> tuple:
         """检查是否需要触发蒸馏。返回 (triggered, last_turn, turn_count, snapshot_text)"""
@@ -124,7 +131,7 @@ class MemoryMixin:
         snapshot_text = "\n".join(lines[:30])
         return (True, last_turn, turn_count, snapshot_text)
 
-    def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str):
+    async def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str):
         """写入 LLM 蒸馏摘要 + 过期清理 + 低重要性碎片清理 + 图谱维护"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         # 1. 写入蒸馏摘要
@@ -132,6 +139,7 @@ class MemoryMixin:
             "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (user_id, session_id, summary, summary[:80], 0.8, now_str),
         )
+        distill_id = self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         # 2. 更新 last_distill_turn/at
         self.conn.execute(
             "UPDATE session_state SET last_distill_turn = ?, last_distill_at = ? WHERE session_id = ?",
@@ -159,6 +167,10 @@ class MemoryMixin:
         # 5. 图谱维护：共现边衰减 + 孤立节点清理
         self._maintain_graph(user_id)
         self.conn.commit()
+        # 蒸馏摘要也需要向量
+        vec = await self._get_embedding(summary[:512])
+        if vec:
+            self._store_embedding(user_id, distill_id, vec)
         logger.info(f"RCMS: 蒸馏完成 user={user_id} session={session_id} turn={turn_count} summary={summary[:60]}")
 
     def _maintain_graph(self, user_id: str):

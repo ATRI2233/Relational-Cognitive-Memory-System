@@ -6,6 +6,7 @@ import os
 import re
 from datetime import datetime
 
+import jieba
 import numpy as np
 
 logger = logging.getLogger("rcms")
@@ -50,7 +51,19 @@ class RetrievalMixin:
         ch2 = await self._channel_multi_resonance(user_id, user_input, limit=ch_min[1] + 2)
         ch3 = self._channel_graph_skeleton(user_id, user_input, limit=ch_min[2] + 1)
 
-        return self._fusion([ch1, ch2, ch3], total_cap, ch_min)
+        result = self._fusion([ch1, ch2, ch3], total_cap, ch_min)
+        # 确保至少一条完整叙事摘要不被 key_facts 挤掉
+        NARRATIVE_MIN_LEN = 150
+        if not any(len(c) > NARRATIVE_MIN_LEN for c, _ in result):
+            row = self.conn.execute(
+                "SELECT id, content FROM cognitive_distill "
+                "WHERE user_id = ? AND importance >= 0.7 AND length(content) > ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (user_id, NARRATIVE_MIN_LEN),
+            ).fetchone()
+            if row:
+                result[-1] = (row[1], 'recent')
+        return result
 
     # ── 通道 1：时间重要性锚点 ──
 
@@ -263,9 +276,9 @@ class RetrievalMixin:
                 continue
             seen.add(pair)
             if relation:
-                stmt = f"[图谱] 「{a}」--[{relation}]--> 「{b}」"
+                stmt = f"「{a}」--[{relation}]--> 「{b}」"
             else:
-                stmt = f"[图谱] 话题「{a}」与「{b}」常被一起提及（相关度 {weight:.1f}）"
+                stmt = f"话题「{a}」与「{b}」常被一起提及（相关度 {weight:.1f}）"
             results.append((stmt, weight if not relation else weight + 2.0, 'skeleton'))
 
         return results[:limit]
@@ -369,8 +382,25 @@ class RetrievalMixin:
         return "很久以前"
 
     def _extract_keywords(self, text: str, max_kw: int = 5) -> list[str]:
+        # 先用空格/标点分割（英文关键词）
         tokens = re.split(r'[\s,，。！？、；：""''（）()—\n]+', text)
-        return [w for w in tokens if len(w) > 1 and w not in self._TRIVIAL_MARKERS][:max_kw]
+        # 对每个 segment 做 jieba 分词，产出中文词汇
+        result = []
+        for t in tokens:
+            if not t:
+                continue
+            if re.search(r'[一-鿿]', t):
+                # 含中文 → jieba 分词
+                segs = jieba.lcut(t)
+                for s in segs:
+                    s = s.strip()
+                    if len(s) > 1 and s not in self._TRIVIAL_MARKERS and s not in self._STOP_WORDS:
+                        result.append(s)
+            else:
+                # 纯英文/数字 → 直接保留
+                if len(t) > 1 and t not in self._TRIVIAL_MARKERS and t not in self._STOP_WORDS:
+                    result.append(t)
+        return result[:max_kw]
 
     def _graph_activation_diffusion(self, user_id: str, seed_keywords: list[str]) -> list:
         if not seed_keywords:
