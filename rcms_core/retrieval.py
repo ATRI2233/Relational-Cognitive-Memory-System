@@ -23,6 +23,12 @@ class RetrievalMixin:
         '上周': (7, 13), '上星期': (7, 13),
     }
 
+    _OPPOSITE_RELATIONS = {
+        "喜欢": "讨厌", "讨厌": "喜欢",
+        "使用": "放弃", "放弃": "使用",
+        "朋友": "敌人", "敌人": "朋友",
+    }
+
     # ── 可调参数（硬编码默认，可被 config.json analysis.retrieval 覆盖） ──
 
     def _get_retrieval_params(self) -> dict:
@@ -54,6 +60,9 @@ class RetrievalMixin:
         ch3 = self._channel_graph_skeleton(user_id, user_input, limit=ch_min[2] + 1)
 
         result = self._fusion([ch1, ch2, ch3], total_cap, ch_min, ch_weights)
+        # 构建图谱关系链（从图通道收集的节点标签查连通路径）
+        chain_labels = getattr(self, '_graph_chain_labels', set())
+        self._graph_paths = self._build_graph_paths(user_id, chain_labels) if chain_labels else []
         # 确保至少一条完整叙事摘要不被 key_facts 挤掉
         NARRATIVE_MIN_LEN = 150
         if not any(len(c) > NARRATIVE_MIN_LEN for c, _ in result):
@@ -266,8 +275,9 @@ class RetrievalMixin:
 
         ph2 = ','.join('?' * len(seed_ids))
         # 优先取带 relation 的边（LLM 分析出的逻辑关系），再取高权重共现边
+        now = datetime.now()
         edges = self.conn.execute(f"""
-            SELECT n1.label AS a, n2.label AS b, e.weight, e.relation
+            SELECT n1.label AS a, n2.label AS b, e.weight, e.relation, e.last_seen
             FROM memory_graph_edges e
             JOIN memory_graph_nodes n1 ON e.from_node_id = n1.node_id
             JOIN memory_graph_nodes n2 ON e.to_node_id = n2.node_id
@@ -279,19 +289,94 @@ class RetrievalMixin:
 
         seen = set()
         results = []
-        for a, b, weight, relation in edges:
+        chain_labels = set()
+        for a, b, weight, relation, last_seen in edges:
+            # 时间衰减: weight * 0.95^days, 最低 0.3
+            if last_seen:
+                try:
+                    days = (now - datetime.fromisoformat(str(last_seen))).days
+                    weight = max(weight * (0.95 ** days), 0.3)
+                except (ValueError, TypeError):
+                    pass
             pair = (min(a, b), max(a, b))
             if pair in seen:
                 continue
             seen.add(pair)
+            chain_labels.add(a)
+            chain_labels.add(b)
             if relation:
                 stmt = f"「{a}」--[{relation}]--> 「{b}」"
             else:
                 stmt = f"话题「{a}」与「{b}」常被一起提及（相关度 {weight:.1f}）"
             results.append((stmt, weight if not relation else weight + 2.0, 'skeleton'))
 
-        logger.info(f"GraphSkeleton: returned={len(results[:limit])} user={user_id}")
+        self._graph_chain_labels = chain_labels
+        logger.info(f"GraphSkeleton: returned={len(results[:limit])} chain_labels={len(chain_labels)} user={user_id}")
         return results[:limit]
+
+    def _build_graph_paths(self, user_id: str, labels: set) -> list[str]:
+        """对节点标签集合，查询之间的连通边，组装链式路径"""
+        if not labels:
+            return []
+        ph = ','.join('?' * len(labels))
+        rows = self.conn.execute(f"""
+            SELECT n1.label AS a, n2.label AS b, e.relation
+            FROM memory_graph_edges e
+            JOIN memory_graph_nodes n1 ON e.from_node_id = n1.node_id
+            JOIN memory_graph_nodes n2 ON e.to_node_id = n2.node_id
+            WHERE n1.label IN ({ph}) AND n2.label IN ({ph})
+              AND n1.user_id = ? AND n2.user_id = ?
+              AND e.relation != ''
+        """, (*labels, *labels, user_id, user_id)).fetchall()
+
+        # 邻接表: label → [(relation, target_label)]
+        adj = {}
+        for a, b, relation in rows:
+            adj.setdefault(a, []).append((relation, b))
+
+        # DFS 找最长链（最多 3 条）
+        def _longest_from(start: str, visited: set) -> list:
+            best = [start]
+            for rel, nxt in adj.get(start, []):
+                if nxt in visited:
+                    continue
+                path = _longest_from(nxt, visited | {nxt})
+                if len(path) + 1 > len(best):
+                    best = [start] + [(rel, nxt)] + path[1:]
+            return best
+
+        chains = []
+        used_labels = set()
+        for label in sorted(labels, key=lambda x: -len(adj.get(x, []))):
+            if label in used_labels:
+                continue
+            path = _longest_from(label, {label})
+            if len(path) >= 3:
+                # 格式化: A [rel] B → B [rel] C ...
+                segments = []
+                cur = path[0]
+                for i in range(1, len(path)):
+                    if isinstance(path[i], tuple):
+                        rel, nxt = path[i]
+                        segments.append(f"{cur} [{rel}] {nxt}")
+                        cur = nxt
+                if len(segments) >= 2:
+                    chains.append(" → ".join(segments))
+                    for item in path:
+                        if not isinstance(item, tuple):
+                            used_labels.add(item)
+                    if len(chains) >= 3:
+                        break
+
+        if not chains:
+            # 退化为单段边
+            for a, b, relation in rows:
+                chains.append(f"{a} [{relation}] {b}")
+                if len(chains) >= 3:
+                    break
+
+        logger.info(f"GraphPaths: labels={len(labels)} paths={len(chains)} user={user_id}")
+        return chains[:3]
 
     # ── 融合 ──
 
@@ -363,6 +448,22 @@ class RetrievalMixin:
     def _upsert_graph_edge(self, from_id: int, to_id: int, now_str: str, relation: str = "", created_at: str = ""):
         if from_id == to_id:
             return
+
+        # 矛盾检测：若存在对立关系的边，删除旧边再插入新边
+        opposite = self._OPPOSITE_RELATIONS.get(relation)
+        if opposite:
+            conflict = self.conn.execute(
+                "SELECT from_node_id, to_node_id, relation FROM memory_graph_edges "
+                "WHERE ((from_node_id = ? AND to_node_id = ?) OR (from_node_id = ? AND to_node_id = ?)) AND relation = ?",
+                (from_id, to_id, to_id, from_id, opposite),
+            ).fetchone()
+            if conflict:
+                self.conn.execute(
+                    "DELETE FROM memory_graph_edges WHERE from_node_id = ? AND to_node_id = ?",
+                    (conflict[0], conflict[1]),
+                )
+                logger.warning(f"Graph: 矛盾关系替换 from={from_id} to={to_id} {conflict[2]} → {relation}")
+
         existing = self.conn.execute(
             "SELECT weight FROM memory_graph_edges WHERE from_node_id = ? AND to_node_id = ?",
             (from_id, to_id),
@@ -449,10 +550,17 @@ class RetrievalMixin:
             if depth >= self._GRAPH_BFS_DEPTH:
                 continue
             edges = self.conn.execute(
-                "SELECT from_node_id, to_node_id, weight, relation FROM memory_graph_edges WHERE from_node_id = ? OR to_node_id = ?",
+                "SELECT from_node_id, to_node_id, weight, relation, last_seen FROM memory_graph_edges WHERE from_node_id = ? OR to_node_id = ?",
                 (cid, cid)
             ).fetchall()
-            for frm, to, w, relation in edges:
+            for frm, to, w, relation, last_seen in edges:
+                # 时间衰减
+                if last_seen:
+                    try:
+                        days = (now_dt - datetime.fromisoformat(str(last_seen))).days
+                        w = max(w * (0.95 ** days), 0.3)
+                    except (ValueError, TypeError):
+                        pass
                 # 无 relation 的共现边是噪音，扩散时严重降权
                 w = w * (1.0 if relation else 0.1)
                 nid = frm if frm != cid else to

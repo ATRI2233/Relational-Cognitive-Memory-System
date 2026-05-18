@@ -273,10 +273,11 @@ session_boost = 0.3 if 本条 session_id == 当前 session_id else 0.0
 数据源：`memory_graph_edges`
 
 ```
-输入关键词 → 图节点（双向模糊匹配 label LIKE kw OR kw LIKE label）→ BFS 取关联边
+输入关键词 → 图节点（双向模糊匹配 label LIKE kw OR kw LIKE label）→ BFS 取关联边（时间衰减 weight × 0.95^days，最低 0.3）
 排序: relation != '' 优先（额外 +2），其次 weight DESC
 输出: 「A」--[关系]-->「B」 或 「A」与「B」常被一起提及（权重 x.x）
 tag 由融合器添加为 skeleton（不在内容前缀打 [图谱] 标记）
+路径序列化: 对涉及节点集合查连通边，组装 A [关系] B → B [关系] C 链条，独立"图谱关系链"字段注入
 ```
 
 ### 叙事摘要保底
@@ -617,6 +618,9 @@ sqlite3 data/rcms_memory_*.db "
 | 当前 | 图节点检索: 从 `label IN (...)` 精确匹配改为 `(label LIKE kw OR kw LIKE label)` 双向模糊匹配 |
 | 当前 | 反向边 fallback: 去掉"相关于"兜底，无映射时不插反向边；`_INVERSE_RELATIONS` 新增 5 条映射（喜欢玩/讨论过/对立/同类/使用/提及） |
 | 当前 | distill prompt: entities/relations 说明重写为结构化的实体消歧、客观关系、链式关系、跨领域示例，加防幻觉和禁止外部知识规则 |
+| 当前 | 路径序列化: 图通道返回节点后查连通边，组装 A [关系] B → B [关系] C 链条，独立"图谱关系链"字段注入 context |
+| 当前 | 边衰减: 检索时按 last_seen 计算 weight × 0.95^days，最低 0.3 |
+| 当前 | 矛盾检测: `_OPPOSITE_RELATIONS`（喜欢↔讨厌/使用↔放弃/朋友↔敌人），插入新边前删除矛盾旧边 + warning |
 
 ### 已移除完整清单
 

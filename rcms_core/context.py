@@ -189,6 +189,11 @@ class ContextMixin:
             if ch_lines:
                 parts.append("相关记忆:\n" + "\n\n".join(ch_lines))
 
+        # ── 图谱关系链 ──
+        graph_paths = getattr(self, '_graph_paths', [])
+        if graph_paths:
+            parts.append("图谱关系链:\n" + '\n'.join(f'  · {p}' for p in graph_paths))
+
         # ── 未完成话题（超 10 轮自动过期） ──
         if dangling:
             try:
@@ -231,6 +236,11 @@ class ContextMixin:
             items = grouped[key][:2]
             mem_lines.append(f"【{label}】\n" + "\n".join(f"  · {c}" for c in items))
         mem_block = "\n\n".join(mem_lines) if mem_lines else ""
+        # 图谱关系链
+        graph_paths = getattr(self, '_graph_paths', [])
+        gp_block = ""
+        if graph_paths:
+            gp_block = "\n【图谱关系链】\n" + "\n".join(f"  · {p}" for p in graph_paths)
         lt_block = ""
         if long_term:
             shared_ctx = long_term.get('shared_contexts', [])
@@ -257,6 +267,8 @@ class ContextMixin:
         prompt = "【当前心理状态】\n自然地聊"
         if mem_block:
             prompt += f"\n\n【相关记忆】\n{mem_block}"
+        if gp_block:
+            prompt += gp_block
         if lt_block:
             prompt += lt_block
         prompt += f"\n\n【底线】\n不主动说教。不假装完全理解。疲惫时简短但不冷漠。\n\n用户: {user_input}\n你:"
