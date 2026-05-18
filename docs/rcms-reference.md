@@ -279,13 +279,16 @@ tag 由融合器添加为 skeleton（不在内容前缀打 [图谱] 标记）
 ### 融合器 fusion
 
 ```
-Phase 1: 每通道保底 ch_min[i] 条
-Phase 2: 剩余名额按分排序填充
+Phase 1: 每通道保底 ch_min[i] 条（通道内原序，不受权重影响）
+Phase 2: 剩余名额按加权分排序填充
+         加权分 = 原始分 × channel_weights[i]
 全程: MD5 内容 hash 去重（strip 后全文 hash）
 截断: total_cap 条
 返回: [(content, tag), ...]  tag ∈ {recent, resonance, skeleton}
-      保持首次出现通道顺序（不是固定 recent→resonance→skeleton）
+      按加权分降序排列
 ```
+
+**channel_weights 默认值 [1.0, 1.0, 0.4]**：三通道分数不在同一量级，图谱边自带 +2 加成，不加权会永远压过其他两通道。0.4 把图谱分拉到与其他通道相近的量级再排序。
 
 ### 索引
 
@@ -551,6 +554,7 @@ sqlite3 data/rcms_memory_*.db "
       "custom_base_url": "https://api.openai.com/v1",
       "custom_model": "text-embedding-3-small",
       "total_cap": 5,                   // 三通道总召回上限
+      "channel_weights": [1.0, 1.0, 0.4], // 融合排序权重（图谱分乘 0.4 拉到同量级）
       "channel_min": [1, 1, 1],         // 每通道保底
       "time_decay_halflife": 30,        // 半衰期（天）
       "emotional_resonance_bonus": 0.15 // 情绪共振倍率加成

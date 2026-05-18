@@ -184,7 +184,7 @@ class ContextMixin:
             ch_lines = []
             for key in order:
                 label = channel_map.get(key, key)
-                items = grouped[key][:2]
+                items = grouped[key]
                 ch_lines.append(f"【{label}】\n" + "\n".join(f"  · {c}" for c in items))
             if ch_lines:
                 parts.append("相关记忆:\n" + "\n\n".join(ch_lines))

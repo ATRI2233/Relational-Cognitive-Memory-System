@@ -31,6 +31,7 @@ class RetrievalMixin:
             self.__retrieval_params = {
                 "total_cap": rc.get("total_cap", 5),
                 "channel_min": rc.get("channel_min", [1, 1, 1]),
+                "channel_weights": rc.get("channel_weights", [1.0, 1.0, 0.4]),
                 "time_decay_halflife": rc.get("time_decay_halflife", 30),
                 "emotional_resonance_bonus": rc.get("emotional_resonance_bonus", 0.15),
             }
@@ -46,12 +47,13 @@ class RetrievalMixin:
         p = self._get_retrieval_params()
         total_cap = total_cap or p["total_cap"]
         ch_min = p["channel_min"]
+        ch_weights = p["channel_weights"]
 
         ch1 = self._channel_time_importance(user_id, session_id=session_id, limit=ch_min[0] + 1)
         ch2 = await self._channel_multi_resonance(user_id, user_input, limit=ch_min[1] + 2)
         ch3 = self._channel_graph_skeleton(user_id, user_input, limit=ch_min[2] + 1)
 
-        result = self._fusion([ch1, ch2, ch3], total_cap, ch_min)
+        result = self._fusion([ch1, ch2, ch3], total_cap, ch_min, ch_weights)
         # 确保至少一条完整叙事摘要不被 key_facts 挤掉
         NARRATIVE_MIN_LEN = 150
         if not any(len(c) > NARRATIVE_MIN_LEN for c, _ in result):
@@ -285,16 +287,22 @@ class RetrievalMixin:
 
     # ── 融合 ──
 
-    def _fusion(self, channels: list[list], total_cap: int = 5, ch_min: list | None = None):
-        """三通道融合：每通道保底 ch_min[i] 条 → 内容 hash 去重 → 排序 → 截断不超过 total_cap"""
+    def _fusion(self, channels: list[list], total_cap: int = 5, ch_min: list | None = None, ch_weights: list | None = None):
+        """三通道融合：每通道保底 ch_min[i] 条 → 内容 hash 去重 → 加权排序 → 截断"""
         ch_min = ch_min or [1, 1, 1]
+        ch_weights = ch_weights or [1.0, 1.0, 0.4]
+        tag_to_idx = {'recent': 0, 'resonance': 1, 'skeleton': 2}
         seen = set()
         merged = []
 
         def _hash_key(content: str) -> str:
             return hashlib.md5(content.strip().encode('utf-8')).hexdigest()
 
-        # Phase 1：每通道保底
+        def _weighted(item: tuple) -> float:
+            content, score, tag = item
+            return score * ch_weights[tag_to_idx.get(tag, 0)]
+
+        # Phase 1：每通道保底（通道内原序，不受权重影响）
         for i, ch in enumerate(channels):
             taken = 0
             for item in ch:
@@ -306,11 +314,11 @@ class RetrievalMixin:
                     merged.append(item)
                     taken += 1
 
-        # Phase 2：填剩余名额（按分排序）
+        # Phase 2：填剩余名额（按加权分排序）
         all_items = []
         for ch in channels:
             all_items.extend(ch)
-        all_items.sort(key=lambda x: -x[1])
+        all_items.sort(key=_weighted, reverse=True)
 
         for item in all_items:
             if len(merged) >= total_cap:
@@ -320,7 +328,7 @@ class RetrievalMixin:
                 seen.add(key)
                 merged.append(item)
 
-        merged.sort(key=lambda x: -x[1])
+        merged.sort(key=_weighted, reverse=True)
         return [(content, tag) for content, score, tag in merged[:total_cap]]
 
     # ── 图操作 helper（消除 duplication） ──
