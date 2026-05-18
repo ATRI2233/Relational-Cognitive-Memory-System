@@ -37,9 +37,11 @@
                 │     ├─ 清理低重要性碎片（< 0.5，跨窗口）
                 │     └─ 图衰减 + 孤立节点清理
                 └─ _apply_analysis
+                      ├─ 用户状态 → session_state.stance
                       ├─ 用户画像（traits/结构化字段/边界）
                       ├─ 实体 → 图谱语义边
-                      └─ 事件记忆 + 悬案
+                      ├─ 事件记忆 + 悬案
+                      └─ key_facts → cognitive_distill
 ```
 
 ---
@@ -55,7 +57,6 @@
 | content | `save_turn` | 用户/助手原始消息 |
 | turn_num | `save_turn` | 递增轮号 |
 | importance | `save_turn` 规则计算 | 0.3 基础 + 情绪词 +0.1 + 长文本 +0.1，上限 0.8 |
-| mood | `_apply_distill` 回灌 | 蒸馏时 LLM 分析结果回写 |
 
 ### 蒸馏记忆：cognitive_distill
 
@@ -79,6 +80,7 @@
 每 session 一条，跟踪：
 - `turn_count` — 对话轮数
 - `focus_topic` — 当前焦点话题（LLM `topic_shift + key_points` 更新）
+- `stance` — 用户状态（`user_state`，open/reflective/guarded/...）
 - `dangling_threads` — 悬案列表 JSON `{"threads": [...], "turn": N}`
 - `last_distill_turn` / `last_distill_at` — 蒸馏水位线
 
@@ -120,20 +122,23 @@ identity_memory（每人一条）
 
 ### traits 强度衰减算法
 
-每次 `_apply_analysis` 时执行：
+每次 `_apply_analysis` 时执行。**count 永久记录历史确认次数，不受衰减影响；只有 strength 变化。**
 
 ```
 LLM 产出的 traits_updates（确认列表）:
   - 新特质 → 加入 map，strength=5，count=1
-  - 已有特质 → strength 重置为 5，count += 1
+  - 已有特质 → strength 重置为 5，count += 1（count 只增不减）
 
 LLM 未确认的已有特质:
-  - strength -= 1
-  - 下限 = min(count, 3)  ← 反复确认过的特质不会完全消失
-  - strength ≤ 0 → 删除
+  - strength -= 1                     ← 每次蒸馏衰减 1
+  - 下限 floor = min(count, 3)         ← count=1 下限 1, count≥3 下限 3
+  - strength = max(strength, floor)    ← 不低于下限
+  - strength ≤ 0 → 删除                ← count=1 时 5 轮不提即删
 
-speech_quirks → 以 "[口癖] 内容" 格式加入同一池子
+speech_quirks → 以 "[口癖] 内容" 格式加入同一 traits 池，同等强度管理
 ```
+
+示例：一条 count=3 的特质被 LLM 连续 10 轮不提，strength 从 5 衰减到 3 后不再下降，永远不会自动消失。
 
 ### 结构化字段覆盖写策略
 
@@ -291,19 +296,20 @@ Phase 2: 剩余名额按分排序填充
 1. 写精炼摘要到 `cognitive_distill`（importance=0.8）
 2. 更新 `session_state.last_distill_turn/at`
 3. 归档当前悬案到 `cognitive_distill`
-4. 删除本轮蒸馏窗口内 importance < 0.5 的碎片
-5. 回灌 LLM mood/importance 到 `chat_history`
+4. 跨窗口低重要性碎片清理：删除该用户所有 importance < 0.5 的条目（保留最新一条），不限 session
+5. 图维护：共现边 weight × 0.8，< 0.3 删除；孤立节点删除
 
 **_apply_analysis：**
-1. 焦点话题更新
+1. 焦点话题更新（topic_shift + key_points → focus_topic）
 2. 提取 mood/intensity（供下游使用）
-3. traits + quirks 强度衰减更新
-4. 结构化字段覆盖写（preferences/style/identity/core/boundaries）
-5. shared_jokes 写入 shared_context
-6. boundaries 集合合并
+3. 用户状态写入（user_state → session_state.stance）
+4. traits + quirks 强度衰减更新
+5. 结构化字段覆盖写（preferences/style/identity/core/boundaries）
+6. shared_jokes 写入 shared_context
 7. dangling_threads 写入 cognitive_distill + session_state
 8. entities 写入图谱语义边
-9. 高重要性事件（≥ 0.5）写入 cognitive_distill
+9. 高重要性事件（importance ≥ 0.5）写入 cognitive_distill
+10. key_facts 写入 cognitive_distill（importance 保底 0.5，不被碎片清理误删）
 
 ---
 
@@ -366,7 +372,7 @@ Phase 2: 剩余名额按分排序填充
 | boundaries | `identity_memory.boundaries`（覆盖写） |
 | dangling_threads | `cognitive_distill` + `session_state` |
 | entities | 图谱边 `memory_graph_edges.relation` |
-| key_facts | `cognitive_distill`（以蒸馏 importance 存档） |
+| key_facts | `cognitive_distill`（importance 保底 0.5，不被碎片清理） |
 | importance ≥ 0.5 | `cognitive_distill`（事件存档） |
 
 ---
@@ -391,6 +397,7 @@ Phase 2: 剩余名额按分排序填充
 | `DISTILL: start` | 蒸馏触发 |
 | `DISTILL: ok summary=...` | 蒸馏 LLM 调用成功 |
 | `ANALYSIS: write user=...` | 分析结果写入成功 |
+| `RCMS: 图维护 user=...` | 图衰减 + 孤立节点清理 |
 | `Embedding: ok dim=...` | 向量生成成功（首次需等待） |
 
 ### 数据库检查
@@ -411,11 +418,12 @@ sqlite3 data/rcms_memory_*.db "
   SELECT count(*) FROM cognitive_distill WHERE embedding IS NULL;
 "
 
-# 图谱规模
+# 图谱规模（含孤立节点和死边）
 sqlite3 data/rcms_memory_*.db "
   SELECT 'nodes', count(*) FROM memory_graph_nodes
   UNION ALL SELECT 'edges', count(*) FROM memory_graph_edges
-  UNION ALL SELECT 'semantic_edges', count(*) FROM memory_graph_edges WHERE relation != '';
+  UNION ALL SELECT 'semantic_edges', count(*) FROM memory_graph_edges WHERE relation != ''
+  UNION ALL SELECT 'orphan_nodes', count(*) FROM memory_graph_nodes n WHERE n.node_id NOT IN (SELECT from_node_id FROM memory_graph_edges UNION SELECT to_node_id FROM memory_graph_edges);
 "
 
 # 用户画像
@@ -436,6 +444,7 @@ sqlite3 data/rcms_memory_*.db "
 | 症状 | 排查 |
 |------|------|
 | 无记忆召回 | `cognitive_distill` 是否有数据；蒸馏是否触发过 |
+| 孤立节点过多 | 检查蒸馏是否正常触发；`_maintain_graph` 随蒸馏执行 |
 | 蒸馏不触发 | `max_turns`/`max_minutes` 配置；快照 ≥ 6 行 |
 | Embedding 为空 | API key/url 配置；`embedding_enabled` |
 | 情绪共振无效 | `cognitive_distill.mood` 是否有值 |
@@ -453,6 +462,7 @@ sqlite3 data/rcms_memory_*.db "
     "retrieval": {
       "embedding_enabled": true,        // 向量检索开关
       "source": "astrbot",              // astrbot | custom
+      "astrbot_source_id": "",          // AstrBot 提供商 ID，留空自动
       "custom_api_key": "",
       "custom_base_url": "https://api.openai.com/v1",
       "custom_model": "text-embedding-3-small",
@@ -463,6 +473,7 @@ sqlite3 data/rcms_memory_*.db "
     },
     "post_analysis": {
       "source": "astrbot",
+      "astrbot_source_id": "",          // 留空自动匹配
       "custom_api_key": "",
       "custom_base_url": "https://api.openai.com/v1",
       "custom_model": "gpt-4o-mini",     // 蒸馏用模型
@@ -498,9 +509,13 @@ sqlite3 data/rcms_memory_*.db "
 
 - `emotional_trace` 表 + 全部代码
 - `relationship_arc` 表 + 阶段晋升 + 里程碑
+- `entity_relations` 表（僵尸表，已由图谱边替代）
+- `voice_hint` 字段（被 `[口癖]` traits 池替代）
 - `session_state.residue_warmth` / `residue_tension` 字段
+- `chat_history.mood` 回灌（无消费方）
 - `_load_residue` / `_decay_residue` / `_write_residue` / `_apply_residue` 方法
 - `_run_analysis` / `_build_analysis_prompt`（旧每轮 LLM 分析）
 - `_maybe_distill` SQL 拼接方式
 - 规则分析层（stance/momentum/engagement）
 - 常量 `_ARC_STAGES` / `_RESIDUE_DECAY` / `_last_silent_recall`
+- 配置项 `mode` / `sampling`（旧每轮分析开关）

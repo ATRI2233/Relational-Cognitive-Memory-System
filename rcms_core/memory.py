@@ -156,18 +156,20 @@ class MemoryMixin:
             UPDATE memory_graph_edges SET weight = ROUND(weight * 0.8, 2)
             WHERE from_node_id IN (SELECT node_id FROM memory_graph_nodes WHERE user_id = ?)
         """, (user_id,))
-        self.conn.execute("""
+        dead_edges = self.conn.execute("""
             DELETE FROM memory_graph_edges WHERE relation = '' AND weight < 0.3
-        """)
+        """).rowcount
         # 语义边（relation != ''）不做自动删除，留待 LLM 蒸馏决策
         # 孤立节点清理（无任何边连接的节点）
-        self.conn.execute("""
+        orphan_nodes = self.conn.execute("""
             DELETE FROM memory_graph_nodes WHERE user_id = ? AND node_id NOT IN (
                 SELECT from_node_id FROM memory_graph_edges
                 UNION
                 SELECT to_node_id FROM memory_graph_edges
             )
-        """, (user_id,))
+        """, (user_id,)).rowcount
+        if dead_edges or orphan_nodes:
+            logger.info(f"RCMS: 图维护 user={user_id} deleted_edges={dead_edges} orphan_nodes={orphan_nodes}")
 
     def _archive_dangling(self, user_id: str, session_id: str, now_str: str, reason: str = ""):
         """将未结悬案归档到 cognitive_distill 并清空 session_state"""
