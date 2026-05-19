@@ -1,16 +1,18 @@
 # 变更记录
 
-> 当前版本: v0.1.0-pre — 未发行阶段，所有版本号 ≤ v1.0
+> 未发行阶段，所有版本 ≤ v1.0。
 > 贡献者: [仓库主](https://github.com/ATRI)
 
-## 2026-05-19
+## v0.1.0 — 2026-05-19
 
 ### feat: 3 种人格风格切换（default / cute / professional）
 - `analysis_config.post_analysis.personality_type` 控制蒸馏 prompt 风格
 - cute：第一人称，语气词「呀~呢~哦」，轻松温暖讲故事
 - professional：第三人称，客观结构化，精炼分析
 - default：原版第一人称日记叙事
-- 风格分支影响：system_preamble、summary_instruction、first_stage、extra_rules
+- 配置项: `config.json → analysis.post_analysis.personality_type`
+
+## v0.0.9 — 2026-05-19
 
 ### feat: 4 项蒸馏 + 人格改进
 #### snapshot 格式支持 [昵称] 前缀
@@ -33,87 +35,171 @@
 - `on_llm_response` 将 sender_name 传入 `save_turn`
 - chat_history 存储 sender_name → 蒸馏快照自动使用正确昵称
 
-### fix: 图谱节点 label 清洗 — 去除前导/末尾非文字字符
-- 避免 LLM 列表格式带出的 `-`、`·` 等符号导致同一实体分裂成两个节点
+### fix: 图谱节点 label 清洗
+- 去除 LLM 列表格式带出的 `-`、`·` 等符号导致同一实体分裂
 
-### feat: chat_history 添加 user_id 列 — 标记每条消息的发言者
+### feat: chat_history 添加 user_id 列
 - 新增 `ALTER TABLE` 迁移，`save_turn` 写入 user_id
-- 群聊场景下可区分同一 session 内各消息的发送者
 
 ### fix: 蒸馏 summary 改为第二人称 + fuzz_time 自然时段 + 融合排序防垄断
 - distill prompt 要求以「你」而非「用户/助手」叙述
 - `_fuzz_time` 改为自然时段：刚刚/上午的时候/下午的时候/晚上的时候/昨天/前天/前几天/上周
-- 融合 Phase 2 加入每通道上限 ceil(total_cap/3)，防止单通道垄断剩余名额
+- 融合 Phase 2 加入每通道上限 ceil(total_cap/3)
 
 ### refactor: 蒸馏 prompt 优化 + traits 衰减修复 + key_facts 写入优化
-- traits_updates 加负例约束（禁止泛化特质）和15字上限
-- mood 从枚举改为自由文本（如「轻松好奇」）
-- speech_quirks/traits_updates 与 lt_hint 去重，只输出新发现
-- summary 优先捕捉新变化，不重复已知事实
-- key_facts 上限改为5条，按 importance 降序
-- traits 衰减 floor 从 min(c,3) 改为 min(c//2,2)，新增30条容量上限
-- key_facts 写入分 permanent（最多3条，保底0.5）和 transient（最多5条，无保底）
+- traits_updates 加负例约束和 15 字上限
+- mood 从枚举改为自由文本
+- speech_quirks/traits_updates 与 lt_hint 去重
+- key_facts 上限 5 条，按 importance 降序
+- traits 衰减 floor: min(c//2,2)，30 条容量上限
+- key_facts 分 permanent（≤3，保底 0.5）和 transient（≤5，无保底）
 
-## 2026-05-18
+## v0.0.8 — 2026-05-18
 
-### 23:11 feat: 图路径序列化 + 边衰减 + 矛盾检测
-- `95ce0aa` — 图检索增加路径序列化输出，边权重支持时间衰减，新增记忆矛盾检测机制
+### feat: 图路径序列化 + 边衰减 + 矛盾检测
+- `95ce0aa`
 
-### 23:02 feat: 图检索双向模糊匹配 + 反向边去"相关于" + distill prompt 实体关系优化
-- `0928d32` — 图检索支持双向模糊匹配，消除反向边中的"相关于"冗余，优化 distill prompt 的实体关系表达
+### feat: 图检索双向模糊匹配 + 反向边去"相关于" + distill prompt 实体关系优化
+- `0928d32`
 
-### 17:40 feat: 融合排序加通道权重 + 展示层去掉每通道[:2]截断
-- `4b38e51` — 多通道融合排序引入权重系数，展示层移除通道级别的数量截断
+### feat: 融合排序加通道权重 + 展示层去掉每通道截断
+- `4b38e51`
 
-### 16:10 feat: 实体多关系格式 + mood 写入 + post_update_rules 纯管理 + 图单来源
-- `f9b16ac` — 实体支持多关系格式，mood 写入链路，post_update_rules 改为纯管理逻辑，图谱数据限定单来源
+### feat: 实体多关系格式 + mood 写入 + post_update_rules 纯管理 + 图单来源
+- `f9b16ac`
 
-### 14:53 fix: 插件数据库存储路径改为插件目录
-- `d73b063` — 修复 AstrBot 插件模式下数据库路径问题，改为存储在插件目录下
+### fix: 插件数据库存储路径改为插件目录
+- `d73b063`
 
-### 14:51 feat: 三通道记忆展示 + jieba 中文分词 + 停用词过滤 + embedding 全链路写入
-- `b55dca5` — 新增三通道记忆展示界面，集成 jieba 分词与停用词过滤，embedding 全链路写入完成
+### feat: 三通道记忆展示 + jieba 分词 + 停用词过滤 + embedding 全链路
+- `b55dca5`
 
-### 13:40 fix: 图谱自环边防护
-- `1a1de3d` — 修复图谱中可能出现自环边的问题，增加关键词去重和 from!=to 校验
+### fix: 图谱自环边防护
+- `1a1de3d`
 
-### 13:34 feat: 记忆时效标签 + Session 预热
-- `92245ee` — 记忆增加时效性标签，新增 Session 预热机制
+### feat: 记忆时效标签 + Session 预热
+- `92245ee`
 
-### 13:29 feat: 5 项检索/存储优化 + 文档同步
-- `0dfce58` — 多项检索与存储性能优化，同步更新相关文档
+### feat: 5 项检索/存储优化 + 文档同步
+- `0dfce58`
 
-### 13:13 fix: save_turn 不再覆盖 stance，避免覆盖蒸馏 user_state
-- `e973edf` — 修复 save_turn 覆盖 stance 的问题，防止蒸馏 user_state 被意外覆盖
+### fix: save_turn 不再覆盖 stance
+- `e973edf`
 
-### 13:09 docs: 全面同步参考手册与代码逻辑
-- `524557f` — 参考手册与代码逻辑全面对齐同步
+### docs: 全面同步参考手册与代码
+- `524557f`
 
-### 13:05 fix: 三个遗忘机制问题 + key_facts importance 保底
-- `79a0c0e` — 修复三个遗忘机制的边缘情况，key_facts importance 增加保底值
+### fix: 三个遗忘机制 + key_facts importance 保底
+- `79a0c0e`
 
-### 12:59 refactor: 清理死代码 + 架构整理
-- `7a968d8` — 清理废弃代码，整理项目架构
+### refactor: 清理死代码 + 架构整理
+- `7a968d8`
 
-### 10:48 chore: 移除无用设置 max_memories_per_prompt
-- `a80a111` — 移除从未生效的 max_memories_per_prompt 设置项
+### chore: 移除无用设置 max_memories_per_prompt
+- `a80a111`
 
-### 10:43 fix: Windows GBK 编码兼容
-- `07fb6cf` — 修复 Windows 下 GBK 编码兼容问题，特殊字符替换 + stdout 重配置
+### fix: Windows GBK 编码兼容
+- `07fb6cf`
 
-### 10:43 refactor: 合并 api 段入 analysis + 性能优化异步化
-- `a7d5419` — 将 api 段合并入 analysis，异步化性能优化
+### refactor: 合并 api 段入 analysis + 异步化
+- `a7d5419`
 
-## 2026-05-17
+### fix: 文档蒸馏阈值/实体存储描述 + 安装脚本路径
+- `bc396d6`
 
-### 23:24 fix: 文档蒸馏阈值/实体存储描述 + 安装脚本路径 bug
-- `bc396d6` — 蒸馏流程图阈值 50/120 → 30/60（匹配代码），实体写入位置修正为图谱边，安装脚本路径修复
+### feat: 关系里程碑 + 统一 entity_relations 到图谱边
+- `662a9bb`
 
-### 23:07 feat: 关系里程碑 + 统一 entity_relations 到图谱边
-- `662a9bb` — 新增关系里程碑功能，将 entity_relations 统一存储到图谱边
+### chore: 清理废弃脚本和文档
+- `de49a61`
 
-### 23:04 chore: 清理已废弃的脚本和文档
-- `de49a61` — 清理废弃的脚本和文档文件
+### feat: identity_memory 结构化字段
+- `2685ae2`
 
-### 22:50 feat: identity_memory 结构化字段
-- `2685ae2` — identity_memory 新增结构化字段：喜好、沟通风格、自我认同、雷区、核心身份
+## v0.0.7 — 2026-05-17
+
+### feat: AstrBot 解耦 + 回调接口 + install.sh
+- `f5bf6b0`, `7975bd2`
+
+### fix: post_analysis 模型名覆盖导致静默失败 + traits/dangling 退化
+- `59958ea`
+
+### fix: embedding 维度硬编码 1536 导致向量跳过
+- `37f94ea`
+
+### feat: trait 相似合并 + 确认次数保底衰减 + 展示压缩
+- `1f60e1d`
+
+### feat: 统一蒸馏表 + 双触发蒸馏 + 单次 API 分析 + 包结构重构
+- `a643cb0`
+
+### feat: topic_shift 写入 focus_topic，蒸馏阈值下调
+- `d9af6e1`
+
+### feat: 三通道融合召回架构
+- `2cc242f`
+
+### fix: 通道 2 补向量 + 通道 3 relation 语义格式 + 图边加 relation
+- `f4c01d8`
+
+### feat: 三通道参数可配置化
+- `5c86c57`
+
+### chore: 提取图操作 helper + 文档更新
+- `fc3329d`
+
+### fix: 图扩散语义边优先 + dangling_threads 生命周期管理
+- `7f7d7b7`
+
+## v0.0.6 — 2026-05-16
+
+### chore: 大清理 — 砍掉规则分析层，合并为单文件
+- `8fff833`
+
+### feat: v2 架构 — Embedding 检索 + ANALYSIS LLM + 配置化
+- `2ce1838`
+
+### test: v2 集成测试
+- `fc60494`
+
+### chore: config.json 添加 analysis 配置段
+- `de44e82`
+
+### chore: 全链路日志 + 诊断脚本
+- `03df379`
+
+## v0.0.5 — 2026-05-15
+
+### feat: 长期 5 层记忆表
+- `61fb5c4`
+
+### feat: Inhibition / Core Veto / Misrecall
+- `7cbe95f`
+
+### chore: SQLite 线程安全修复 + 输出日志配置化
+- `3b53e9e`
+
+### docs: 补全 CHANGELOG
+- `ddaf38a`
+
+### feat: narrative 注入 + 人格解析 + 三种注入方式
+- `9ceb08a`
+
+### chore: 补全文档和规划记录
+- `71a2bdf`
+
+## v0.0.4 — 2026-05-14
+
+### feat: Silent Recall Residue + 时间衰减
+- `9203996`
+
+### feat: Working Memory 完整版
+- `9e7047e`
+
+### feat: 激活扩散图结构（BFS 替代关键词 LIKE）
+- `792cef1`
+
+## v0.0.3 — 2026-05-13
+
+### Initial commit: RCMS MVP FirstStep
+- `e7afa54`
