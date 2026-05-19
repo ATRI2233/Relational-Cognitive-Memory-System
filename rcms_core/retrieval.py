@@ -503,17 +503,28 @@ class RetrievalMixin:
             dt = datetime.fromisoformat(str(dt_str)) if isinstance(dt_str, str) else datetime.strptime(str(dt_str)[:19], '%Y-%m-%d %H:%M:%S')
         except (ValueError, TypeError):
             return ''
-        delta = datetime.now() - dt
-        hours = delta.total_seconds() / 3600
-        if hours < 1:
-            return "刚刚"
-        if hours < 24:
-            return f"{int(hours)}小时前"
+        now = datetime.now()
+        delta = now - dt
         days = delta.days
-        if days <= 2:
-            return "前两天"
+        if days < 0:
+            return ''
+        if days == 0:
+            hours = delta.total_seconds() / 3600
+            if hours < 1:
+                return "刚刚"
+            if dt.hour < 12:
+                return "上午的时候"
+            if dt.hour < 18:
+                return "下午的时候"
+            return "晚上的时候"
+        if days == 1:
+            return "昨天"
+        if days == 2:
+            return "前天"
+        if days <= 6:
+            return "前几天"
         if days <= 14:
-            return "不久前"
+            return "上周"
         if days <= 60:
             return "前段时间"
         return "很久以前"
