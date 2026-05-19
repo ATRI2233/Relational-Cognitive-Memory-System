@@ -113,8 +113,8 @@ class MinimalRCMS(
         self.save_turn(session_id, user_input, reply, user_id=user_id)
         await self.post_update_rules(user_id, session_id, user_input, 'open', reply)
         # 蒸馏检查（standalone 模式下同步等待）
-        triggered, last_turn, turn_count, snapshot = self.check_distill_needed(session_id)
+        triggered, last_turn, turn_count, snapshot, senders = self.check_distill_needed(session_id)
         if triggered:
             long_term = self._load_long_term_context(user_id)
-            await self._run_distill_analysis(user_id, session_id, snapshot, long_term, last_turn, turn_count)
+            await self._run_distill_analysis(user_id, session_id, snapshot, long_term, last_turn, turn_count, senders=senders)
         return reply

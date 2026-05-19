@@ -430,6 +430,7 @@ class RcmsPlugin(star.Star):
         session_id = event.unified_msg_origin
         sender_id = event.get_sender_id()
         user_id = sender_id or self.user_id
+        sender_name = event.get_sender_name() or sender_id
 
         # 三通道融合召回（通道 1：原始消息 × 时间，通道 2：蒸馏语义 + 情绪，通道 3：图谱骨架）
         memories = await rcms.retrieve_memories(user_id, user_input, 'engaged', session_id=session_id)
@@ -475,6 +476,7 @@ class RcmsPlugin(star.Star):
         event.set_extra("rcms_session_id", session_id)
         event.set_extra("rcms_user_id", user_id)
         event.set_extra("rcms_context_prompt", context_part)
+        event.set_extra("rcms_sender_name", sender_name)
         event.set_extra("rcms_system_prompt", req.system_prompt)
 
     @filter.on_llm_response()
@@ -496,7 +498,8 @@ class RcmsPlugin(star.Star):
         async with self._lock:
             rcms = self._get_rcms(persona_name)
 
-        rcms.save_turn(session_id, user_input, reply, user_id=user_id)
+        sender_name = event.get_extra("rcms_sender_name", "")
+        rcms.save_turn(session_id, user_input, reply, user_id=user_id, sender_name=sender_name)
 
         # 记录输出日志（JSONL，自动轮换）
         context_prompt = event.get_extra("rcms_context_prompt", "")
@@ -553,11 +556,11 @@ class RcmsPlugin(star.Star):
                                   persona_name: str):
         """检查蒸馏条件，触发 LLM 蒸馏分析"""
         try:
-            triggered, last_turn, turn_count, snapshot = rcms.check_distill_needed(session_id)
+            triggered, last_turn, turn_count, snapshot, senders = rcms.check_distill_needed(session_id, persona_name=persona_name)
             if triggered:
-                logger.info(f"RCMS: [{persona_name}] distill triggered turn={last_turn}→{turn_count}")
+                logger.info(f"RCMS: [{persona_name}] distill triggered turn={last_turn}→{turn_count} senders={senders}")
                 long_term = rcms._load_long_term_context(user_id)
-                await rcms._run_distill_analysis(user_id, session_id, snapshot, long_term, last_turn, turn_count)
+                await rcms._run_distill_analysis(user_id, session_id, snapshot, long_term, last_turn, turn_count, persona_name=persona_name, senders=senders)
             else:
                 logger.debug(f"RCMS: [{persona_name}] distill not needed")
         except Exception:

@@ -107,6 +107,10 @@ CREATE TABLE IF NOT EXISTS shared_context (
         except Exception:
             pass
         try:
+            self.conn.execute("ALTER TABLE chat_history ADD COLUMN sender_name TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
             self.conn.execute("ALTER TABLE memory_graph_nodes ADD COLUMN entity_type TEXT DEFAULT 'auto'")
         except Exception:
             pass

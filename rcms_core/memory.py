@@ -82,17 +82,17 @@ class MemoryMixin:
                 pass
         self.conn.commit()
 
-    def check_distill_needed(self, session_id: str) -> tuple:
-        """检查是否需要触发蒸馏。返回 (triggered, last_turn, turn_count, snapshot_text)"""
+    def check_distill_needed(self, session_id: str, persona_name: str = "Bot") -> tuple:
+        """检查是否需要触发蒸馏。返回 (triggered, last_turn, turn_count, snapshot_text, sender_names)"""
         row = self.conn.execute(
             "SELECT turn_count, last_distill_turn, last_distill_at FROM session_state WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if not row:
-            return (False, 0, 0, "")
+            return (False, 0, 0, "", [])
         turn_count, last_turn, last_at = row[0] or 0, row[1] or 0, row[2]
         if turn_count == 0:
-            return (False, 0, 0, "")
+            return (False, 0, 0, "", [])
         max_turns = getattr(self, '_DISTILL_MAX_TURNS', 30)
         max_minutes = getattr(self, '_DISTILL_MAX_MINUTES', 60)
         triggered = False
@@ -103,17 +103,26 @@ class MemoryMixin:
             if elapsed >= max_minutes:
                 triggered = True
         if not triggered:
-            return (False, last_turn, turn_count, "")
+            return (False, last_turn, turn_count, "", [])
         # 读取本轮次以来的 chat_history 作为快照（至少 3 轮对话 = 6 行）
         rows = self.conn.execute(
-            "SELECT role, content FROM chat_history WHERE session_id = ? AND turn_num > ? AND turn_num <= ? ORDER BY turn_num, id",
+            "SELECT role, content, sender_name FROM chat_history WHERE session_id = ? AND turn_num > ? AND turn_num <= ? ORDER BY turn_num, id",
             (session_id, last_turn, turn_count),
         ).fetchall()
         if len(rows) < 6:
-            return (False, last_turn, turn_count, "")
-        lines = [f"{r[0]}: {r[1][:200]}" for r in rows]
+            return (False, last_turn, turn_count, "", [])
+        # 格式化：用户消息用 sender_name，Bot 消息用 persona_name
+        senders = set()
+        lines = []
+        for role, content, sender_name in rows:
+            nick = sender_name or (role if role == 'assistant' else '用户')
+            if role == 'assistant':
+                nick = persona_name
+            if nick:
+                senders.add(nick)
+            lines.append(f"[{nick}] {content[:200]}")
         snapshot_text = "\n".join(lines[:30])
-        return (True, last_turn, turn_count, snapshot_text)
+        return (True, last_turn, turn_count, snapshot_text, list(senders))
 
     async def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str, mood: str = "", mood_intensity: float = 0.0):
         """写入 LLM 蒸馏摘要（带 mood，供通道 2 情绪共振）+ 过期清理 + 图谱维护"""

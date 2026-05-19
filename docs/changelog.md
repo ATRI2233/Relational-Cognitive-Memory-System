@@ -1,6 +1,37 @@
 # 变更记录
 
+> 当前版本: v0.1.0-pre — 未发行阶段，所有版本号 ≤ v1.0
+> 贡献者: [仓库主](https://github.com/ATRI)
+
 ## 2026-05-19
+
+### feat: 3 种人格风格切换（default / cute / professional）
+- `analysis_config.post_analysis.personality_type` 控制蒸馏 prompt 风格
+- cute：第一人称，语气词「呀~呢~哦」，轻松温暖讲故事
+- professional：第三人称，客观结构化，精炼分析
+- default：原版第一人称日记叙事
+- 风格分支影响：system_preamble、summary_instruction、first_stage、extra_rules
+
+### feat: 4 项蒸馏 + 人格改进
+#### snapshot 格式支持 [昵称] 前缀
+- `check_distill_needed` 返回 5 元组（含 senders 列表）
+- 快照格式从「用户: 内容」改为「[昵称] 内容」，昵称来自 chat_history.sender_name
+- Bot 消息统一使用 `persona_name` 作为昵称
+
+#### 私聊/群聊双模板 + Bot 第一人称叙事
+- `_build_distill_prompt` 根据 is_group 输出不同版本：
+  - 私聊版：关注互动节奏、情绪变化，无 participants 字段
+  - 群聊版：参与者识别、人物关系、JSON 含 participants 字段
+- summary 从第二人称「你」改为第一人称「我」日记式叙事
+
+#### 人格风格注入蒸馏 prompt
+- `_run_distill_analysis` 自动从 long_term 构建 personality_style（communication_style + 前 3 个 traits）
+- 注入到 distill prompt 的「角色风格」区
+
+#### user_id ↔ nickname 深度绑定
+- 插件 `on_llm_request` 通过 `event.get_sender_name()` 提取显示名
+- `on_llm_response` 将 sender_name 传入 `save_turn`
+- chat_history 存储 sender_name → 蒸馏快照自动使用正确昵称
 
 ### fix: 图谱节点 label 清洗 — 去除前导/末尾非文字字符
 - 避免 LLM 列表格式带出的 `-`、`·` 等符号导致同一实体分裂成两个节点

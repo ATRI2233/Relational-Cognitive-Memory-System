@@ -35,6 +35,7 @@ class AnalysisMixin:
             "base_url": pa.get("custom_base_url", "") or pa.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")) or pa.get("custom_url", ""),
             "model": pa.get("custom_model", "") if pa.get("source") == "custom" else "",
             "astrbot_source_id": pa.get("astrbot_source_id", ""),
+            "personality_type": pa.get("personality_type", "default"),
         }
 
     async def _apply_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, data: dict):
@@ -302,15 +303,30 @@ class AnalysisMixin:
 
     # ── 蒸馏版 LLM 分析（单次调用产出摘要 + 9 维 JSON） ──
 
-    async def _run_distill_analysis(self, user_id: str, session_id: str, snapshot_text: str, long_term: dict, last_turn: int, turn_count: int):
+    async def _run_distill_analysis(self, user_id: str, session_id: str, snapshot_text: str, long_term: dict, last_turn: int, turn_count: int, persona_name: str = "Bot", senders: list = None):
         """蒸馏触发的 LLM 分析：一次调用产出摘要 + 9 维 JSON，然后写入"""
         cfg = self._get_post_analysis_config()
         if not cfg["api_key"] and not self._llm_call:
             logger.warning("DISTILL: no LLM configured, skipping")
             return
 
-        logger.info(f"DISTILL: start user={user_id} turns={last_turn}→{turn_count}")
-        prompt = self._build_distill_prompt(snapshot_text, long_term)
+        logger.info(f"DISTILL: start user={user_id} turns={last_turn}→{turn_count} persona={persona_name}")
+
+        # Build personality style from long_term for Bot first-person narration
+        style_parts = []
+        if long_term.get('communication_style'):
+            style_parts.append(long_term['communication_style'])
+        traits = long_term.get('identity_traits', [])
+        if traits:
+            style_parts.append('特质：' + '、'.join(traits[:3]))
+        personality_style = '。'.join(style_parts)
+
+        # Detect group: more than 1 sender excluding Bot itself
+        other_senders = [s for s in (senders or []) if s != persona_name]
+        is_group = len(other_senders) > 1
+
+        personality_type = cfg.get("personality_type", "default")
+        prompt = self._build_distill_prompt(snapshot_text, long_term, persona_name=persona_name, personality_style=personality_style, is_group=is_group, personality_type=personality_type)
         content = None
         try:
             if self._llm_call:
@@ -354,8 +370,8 @@ class AnalysisMixin:
         # 写入 9 维分析（情感/特质/实体等）
         await self._apply_analysis(user_id, session_id, summary[:80], "", analysis)
 
-    def _build_distill_prompt(self, snapshot_text: str, long_term: dict) -> str:
-        """两阶段蒸馏分析 prompt：先理解对话脉络，再精确提取信息"""
+    def _build_distill_prompt(self, snapshot_text: str, long_term: dict, persona_name: str = "Bot", personality_style: str = "", is_group: bool = False, personality_type: str = "default") -> str:
+        """两阶段蒸馏分析 prompt：私聊/群聊双模板，支持三种人格风格"""
         lt_hint = ""
         if long_term:
             if long_term.get("identity_traits"):
@@ -371,26 +387,104 @@ class AnalysisMixin:
             if long_term.get("boundaries"):
                 lt_hint += f"\n已知雷区: {json.dumps(long_term['boundaries'], ensure_ascii=False)}"
 
+        # ── 人格风格分支 ──
+        if personality_type == "cute":
+            if is_group:
+                preamble = f"你是 {persona_name}，一个活泼可爱的群聊观察员~ 分析群聊对话快照，用轻松温暖的口吻产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                participants_field = '"participants": ["参与对话的所有昵称（不含 ' + persona_name + ' 自己）"],\n    '
+                summary_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气轻松温暖，像记录生活片段一样。可以用「呀」「呢」「哦」「~」但别太过。"
+                first_stage = (
+                    "· 参与者有哪些（看看谁在群里说话啦）\n"
+                    "· 发生了什么有趣的事、谁说了什么\n"
+                    "· 气氛怎么样——开心/平淡/火药味\n"
+                    "· 大家之间什么关系"
+                )
+            else:
+                preamble = f"你是 {persona_name}，一个活泼可爱的小助手~ 分析私聊对话快照，用轻松温暖的口吻产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                participants_field = ""
+                summary_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气轻松温暖，像记录和朋友的聊天。可以用「呀」「呢」「哦」「~」但别太过。"
+                first_stage = (
+                    "· 今天发生了什么\n"
+                    "· 用户心情怎么样\n"
+                    "· 你们聊得开不开心"
+                )
+            extra_rules = (
+                "9. summary 语气温暖轻松，朋友聊天感，适当用「呀」「呢」「哦」「~」但不要堆砌\n"
+                "10. 保留情绪细节，让摘要读起来有温度\n"
+                "11. 可以用「今天」「刚刚」开头讲故事"
+            )
+
+        elif personality_type == "professional":
+            if is_group:
+                preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析群聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                participants_field = '"participants": ["参与对话的所有参与者昵称（不含 ' + persona_name + '）"],\n    '
+                summary_instruction = f"以第三人称客观记录群聊中的关键事件、参与者行为模式和关系变化。保持精炼、结构化。"
+                first_stage = (
+                    "· 参与者识别\n"
+                    "· 关键事件时序\n"
+                    "· 情绪基调量化\n"
+                    "· 参与者互动模式分析"
+                )
+            else:
+                preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析私聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                participants_field = ""
+                summary_instruction = f"以第三人称客观记录本次对话的关键信息、用户状态变化和行为模式。保持专业、精炼。"
+                first_stage = (
+                    "· 事件时序重建\n"
+                    "· 用户情绪状态变化\n"
+                    "· 交互模式分析"
+                )
+            extra_rules = (
+                "9. summary 用第三人称，保持客观专业，不使用语气词\n"
+                "10. 按「事件→影响→模式」结构组织摘要\n"
+                "11. 避免主观评价，优先记录可验证的事实"
+            )
+
+        else:  # default
+            if is_group:
+                preamble = f"你是 {persona_name} 的后台认知分析模块。分析群聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。你需要理解谁说了什么。"
+                participants_field = '"participants": ["参与对话的所有昵称（不含 ' + persona_name + ' 自己）"],\n    '
+                summary_instruction = f"以 {persona_name} 的第一人称「我」叙事，像日记一样记录观察到的事情。"
+                first_stage = (
+                    "· 参与者有哪些（通过 [昵称] 区分）\n"
+                    "· 发生了什么事、谁说了什么、事件顺序\n"
+                    "· 情绪基调\n"
+                    "· 人物之间的关系和互动模式"
+                )
+            else:
+                preamble = f"你是 {persona_name} 的后台认知分析模块。分析私聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                participants_field = ""
+                summary_instruction = f"以 {persona_name} 的第一人称「我」叙事，像日记一样记录对用户的观察。"
+                first_stage = (
+                    "· 发生了什么、事件顺序\n"
+                    "· 用户情绪变化\n"
+                    "· 你和用户之间的互动节奏"
+                )
+            extra_rules = ""
+
         return f"""[SYSTEM]
-你是结构化对话蒸馏器。两阶段分析：先理解脉络，再提取 JSON。只输出 JSON，不要额外文字。
+{preamble}
+
+角色风格：
+{personality_style or '（无特殊设定）'}
 
 [USER]
 对话快照：
 {snapshot_text}
+
 已了解的信息（后续字段需与之去重）：
 {lt_hint}
 
+分析要求——两阶段：
 第一阶段：理解对话脉络
-· 发生了什么事——谁说了什么、做了什么、事件顺序
-· 情绪基调——整体氛围轻松/紧张/热烈/冷淡
-· 人物关系——参与者之间的互动模式
+{first_stage}
 
-第二阶段：精确提取。返回如下 JSON：
+第二阶段：提取 JSON。返回格式：
 
 {{
-  "summary": "用第二人称「你」概括。优先捕捉与已知信息不同的新变化，不要重复已知事实。保留具体细节和情绪转折。",
+  "summary": "{summary_instruction} 优先捕捉新变化，不要重复已知信息。保留具体细节和情绪转折。",
   "analysis": {{
-    "key_facts": [
+    {participants_field}"key_facts": [
       "按 importance 降序排列的关键事实，保留时间/原因/经过/结果等具体细节，最多5条"
     ],
     "key_facts_structured": [
@@ -402,7 +496,7 @@ class AnalysisMixin:
     "topic_shift": true|false,
     "key_points": ["事件脉络简要概括"],
     "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
-    "traits_updates": ["有具体行为证据支撑的用户特质，每条≤15字，与已知特质去重后只输出新发现的"],
+    "traits_updates": ["有具体行为证据支撑的参与者特质，每条≤15字，与已知特质去重后只输出新发现的"],
     "speech_quirks": ["说话特点，去重后只输出新发现的内容"],
     "preferences": {{"likes": ["事物"], "dislikes": ["事物"]}},
     "communication_style": "总结用户的说话方式（纯文本）",
@@ -424,13 +518,13 @@ class AnalysisMixin:
 }}
 
 规则：
-1. summary 优先捕捉新变化，不要复述 lt_hint 中已有的信息
+1. summary 用第一人称（default/cute）或第三人称（professional），不要用第二人称「你」
 2. traits_updates 禁止提取「善于表达/喜欢思考/善于沟通」等无具体行为支撑的泛化特质；每条≤15字；必须与已知特质去重
-3. speech_quirks 与 traits_updates 要各自去重，与 lt_hint 对比后只输出新发现的内容
-4. key_facts 最多5条，按 importance 降序排列，保留具体细节
+3. speech_quirks 与 traits_updates 各自去重，与 lt_hint 对比后只输出新发现的
+4. key_facts 最多5条，按 importance 降序，保留具体细节
 5. 同一实体的不同表述用 canonical_name 统一消歧
-6. 关系提取：优先客观关系（概念层级/归属/同类并列/空间关联/人物关联）；不提取纯态度关系除非反复讨论上升为概念；鼓励链式 A→B→C；非人节点必须参与；只提取文本内实体
-7. 若无法提取字段用 null 或空数组，不要占位文本
+6. 关系提取：优先客观关系；鼓励链式 A→B→C；只提取文本内实体
+7. 无法提取的字段用 null 或空数组
 8. 输入过长时设置 meta.truncated = true
-
+{extra_rules}
 只输出 JSON。"""
