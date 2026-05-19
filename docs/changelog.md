@@ -14,6 +14,15 @@
 - `_fuzz_time` 改为自然时段：刚刚/上午的时候/下午的时候/晚上的时候/昨天/前天/前几天/上周
 - 融合 Phase 2 加入每通道上限 ceil(total_cap/3)，防止单通道垄断剩余名额
 
+### refactor: 蒸馏 prompt 优化 + traits 衰减修复 + key_facts 写入优化
+- traits_updates 加负例约束（禁止泛化特质）和15字上限
+- mood 从枚举改为自由文本（如「轻松好奇」）
+- speech_quirks/traits_updates 与 lt_hint 去重，只输出新发现
+- summary 优先捕捉新变化，不重复已知事实
+- key_facts 上限改为5条，按 importance 降序
+- traits 衰减 floor 从 min(c,3) 改为 min(c//2,2)，新增30条容量上限
+- key_facts 写入分 permanent（最多3条，保底0.5）和 transient（最多5条，无保底）
+
 ## 2026-05-18
 
 ### 23:11 feat: 图路径序列化 + 边衰减 + 矛盾检测

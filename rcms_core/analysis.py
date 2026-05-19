@@ -138,13 +138,18 @@ class AnalysisMixin:
                 trait_map[q_entry]["c"] += 1
                 confirmed.add(q_entry)
 
-            # Decay unconfirmed: strength -= 1, floor = min(c, 3)
+            # Decay unconfirmed: strength -= 1, floor = min(c // 2, 2)
             for t in list(trait_map.keys()):
                 if t not in confirmed:
-                    floor = min(trait_map[t]["c"], 3)
+                    floor = min(trait_map[t]["c"] // 2, 2)
                     trait_map[t]["s"] = max(trait_map[t]["s"] - 1, floor)
                     if trait_map[t]["s"] <= 0:
                         del trait_map[t]
+
+            # 容量上限：超过30条时按 s*2+c 排序保留前30
+            if len(trait_map) > 30:
+                sorted_t = sorted(trait_map.items(), key=lambda x: x[1]["s"] * 2 + x[1]["c"], reverse=True)[:30]
+                trait_map = dict(sorted_t)
 
             new_traits_json = [{"t": t, "s": v["s"], "c": v["c"]} for t, v in trait_map.items()]
             if new_traits_json != raw:
@@ -240,13 +245,16 @@ class AnalysisMixin:
                     inv = self._INVERSE_RELATIONS[relation]
                     self._upsert_graph_edge(to_id, from_id, now_str, relation=inv, created_at=now_str)
 
-        # 10. Key facts → cognitive_distill（保底 importance 0.5 防止被碎片清理删除）
+        # 10. Key facts → cognitive_distill（permanent 保底 0.5，transient 无保底可被清理）
         importance = data.get("importance", 0.0)
         kf_imp = max(importance, 0.5)
         kfs = data.get("key_facts", []) or data.get("key_facts_structured", [])
-        for kf in kfs[:3]:
+        perm_count = 0
+        tran_count = 0
+        for kf in kfs:
             if isinstance(kf, str):
                 content = kf
+                temporal = "permanent"
                 expires_at = None
             elif isinstance(kf, dict):
                 content = kf.get("content", "")
@@ -257,12 +265,23 @@ class AnalysisMixin:
                     expires_at = None
             else:
                 continue
-            if content:
-                self.conn.execute(
-                    "INSERT INTO cognitive_distill (user_id, content, summary, importance, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (user_id, content, content[:60], kf_imp, expires_at, now_str),
-                )
-                new_entries.append((self.conn.execute("SELECT last_insert_rowid()").fetchone()[0], content[:512]))
+            if not content:
+                continue
+            if temporal == "permanent":
+                if perm_count >= 3:
+                    continue
+                imp_val = kf_imp
+                perm_count += 1
+            else:
+                if tran_count >= 5:
+                    continue
+                imp_val = importance  # transient 无保底，可被正常衰减清理
+                tran_count += 1
+            self.conn.execute(
+                "INSERT INTO cognitive_distill (user_id, content, summary, importance, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, content, content[:60], imp_val, expires_at, now_str),
+            )
+            new_entries.append((self.conn.execute("SELECT last_insert_rowid()").fetchone()[0], content[:512]))
 
         log_parts = []
         if data.get("traits_updates"): log_parts.append(f"traits+{len(data['traits_updates'])}")
@@ -358,6 +377,7 @@ class AnalysisMixin:
 [USER]
 对话快照：
 {snapshot_text}
+已了解的信息（后续字段需与之去重）：
 {lt_hint}
 
 第一阶段：理解对话脉络
@@ -368,26 +388,28 @@ class AnalysisMixin:
 第二阶段：精确提取。返回如下 JSON：
 
 {{
-  "summary": "用第二人称「你」概括这段对话中对方身上发生的事和情绪。不要第三人称「用户/助手」。保留具体细节和情绪转折。",
+  "summary": "用第二人称「你」概括。优先捕捉与已知信息不同的新变化，不要重复已知事实。保留具体细节和情绪转折。",
   "analysis": {{
-    "key_facts": ["完整可独立理解的事实，保留时间/原因/经过/结果等具体细节"],
-    "key_facts_structured": [
-      {{"content": "永久特质如用户是 INFJ", "temporal": "permanent", "expires_after_days": null}},
-      {{"content": "临时事件如下周面试", "temporal": "transient", "expires_after_days": 14}}
+    "key_facts": [
+      "按 importance 降序排列的关键事实，保留时间/原因/经过/结果等具体细节，最多5条"
     ],
-    "mood": "温暖|低落|焦虑|平静|兴奋|防御|疏远",
+    "key_facts_structured": [
+      {{"content": "永久特质", "temporal": "permanent", "expires_after_days": null}},
+      {{"content": "临时事件", "temporal": "transient", "expires_after_days": 14}}
+    ],
+    "mood": "用两个词描述情绪，如「轻松好奇」「焦虑疲惫」",
     "mood_intensity": 0.0~1.0,
     "topic_shift": true|false,
     "key_points": ["事件脉络简要概括"],
     "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
-    "traits_updates": ["从对话中发现的用户特质（字符串列表）"],
-    "speech_quirks": ["说话特点（字符串列表）"],
+    "traits_updates": ["有具体行为证据支撑的用户特质，每条≤15字，与已知特质去重后只输出新发现的"],
+    "speech_quirks": ["说话特点，去重后只输出新发现的内容"],
     "preferences": {{"likes": ["事物"], "dislikes": ["事物"]}},
     "communication_style": "总结用户的说话方式（纯文本）",
     "self_identity": ["用户如何看待自己"],
     "core_identity": {{"职业": "", "角色": "", "标签": ""}},
     "boundaries": ["雷区列表"],
-    "dangling_threads": ["未完成话题（字符串列表）"],
+    "dangling_threads": ["未完成话题"],
     "importance": 0.0~1.0,
     "entities": [
       {{
@@ -402,18 +424,13 @@ class AnalysisMixin:
 }}
 
 规则：
-1. summary 用第二人称「你」，不要「用户/助手」
-2. key_facts 保留具体细节，不要干巴巴的一句话
-3. 同一实体的不同表述用 canonical_name 统一消歧，不同 name 指向同一个 canonical_name
-4. 关系提取：
-   · 优先提取实体之间的客观关系（概念层级/归属/同类并列/空间关联/人物关联）
-   · 不提取纯态度关系（如喜欢/讨厌），除非该态度被反复讨论上升为概念
-   · 鼓励链式关系：若文本隐含 A→B 和 B→C，即使未明说也要提取，让图谱连成 A→B→C
-   · 非人节点（concept/activity）必须参与关系提取，不要只输出人物节点
-   · 关系方向：A 是 B 的上位词时，写成 A 属于 B（A→B），不要反向
-   · 只提取文本内实体，禁止外部知识补充文本未提及的实体或关系
-5. 若无法提取字段用 null 或空数组，不要占位文本或解释
-6. 输入过长时优先保留最近对话，设置 meta.truncated = true
-7. 遇到可能的敏感信息请掩码处理
+1. summary 优先捕捉新变化，不要复述 lt_hint 中已有的信息
+2. traits_updates 禁止提取「善于表达/喜欢思考/善于沟通」等无具体行为支撑的泛化特质；每条≤15字；必须与已知特质去重
+3. speech_quirks 与 traits_updates 要各自去重，与 lt_hint 对比后只输出新发现的内容
+4. key_facts 最多5条，按 importance 降序排列，保留具体细节
+5. 同一实体的不同表述用 canonical_name 统一消歧
+6. 关系提取：优先客观关系（概念层级/归属/同类并列/空间关联/人物关联）；不提取纯态度关系除非反复讨论上升为概念；鼓励链式 A→B→C；非人节点必须参与；只提取文本内实体
+7. 若无法提取字段用 null 或空数组，不要占位文本
+8. 输入过长时设置 meta.truncated = true
 
 只输出 JSON。"""
