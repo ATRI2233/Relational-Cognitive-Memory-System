@@ -7,7 +7,7 @@ logger = logging.getLogger("rcms")
 class SessionMixin:
     """会话状态、save_turn"""
 
-    def save_turn(self, session_id: str, user_input: str, agent_reply: str):
+    def save_turn(self, session_id: str, user_input: str, agent_reply: str, user_id: str = ""):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         row = self.conn.execute(
             "SELECT turn_count FROM session_state WHERE session_id = ?", (session_id,)
@@ -21,8 +21,8 @@ class SessionMixin:
             importance = min(0.3 + hits * 0.1, 0.8)
         if len(user_input) > 50:
             importance = min(importance + 0.1, 0.8)
-        self.conn.execute("INSERT INTO chat_history (session_id, role, content, turn_num, created_at, importance) VALUES (?, ?, ?, ?, ?, ?)", (session_id, 'user', user_input, turn_num, timestamp, importance))
-        self.conn.execute("INSERT INTO chat_history (session_id, role, content, turn_num, created_at) VALUES (?, ?, ?, ?, ?)", (session_id, 'assistant', agent_reply, turn_num, timestamp))
+        self.conn.execute("INSERT INTO chat_history (session_id, role, content, turn_num, created_at, importance, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)", (session_id, 'user', user_input, turn_num, timestamp, importance, user_id))
+        self.conn.execute("INSERT INTO chat_history (session_id, role, content, turn_num, created_at, user_id) VALUES (?, ?, ?, ?, ?, ?)", (session_id, 'assistant', agent_reply, turn_num, timestamp, user_id))
         self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, timestamp))
         self.conn.execute("UPDATE session_state SET turn_count = turn_count + 1, last_active = ? WHERE session_id = ?", (timestamp, session_id))
         self.conn.commit()

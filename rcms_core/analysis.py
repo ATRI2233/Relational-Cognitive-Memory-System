@@ -182,6 +182,8 @@ class AnalysisMixin:
             if not name or not relations:
                 continue
             from_id = self._upsert_graph_node(user_id, name, now_str, entity_type=entity_type)
+            if from_id < 0:
+                continue
             for rel in relations:
                 target = rel.get("target", "")
                 relation = rel.get("relation", "")

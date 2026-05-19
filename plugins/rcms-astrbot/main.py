@@ -496,7 +496,7 @@ class RcmsPlugin(star.Star):
         async with self._lock:
             rcms = self._get_rcms(persona_name)
 
-        rcms.save_turn(session_id, user_input, reply)
+        rcms.save_turn(session_id, user_input, reply, user_id=user_id)
 
         # 记录输出日志（JSONL，自动轮换）
         context_prompt = event.get_extra("rcms_context_prompt", "")

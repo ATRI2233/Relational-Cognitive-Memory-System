@@ -427,6 +427,11 @@ class RetrievalMixin:
     # ── 图操作 helper（消除 duplication） ──
 
     def _upsert_graph_node(self, user_id: str, label: str, now_str: str, entity_type: str = 'auto') -> int:
+        # 清洗：去掉前导/末尾非文字字符（如 LLM 从列表格式带出的 - · —）
+        label = re.sub(r'^[^a-zA-Z0-9一-鿿]+|[^a-zA-Z0-9一-鿿]+$', '', label)
+        if not label:
+            logger.warning(f"Graph: skip empty label after cleaning user={user_id}")
+            return -1
         row = self.conn.execute(
             "SELECT node_id, entity_type FROM memory_graph_nodes WHERE user_id = ? AND label = ?",
             (user_id, label),
