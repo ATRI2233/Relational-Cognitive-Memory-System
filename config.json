@@ -27,7 +27,8 @@
       "custom_model": "gpt-4o-mini",
       "max_turns": 30,
       "max_minutes": 60,
-      "dangling_expire_turns": 15
+      "dangling_expire_turns": 15,
+      "personality_type": "default"
     }
   },
   "output_log": {
