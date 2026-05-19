@@ -44,6 +44,50 @@ class AnalysisMixin:
             self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, now_str))
             self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
 
+        # 兼容新/旧输出格式：将可能的 dict 项归一化为旧版简单类型（string 列表）以免后续逻辑出错
+        traits_updates = []
+        for t in data.get("traits_updates", []) or []:
+            if isinstance(t, dict):
+                trait = t.get("trait") or t.get("t") or None
+                if trait:
+                    traits_updates.append(trait)
+            elif isinstance(t, str):
+                traits_updates.append(t)
+
+        speech_quirks = []
+        for q in data.get("speech_quirks", []) or []:
+            if isinstance(q, dict):
+                quirk = q.get("quirk") or q.get("q") or q.get("text") or None
+                if quirk:
+                    speech_quirks.append(quirk)
+            elif isinstance(q, str):
+                speech_quirks.append(q)
+
+        dangling_threads = []
+        for dt in data.get("dangling_threads", []) or []:
+            if isinstance(dt, dict):
+                content = dt.get("content") or dt.get("text") or None
+                if content:
+                    dangling_threads.append(content)
+            elif isinstance(dt, str):
+                dangling_threads.append(dt)
+
+        key_facts_list = []
+        for kf in data.get("key_facts", []) or []:
+            if isinstance(kf, dict):
+                c = kf.get("content") or kf.get("text") or None
+                if c:
+                    key_facts_list.append(c)
+            elif isinstance(kf, str):
+                key_facts_list.append(kf)
+
+        _norm_data = dict(data)
+        _norm_data["traits_updates"] = traits_updates
+        _norm_data["speech_quirks"] = speech_quirks
+        _norm_data["dangling_threads"] = dangling_threads
+        _norm_data["key_facts"] = key_facts_list
+        data = _norm_data
+
         # 1. Topic tracking — focus_topic from LLM analysis, 比关键词猜测精准
         if data.get("topic_shift") and data.get("key_points"):
             new_topic = data["key_points"][0][:60]
@@ -308,80 +352,68 @@ class AnalysisMixin:
             if long_term.get("boundaries"):
                 lt_hint += f"\n已知雷区: {json.dumps(long_term['boundaries'], ensure_ascii=False)}"
 
-        return f"""你是一个对话分析系统。以下是最近多轮对话的完整记录：
+        return f"""[SYSTEM]
+你是结构化对话蒸馏器。两阶段分析：先理解脉络，再提取 JSON。只输出 JSON，不要额外文字。
 
+[USER]
+对话快照：
 {snapshot_text}
 {lt_hint}
 
-请按两阶段分析：
-
 第一阶段：理解对话脉络
-通读整段对话，理解：
 · 发生了什么事——谁说了什么、做了什么、事件顺序
 · 情绪基调——整体氛围轻松/紧张/热烈/冷淡
 · 人物关系——参与者之间的互动模式
 
-第二阶段：精确提取
-基于对对话的理解，产出以下 JSON：
+第二阶段：精确提取。返回如下 JSON：
 
 {{
-  "summary": "用第二人称「你」概括这段对话中对方身上发生的事和情绪。不要第三人称「用户/助手」，而是「你今天提到工作压力大」「你最近在学 Rust」「你情绪比较低落」这样的叙述。保留具体细节和情绪转折。",
+  "summary": "用第二人称「你」概括这段对话中对方身上发生的事和情绪。不要第三人称「用户/助手」。保留具体细节和情绪转折。",
   "analysis": {{
-    "key_facts": [
-      "从对话中提取的关键事实。保留具体细节——时间、原因、经过、结果。例如「用户连续加班三天，经理今天又改了需求，用户吐槽说想辞职」而非「用户感到累」"
-    ],
+    "key_facts": ["完整可独立理解的事实，保留时间/原因/经过/结果等具体细节"],
     "key_facts_structured": [
-      {{"content": "完整可独立理解的事实", "temporal": "permanent"}},
-      {{"content": "临时性事件如面试计划等", "temporal": "transient", "expires_after_days": 14}}
+      {{"content": "永久特质如用户是 INFJ", "temporal": "permanent", "expires_after_days": null}},
+      {{"content": "临时事件如下周面试", "temporal": "transient", "expires_after_days": 14}}
     ],
     "mood": "温暖|低落|焦虑|平静|兴奋|防御|疏远",
     "mood_intensity": 0.0~1.0,
-    "topic_shift": true/false,
-    "key_points": ["事件脉络的简要概括（2-4条）"],
+    "topic_shift": true|false,
+    "key_points": ["事件脉络简要概括"],
     "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
-    "traits_updates": ["从对话中发现的用户特质"],
-    "speech_quirks": ["说话特点"],
-    "preferences": {{"likes": ["喜欢的事物"], "dislikes": ["不喜欢的事物"]}},
-    "communication_style": "总结用户的说话方式",
+    "traits_updates": ["从对话中发现的用户特质（字符串列表）"],
+    "speech_quirks": ["说话特点（字符串列表）"],
+    "preferences": {{"likes": ["事物"], "dislikes": ["事物"]}},
+    "communication_style": "总结用户的说话方式（纯文本）",
     "self_identity": ["用户如何看待自己"],
     "core_identity": {{"职业": "", "角色": "", "标签": ""}},
-    "boundaries": ["避免做的事、雷区（完整列表，参考已有雷区增删）"],
-    "dangling_threads": ["未完成的话题"],
+    "boundaries": ["雷区列表"],
+    "dangling_threads": ["未完成话题（字符串列表）"],
     "importance": 0.0~1.0,
     "entities": [
-      {{"name": "实体名", "type": "person|place|concept|activity", "relations": [
-        {{"target": "目标实体名", "relation": "关系类型（如属于、同类、任职于等，按需自定义）"}}
-      ]}}
+      {{
+        "name": "实体名", "canonical_name": "标准名", "type": "person|place|concept|activity",
+        "relations": [
+          {{"target": "目标标准名", "relation": "关系类型"}}
+        ]
+      }}
     ]
-  }}
+  }},
+  "meta": {{"truncated": false}}
 }}
 
-要求：
-· summary 要像人聊天时复述事情一样，有叙事感
-· key_facts 与 key_facts_structured 任选一种输出，后者可指定时效性
-· key_facts_structured[].temporal 为 permanent 永久保留，transient 到期自动清理
-· 只输出 JSON，不要其他文字
-
-2. 实体（entities）
-   · 优先提取反复提及或带有强烈情感的实体
-   · type 分类：person（人物/组织）、place（地点）、concept（概念/品类/作品）、activity（行为/事件）
-   · 消歧：同一实体的不同表述只保留一个标准名，如"三角洲行动"和"三角洲"合并为概念节点"三角洲"
-
-3. 关系（relations）
-   · 优先提取"实体与实体之间"的客观关系，如：
-     - 概念层级：火锅 属于 川菜、三角洲 属于 战术射击游戏
-     - 同类并列：特斯拉 和 比亚迪 是同类、CS2 和 瓦罗兰特 是同类
-     - 归属关系：技巧X 属于 游戏Y
-     - 空间关联：事件A 发生在 地点B
-     - 人物关联：张三 任职于 公司C
-   · 不提取纯态度关系（如喜欢/讨厌/觉得好玩），除非该态度本身被文本反复讨论上升为概念
-   · 鼓励链式关系：若文本隐含 A→B 和 B→C，且 B→C 有上下文支撑（如同段提及、共享属性），即使未明说也要提取，让图谱能连成 A→B→C
+规则：
+1. summary 用第二人称「你」，不要「用户/助手」
+2. key_facts 保留具体细节，不要干巴巴的一句话
+3. 同一实体的不同表述用 canonical_name 统一消歧，不同 name 指向同一个 canonical_name
+4. 关系提取：
+   · 优先提取实体之间的客观关系（概念层级/归属/同类并列/空间关联/人物关联）
+   · 不提取纯态度关系（如喜欢/讨厌），除非该态度被反复讨论上升为概念
+   · 鼓励链式关系：若文本隐含 A→B 和 B→C，即使未明说也要提取，让图谱连成 A→B→C
    · 非人节点（concept/activity）必须参与关系提取，不要只输出人物节点
-   · 关系方向：A 是 B 的"上位词"时，写成 A 属于 B（A→B），不要反向
-   · 只提取文本内实体：禁止引入外部知识补充文本未提及的实体或关系（如自动补全开发商、发行商等）
+   · 关系方向：A 是 B 的上位词时，写成 A 属于 B（A→B），不要反向
+   · 只提取文本内实体，禁止外部知识补充文本未提及的实体或关系
+5. 若无法提取字段用 null 或空数组，不要占位文本或解释
+6. 输入过长时优先保留最近对话，设置 meta.truncated = true
+7. 遇到可能的敏感信息请掩码处理
 
-4. 跨领域示例（防止过拟合到单一领域）
-   · 餐饮：重庆火锅（concept）属于 川菜（concept）
-   · 科技：特斯拉（concept）和 比亚迪（concept）是同类
-   · 游戏：三角洲（concept）属于 战术射击游戏（concept）
-   · 人物：张三（person）任职于 某科技公司（concept）"""
+只输出 JSON。"""
