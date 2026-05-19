@@ -396,6 +396,7 @@ class RetrievalMixin:
             return score * ch_weights[tag_to_idx.get(tag, 0)]
 
         # Phase 1：每通道保底（通道内原序，不受权重影响）
+        ch_taken = [0, 0, 0]
         for i, ch in enumerate(channels):
             taken = 0
             for item in ch:
@@ -406,8 +407,10 @@ class RetrievalMixin:
                     seen.add(key)
                     merged.append(item)
                     taken += 1
+                    ch_taken[i] += 1
 
-        # Phase 2：填剩余名额（按加权分排序）
+        # Phase 2：每通道上限 ceil(total_cap / 通道数)，防止单通道垄断
+        max_per_ch = math.ceil(total_cap / len(channels))
         all_items = []
         for ch in channels:
             all_items.extend(ch)
@@ -416,10 +419,14 @@ class RetrievalMixin:
         for item in all_items:
             if len(merged) >= total_cap:
                 break
+            tag_idx = tag_to_idx.get(item[2], 0)
+            if ch_taken[tag_idx] >= max_per_ch:
+                continue
             key = _hash_key(item[0])
             if key not in seen:
                 seen.add(key)
                 merged.append(item)
+                ch_taken[tag_idx] += 1
 
         merged.sort(key=_weighted, reverse=True)
         return [(content, tag) for content, score, tag in merged[:total_cap]]
@@ -496,7 +503,13 @@ class RetrievalMixin:
             dt = datetime.fromisoformat(str(dt_str)) if isinstance(dt_str, str) else datetime.strptime(str(dt_str)[:19], '%Y-%m-%d %H:%M:%S')
         except (ValueError, TypeError):
             return ''
-        days = (datetime.now() - dt).days
+        delta = datetime.now() - dt
+        hours = delta.total_seconds() / 3600
+        if hours < 1:
+            return "刚刚"
+        if hours < 24:
+            return f"{int(hours)}小时前"
+        days = delta.days
         if days <= 2:
             return "前两天"
         if days <= 14:

@@ -9,6 +9,11 @@
 - 新增 `ALTER TABLE` 迁移，`save_turn` 写入 user_id
 - 群聊场景下可区分同一 session 内各消息的发送者
 
+### fix: 蒸馏 summary 改为第二人称 + fuzz_time 小时粒度 + 融合排序防垄断
+- distill prompt 要求以「你」而非「用户/助手」叙述
+- `_fuzz_time` 增加小时级粒度（刚刚/X小时前/前两天/...）
+- 融合 Phase 2 加入每通道上限 ceil(total_cap/3)，防止单通道垄断剩余名额
+
 ## 2026-05-18
 
 ### 23:11 feat: 图路径序列化 + 边衰减 + 矛盾检测
