@@ -78,8 +78,8 @@ class MemoryMixin:
                     expire = getattr(self, '_DANGLING_EXPIRE_TURNS', 15)
                     if current_turn - since_turn >= expire:
                         self._archive_dangling(user_id, session_id, now_str, reason="过期")
-            except Exception:
-                pass
+            except (json.JSONDecodeError, ValueError):
+                logger.debug(f"RCMS: 解析 dangling_threads JSON 失败 user={user_id}")
         self.conn.commit()
 
     def check_distill_needed(self, session_id: str, persona_name: str = "Bot") -> tuple:
@@ -210,8 +210,8 @@ class MemoryMixin:
                 ('[]', session_id),
             )
             logger.info(f"RCMS: dangling_threads archived ({reason}) user={user_id}")
-        except Exception:
-            pass
+        except (json.JSONDecodeError, ValueError):
+            logger.debug(f"RCMS: 归档时解析 dangling_threads JSON 失败 user={user_id}")
 
     def _build_graph_from_memory(self, user_id: str, content: str):
         """已废弃——不再写入规则共现边，图仅由 LLM 蒸馏 entities 填充语义边"""

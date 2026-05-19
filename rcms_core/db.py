@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 
 logger = logging.getLogger("rcms")
 
@@ -84,15 +85,15 @@ CREATE TABLE IF NOT EXISTS shared_context (
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE session_state {col}")
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
         try:
             self.conn.execute("ALTER TABLE memory_graph_edges ADD COLUMN relation TEXT DEFAULT ''")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         try:
             self.conn.execute("ALTER TABLE chat_history ADD COLUMN turn_num INTEGER DEFAULT 0")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         for col in [
             "ADD COLUMN importance REAL DEFAULT 0.3",
@@ -100,27 +101,27 @@ CREATE TABLE IF NOT EXISTS shared_context (
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE chat_history {col}")
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
         try:
             self.conn.execute("ALTER TABLE chat_history ADD COLUMN user_id TEXT DEFAULT ''")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         try:
             self.conn.execute("ALTER TABLE chat_history ADD COLUMN sender_name TEXT DEFAULT ''")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         try:
             self.conn.execute("ALTER TABLE memory_graph_nodes ADD COLUMN entity_type TEXT DEFAULT 'auto'")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         try:
             self.conn.execute("ALTER TABLE memory_graph_edges ADD COLUMN created_at TEXT DEFAULT ''")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         try:
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ch_session ON chat_history(session_id)")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         for col in [
             "ADD COLUMN preferences TEXT DEFAULT '{}'",
@@ -131,20 +132,20 @@ CREATE TABLE IF NOT EXISTS shared_context (
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE identity_memory {col}")
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
         # 联合索引（提升认知蒸馏检索性能）
         try:
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cd_user_imp ON cognitive_distill(user_id, importance DESC, created_at DESC)")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         try:
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cd_mood ON cognitive_distill(user_id, mood) WHERE mood IS NOT NULL")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         try:
             self.conn.execute("ALTER TABLE cognitive_distill ADD COLUMN expires_at TIMESTAMP DEFAULT NULL")
-        except Exception:
+        except sqlite3.OperationalError:
             pass
         # Migration: 旧表 → cognitive_distill
         self._migrate_to_cognitive_distill()

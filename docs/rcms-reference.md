@@ -55,6 +55,8 @@
 |----|------|------|
 | content | `save_turn` | 用户/助手原始消息 |
 | turn_num | `save_turn` | 递增轮号 |
+| sender_name | `save_turn` ← 插件 `get_sender_name()` | 发送者显示名/昵称 |
+| user_id | `save_turn` | 发送者 user_id |
 | importance | `save_turn` 规则计算 | 0.3 基础 + 情绪词 +0.1 + 长文本 +0.1，上限 0.8 |
 
 ### 蒸馏记忆：cognitive_distill
@@ -90,6 +92,18 @@
 ### 图谱：memory_graph_nodes + memory_graph_edges
 
 单来源：LLM 蒸馏 `entities` 字段。每个实体节点带 `entity_type`（person/place/concept/activity/auto），每条边带 `relation`（语义关系）和 `created_at`（创建时间）。
+
+#### 图边字段用途
+
+| 字段 | 用途 |
+|------|------|
+| `from_node_id → to_node_id` | 定向连接，查询时 JOIN 节点取 label 组装 `「A」--[关系]→「B」` |
+| `relation` | 语义标签，检索时 relation != '' 额外 +2 排序分；给 LLM 看关系语义而非共现 |
+| `weight` | 基准强度，每次蒸馏全体 ×0.8 衰减，< 0.3 删除；检索时再叠加时间衰减 `weight × 0.95^days` |
+| `last_seen` | 时间衰减起点，days = now - last_seen，越旧的边检索分越低 |
+| `created_at` | 创建时间戳，仅用于 tracing 排查，不参与计算 |
+
+计算链：`weight` 存蒸馏间衰减后的基准分 → 检索时 `last_seen` 算 days → 最终分 = `weight × 0.95^days`。两个字段分工清楚：`weight` 管"这条边本身多牢固"，`last_seen` 管"多久没提到了"。
 
 写入格式：
 ```json
@@ -290,6 +304,7 @@ tag 由融合器添加为 skeleton（不在内容前缀打 [图谱] 标记）
 Phase 1: 每通道保底 ch_min[i] 条（通道内原序，不受权重影响）
 Phase 2: 剩余名额按加权分排序填充
          加权分 = 原始分 × channel_weights[i]
+         每通道上限 ceil(total_cap/3) 防垄断
 全程: MD5 内容 hash 去重（strip 后全文 hash）
 截断: total_cap 条
 返回: [(content, tag), ...]  tag ∈ {recent, resonance, skeleton}
@@ -315,18 +330,34 @@ Phase 2: 剩余名额按加权分排序填充
 
 ### 触发条件
 
-`check_distill_needed` 在每轮 `post_update_rules` 之后检查：
+`check_distill_needed` 在每轮 `post_update_rules` 之后检查，返回触发标志、轮数、快照文本和发言者列表：
 
 ```
 触发 = (turn_count - last_distill_turn >= max_turns)
        OR (elapsed_minutes >= max_minutes)
        快照行数 ≥ 6（至少 3 轮对话）
+快照格式: 「[昵称] 内容」— 昵称来自 chat_history.sender_name
+          Bot 消息统一使用 persona_name
 ```
 
 ### LLM 调用
 
 `_run_distill_analysis` → `_build_distill_prompt` 两阶段 prompt：
 
+**私聊/群聊双模板**（由 `is_group` 标志切换）：
+- 私聊版：关注互动节奏、情绪变化，无 participants 字段
+- 群聊版：参与者识别、人物关系，JSON 含 participants 字段
+
+**人格风格注入**：自动从 `identity_memory` 构建 `personality_style`（`communication_style` + 前 3 个 traits），注入 prompt 「角色风格」区。
+
+**人格风格切换**：`config.json → analysis.post_analysis.personality_type` 控制 distill prompt 整体语气：
+- `cute`：第一人称，语气词「呀~呢~哦」，轻松温暖讲故事
+- `professional`：第三人称，客观结构化，精炼分析
+- `default`：原版第一人称日记叙事
+
+**summary 叙事风格**：第一人称「我」日记式叙事，时间描述使用 `_fuzz_time` 自然时段（刚刚/上午的时候/下午的时候/晚上的时候/昨天/前天/前几天/上周）。
+
+**distill prompt 结构**：
 ```
 第一阶段：理解对话脉络（事件顺序、情绪基调、人物关系）
 第二阶段：精确提取 → JSON
@@ -467,6 +498,13 @@ Phase 2: 剩余名额按加权分排序填充
 | key_facts_structured | `cognitive_distill`（content → content, temporal → expires_at 计算） |
 | importance ≥ 0.5 | `cognitive_distill`（事件存档） |
 
+### 配置字段 → 行为
+
+| 配置项 | 影响 |
+|--------|------|
+| `post_analysis.personality_type` | distill prompt 整体语气风格（cute/professional/default） |
+| `post_analysis.max_turns/max_minutes` | 蒸馏触发间隔 |
+
 ---
 
 ## 十、检修检查项
@@ -573,6 +611,7 @@ sqlite3 data/rcms_memory_*.db "
       "custom_api_key": "",
       "custom_base_url": "https://api.openai.com/v1",
       "custom_model": "gpt-4o-mini",     // 蒸馏用模型
+      "personality_type": "default",     // default | cute | professional — 蒸馏 prompt 风格
       "max_turns": 30,                   // 蒸馏轮数间隔
       "max_minutes": 60,                 // 蒸馏分钟间隔
       "dangling_expire_turns": 15        // 悬案过期轮数
@@ -596,6 +635,17 @@ sqlite3 data/rcms_memory_*.db "
 
 | 版本 | 变更 |
 |------|------|
+| 当前 | `post_analysis.personality_type` 新增人格风格切换（default/cute/professional） |
+| 当前 | 快照格式从「用户: 内容」改为「[昵称] 内容」，昵称来自 chat_history.sender_name |
+| 当前 | 私聊/群聊双模板 + Bot 第一人称日记叙事 |
+| 当前 | 人格风格注入蒸馏 prompt（communication_style + 前 3 traits 注入「角色风格」区） |
+| 当前 | user_id ↔ nickname 深度绑定：插件 get_sender_name() 提取显示名，chat_history 存储 sender_name |
+| 当前 | chat_history 新增 sender_name + user_id 列（ALTER TABLE 迁移） |
+| 当前 | 蒸馏 summary 改为第一人称「我」日记式叙事
+| 当前 | `_fuzz_time` 自然时段（刚刚/上午的时候/下午的时候...）替代绝对时间 |
+| 当前 | 融合排序 Phase 2 加入每通道上限 ceil(total_cap/3) 防垄断 |
+| 当前 | traits_updates 加负例约束和 15 字上限；mood 从枚举改为自由文本 |
+| 当前 | key_facts 上限 5 条，分 permanent（≤3, 保底 0.5）和 transient（≤5, 无保底） |
 | 当前 | `retrieval.embedding_enabled`（旧名 `enabled` 兼容） |
 | 当前 | `retrieval+post_analysis.custom_api_key/base_url`（旧 `custom_token/url` 兼容） |
 | 当前 | `post_analysis.max_turns/max_minutes/dangling_expire_turns` 新增可配置 |

@@ -109,6 +109,7 @@ class MinimalRCMS(
             try:
                 reply = await backend.generate("简短回复，一句话以内。\n\n你:")
             except Exception:
+                logger.exception(f"RCMS: chat() backend 两次调用均失败 user={user_id}")
                 reply = "嗯。"
         self.save_turn(session_id, user_input, reply, user_id=user_id)
         await self.post_update_rules(user_id, session_id, user_input, 'open', reply)

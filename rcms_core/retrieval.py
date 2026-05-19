@@ -8,6 +8,7 @@ from datetime import datetime
 
 import jieba
 import numpy as np
+from openai import AsyncOpenAI
 
 logger = logging.getLogger("rcms")
 

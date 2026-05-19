@@ -31,7 +31,7 @@ class ContextMixin:
                 dt = json.loads(dangling)
                 if isinstance(dt, dict) and dt.get("threads"):
                     parts.append("未完成：" + "、".join(dt["threads"][:3]))
-            except Exception:
+            except (json.JSONDecodeError, ValueError):
                 pass
         if last_active:
             try:
@@ -42,7 +42,7 @@ class ContextMixin:
                     parts.append("距上次对话：昨天")
                 else:
                     parts.append(f"距上次对话：{days} 天前")
-            except Exception:
+            except (ValueError, TypeError):
                 pass
         if not parts:
             return ""
@@ -68,7 +68,7 @@ class ContextMixin:
                     focus = row[1] or ""
                     dangling = row[2] or ""
             except Exception:
-                pass
+                logger.exception(f"RCMS: 读取 session_state 失败 session={session_id}")
 
         # ── 新 session 预热 ──
         warmup = self._session_warmup(user_id, session_id, turn_count)
@@ -208,7 +208,7 @@ class ContextMixin:
                         parts.append(f"未完成: {dangling_display}")
                 elif isinstance(dt_data, list) and dt_data:
                     parts.append(f"未完成: {'、'.join(dt_data[:3])}")
-            except Exception:
+            except (json.JSONDecodeError, ValueError):
                 pass
 
         parts.append("→ 以上是你通过长期对话积累的对他的了解，用来更好地理解他的意图。人格设定始终优先。")

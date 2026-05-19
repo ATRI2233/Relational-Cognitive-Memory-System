@@ -390,9 +390,9 @@ class AnalysisMixin:
         # ── 人格风格分支 ──
         if personality_type == "cute":
             if is_group:
-                preamble = f"你是 {persona_name}，一个活泼可爱的群聊观察员~ 分析群聊对话快照，用轻松温暖的口吻产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                preamble = f"你是 {persona_name}，一个活泼的群聊观察员~ 分析群聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = '"participants": ["参与对话的所有昵称（不含 ' + persona_name + ' 自己）"],\n    '
-                summary_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气轻松温暖，像记录生活片段一样。可以用「呀」「呢」「哦」「~」但别太过。"
+                summary_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录生活片段一样。。"
                 first_stage = (
                     "· 参与者有哪些（看看谁在群里说话啦）\n"
                     "· 发生了什么有趣的事、谁说了什么\n"
@@ -400,9 +400,9 @@ class AnalysisMixin:
                     "· 大家之间什么关系"
                 )
             else:
-                preamble = f"你是 {persona_name}，一个活泼可爱的小助手~ 分析私聊对话快照，用轻松温暖的口吻产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                preamble = f"你是 {persona_name}，一个活泼可爱的小助手~ 分析私聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = ""
-                summary_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气轻松温暖，像记录和朋友的聊天。可以用「呀」「呢」「哦」「~」但别太过。"
+                summary_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录和朋友的聊天。可以用「呀」「呢」「哦」「~」但别太过。"
                 first_stage = (
                     "· 今天发生了什么\n"
                     "· 用户心情怎么样\n"
@@ -418,7 +418,7 @@ class AnalysisMixin:
             if is_group:
                 preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析群聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = '"participants": ["参与对话的所有参与者昵称（不含 ' + persona_name + '）"],\n    '
-                summary_instruction = f"以第三人称客观记录群聊中的关键事件、参与者行为模式和关系变化。保持精炼、结构化。"
+                summary_instruction = "以第三人称客观记录群聊中的关键事件、参与者行为模式和关系变化。保持精炼、结构化。"
                 first_stage = (
                     "· 参与者识别\n"
                     "· 关键事件时序\n"
@@ -428,7 +428,7 @@ class AnalysisMixin:
             else:
                 preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析私聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = ""
-                summary_instruction = f"以第三人称客观记录本次对话的关键信息、用户状态变化和行为模式。保持专业、精炼。"
+                summary_instruction = "以第三人称客观记录本次对话的关键信息、用户状态变化和行为模式。保持专业、精炼。"
                 first_stage = (
                     "· 事件时序重建\n"
                     "· 用户情绪状态变化\n"

@@ -25,7 +25,8 @@ def _load_project_config() -> dict:
             try:
                 with open(p, encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"RCMS: 加载 config.json 失败 ({e}) path={p}")
                 break
     return {}
 
@@ -401,7 +402,7 @@ class RcmsPlugin(star.Star):
         try:
             self._get_rcms("default")
         except Exception:
-            pass
+            logger.exception("RCMS: failed to prewarm default persona")
         logger.info("RCMS: 插件初始化完成")
 
     async def terminate(self) -> None:
@@ -409,7 +410,7 @@ class RcmsPlugin(star.Star):
             try:
                 rcms.close()
             except Exception:
-                pass
+                logger.exception(f"RCMS: failed to close rcms instance {name}")
         logger.info(f"RCMS: 已关闭 {len(self._rcms_instances)} 个人格记忆库")
 
     @filter.on_llm_request()
@@ -542,7 +543,7 @@ class RcmsPlugin(star.Star):
                 rcms._store_embedding(user_id, rec_id, vec)
                 rcms._load_emb_cache(user_id)
         except Exception:
-            pass
+            logger.exception(f"RCMS: delayed_embed failed user={user_id} session={session_id}")
 
     async def _async_post_update(self, rcms: MinimalRCMS, user_id: str, session_id: str,
                                   user_input: str, stance: str, reply: str):
@@ -550,7 +551,7 @@ class RcmsPlugin(star.Star):
         try:
             await rcms.post_update_rules(user_id, session_id, user_input, stance, reply)
         except Exception:
-            pass
+            logger.exception(f"RCMS: async_post_update failed user={user_id} session={session_id}")
 
     async def _check_and_distill(self, rcms: MinimalRCMS, user_id: str, session_id: str,
                                   persona_name: str):

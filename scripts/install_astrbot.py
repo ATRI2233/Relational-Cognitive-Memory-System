@@ -100,7 +100,8 @@ def scan_astrbot_personas(astrbot_root: str) -> list[str]:
             for p in personas_v3:
                 if isinstance(p, dict) and p.get("name"):
                     personas.append(p["name"])
-        except Exception:
+        except Exception as e:
+            print(f"  [!] 扫描人格信息失败: {e}")
             continue
     return personas
 
@@ -196,11 +197,11 @@ def _forward_api_config(rcms_config_path: str, astrbot_root: str):
         json.dump(rcms_cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
-    print(f"  [OK] API 配置已导入")
+    print("  [OK] API 配置已导入")
     print(f"      Embedding: url={analysis_retrieval['custom_url']} model={analysis_retrieval['custom_model']}")
     print(f"      LLM:       url={analysis_post['custom_url']} model={analysis_post['custom_model']}")
     if emb_key or llm_src_id:
-        print(f"      source=astrbot（自动读取 AstrBot 提供商）")
+        print("      source=astrbot（自动读取 AstrBot 提供商）")
 
 
 def install(target_dir: str, force: bool = False, forward_api: bool = False):
@@ -237,7 +238,7 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
     config_src = os.path.join(_HERE, "config.json")
     if os.path.exists(config_src):
         shutil.copy2(config_src, os.path.join(plugin_dir, "config.json"))
-        print(f"  [+] config.json")
+        print("  [+] config.json")
 
     # 复制 backends
     dst_backends = os.path.join(plugin_dir, "backends")
@@ -245,7 +246,7 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
         if os.path.exists(dst_backends):
             shutil.rmtree(dst_backends)
         shutil.copytree(_BACKEND_DIR, dst_backends, ignore=shutil.ignore_patterns("__pycache__"))
-        print(f"  [+] backends/")
+        print("  [+] backends/")
 
     # 保留已有数据库（含人格分离后的多库）
     existing_dbs = [f for f in os.listdir(plugin_dir) if f.startswith("rcms_memory") and f.endswith(".db")]
@@ -257,9 +258,9 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
     personas = scan_astrbot_personas(astrbot_root)
     if personas:
         print(f"  [i] 检测到 {len(personas)} 个人格: {', '.join(personas)}")
-        print(f"  [i] RCMS 将按人格自动分离记忆存储")
+        print("  [i] RCMS 将按人格自动分离记忆存储")
     else:
-        print(f"  [i] 未检测到已配置的人格，将使用默认记忆库")
+        print("  [i] 未检测到已配置的人格，将使用默认记忆库")
 
     # ── 导入 AstrBot API 配置 ──
     if forward_api:
@@ -280,7 +281,8 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
                     keys = s.get("key", [])
                     has_key = "Y" if (keys and keys[0]) else "N"
                     sources_found.append((sid, stype, base, has_key))
-            except Exception:
+            except Exception as e:
+                print(f"  [!] 读取提供商信息失败: {e}")
                 pass
 
         if sources_found:
