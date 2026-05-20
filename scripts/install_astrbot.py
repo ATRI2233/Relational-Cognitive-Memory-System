@@ -52,6 +52,14 @@ def _find_root_by_config() -> str | None:
         d = os.path.dirname(d)
         candidates.append(d)
 
+    # 从脚本自身路径反推：如果脚本在 data/plugins/astrbot_plugin_rcms/ 里
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(5):
+        if os.path.basename(d) in ("plugins", "plugin"):
+            candidates.append(os.path.dirname(os.path.dirname(d)))  # AstrBot 根目录
+            break
+        d = os.path.dirname(d)
+
     for p in candidates:
         if os.path.isfile(os.path.join(p, "data", "cmd_config.json")):
             return p
