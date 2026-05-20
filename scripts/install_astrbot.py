@@ -6,12 +6,13 @@
 用法:
     python install_astrbot.py                    # 自动查找 ~/.astrbot
     python install_astrbot.py --plugin-dir D:/path/to/plugins  # 手动指定
-    python install_astrbot.py --forward-api      # 安装时导入 AstrBot API 配置
+    python install_astrbot.py --pull             # 先 git pull 再安装（含 --force）
 """
 import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 
 # Windows GBK 兼容
@@ -66,14 +67,16 @@ def find_astrbot_plugin_dir() -> str | None:
     # 1. 用 cmd_config.json 定位根目录
     root = _find_root_by_config()
     if root:
-        p = os.path.join(root, "data", "plugins")
-        if os.path.isdir(p):
-            return p
+        for candidate in ["plugins", "plugin"]:
+            p = os.path.join(root, "data", candidate)
+            if os.path.isdir(p):
+                return p
 
     # 2. dev 模式
-    p = os.path.join(_HERE, "data", "plugins")
-    if os.path.isdir(p):
-        return p
+    for candidate in ["plugins", "plugin"]:
+        p = os.path.join(_HERE, "data", candidate)
+        if os.path.isdir(p):
+            return p
 
     return None
 
@@ -207,25 +210,24 @@ def _forward_api_config(rcms_config_path: str, astrbot_root: str):
 def install(target_dir: str, force: bool = False, forward_api: bool = False):
     plugin_dir = os.path.join(target_dir, PLUGIN_DIR_NAME)
 
-    # 已存在则先提示
     if os.path.exists(plugin_dir) and not force:
         print(f"发现已有目录: {plugin_dir}")
-        ans = input("数据库会保留，覆盖其他文件? (y/N): ").strip().lower()
+        ans = input("覆盖代码文件，config.json 和数据库保留? (y/N): ").strip().lower()
         if ans != "y":
-            print("取消安装")
+            print("取消")
             return
 
     os.makedirs(plugin_dir, exist_ok=True)
 
     # 复制适配器文件
-    for f in ["main.py", "metadata.yaml", "_conf_schema.json"]:
+    for f in ["main.py", "metadata.yaml"]:
         src = os.path.join(_SRC_PLUGIN, f)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(plugin_dir, f))
             print(f"  [+] {f}")
 
-    # 复制 RCMS 核心（包目录）
-    for d in _CORE_DIRS:
+    # 复制 RCMS 核心 + backends
+    for d in _CORE_DIRS + ["backends"]:
         src = os.path.join(_HERE, d)
         dst = os.path.join(plugin_dir, d)
         if os.path.exists(dst):
@@ -234,19 +236,14 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
             shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
             print(f"  [+] {d}/")
 
-    # 复制项目配置
+    # 复制 config.json（仅首次安装，不覆盖已有）
     config_src = os.path.join(_HERE, "config.json")
-    if os.path.exists(config_src):
-        shutil.copy2(config_src, os.path.join(plugin_dir, "config.json"))
+    config_dst = os.path.join(plugin_dir, "config.json")
+    if os.path.exists(config_src) and not os.path.exists(config_dst):
+        shutil.copy2(config_src, config_dst)
         print("  [+] config.json")
-
-    # 复制 backends
-    dst_backends = os.path.join(plugin_dir, "backends")
-    if os.path.exists(_BACKEND_DIR):
-        if os.path.exists(dst_backends):
-            shutil.rmtree(dst_backends)
-        shutil.copytree(_BACKEND_DIR, dst_backends, ignore=shutil.ignore_patterns("__pycache__"))
-        print("  [+] backends/")
+    elif os.path.exists(config_dst):
+        print("  [=] config.json 已存在，保留")
 
     # 保留已有数据库（含人格分离后的多库）
     existing_dbs = [f for f in os.listdir(plugin_dir) if f.startswith("rcms_memory") and f.endswith(".db")]
@@ -316,7 +313,21 @@ def main():
         action="store_true",
         help="导入 AstrBot 的 API 配置（url / token / model）到 RCMS 的 analysis 段",
     )
+    parser.add_argument(
+        "--pull",
+        action="store_true",
+        help="先 git pull 拉取最新代码，再安装（自动 --force）",
+    )
     args = parser.parse_args()
+
+    if args.pull:
+        print("拉取最新代码...")
+        result = subprocess.run(["git", "pull"], cwd=_HERE, capture_output=True, text=True)
+        print(result.stdout.strip())
+        if result.returncode != 0:
+            print(f"git pull 失败: {result.stderr.strip()}")
+            sys.exit(1)
+        args.force = True
 
     target = args.plugin_dir or find_astrbot_plugin_dir()
     if not target:
