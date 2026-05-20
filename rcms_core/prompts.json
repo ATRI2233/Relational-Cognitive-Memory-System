@@ -1,0 +1,97 @@
+{
+  "channel_labels": {
+    "recent": "时间·重要性",
+    "resonance": "语义检索",
+    "skeleton": "图谱关联"
+  },
+  "memories_display_order": ["resonance", "skeleton", "recent"],
+  "narrative_context": {
+    "prefix": "[RCMS 关系上下文,这里面放置了你对他的了解,按需使用]",
+    "footer": "→ 以上是你通过长期对话积累的对他的了解，用来更好地理解他的意图。",
+    "memories_title": "相关记忆",
+    "session_warmup_title": "[上次聊到]",
+    "turn_count_template": "聊了 {count} 轮",
+    "profile_title": "他是什么样的",
+    "remaining_traits_template": "及其他 {count} 条特质",
+    "quirk_prefix": "小细节小习惯",
+    "dangling_label": "未完成",
+    "dangling_stale_prefix": "↘ ",
+    "struct_title": "结构化画像",
+    "pref_likes": "喜好",
+    "pref_dislikes": "不喜欢",
+    "self_identity": "自我认同",
+    "boundaries": "雷区",
+    "context_title": "共同语境",
+    "joke_label": "梗",
+    "entity_label_template": "他提过的{type}",
+    "graph_chain_title": "【图谱关系链】",
+    "warmup_days_today": "距上次对话：今天",
+    "warmup_days_yesterday": "距上次对话：昨天",
+    "warmup_days_ago": "距上次对话：{days} 天前"
+  },
+  "prompt_compressor": {
+    "mood_title": "【当前心理状态】",
+    "mood_default": "自然地聊",
+    "memory_title": "【相关记忆】",
+    "graph_chain_title": "【图谱关系链】",
+    "shared_context_title": "【共同语境】",
+    "trait_title": "【用户特质】",
+    "quirk_title": "【小细节小习惯】",
+    "identity_title": "【自我认同】",
+    "boundary_title": "【雷区】",
+    "bottom_line_label": "【底线】",
+    "bottom_line_text": "不主动说教。不假装完全理解。疲惫时简短但不冷漠。",
+    "user_template": "用户: {user_input}\n你:"
+  },
+  "summary": {
+    "description": "本次对话的简短摘要，不超过100字，涵盖核心主题和关键变化",
+    "usage": "直接复用本轮 content 的值"
+  },
+  "distill_prompt": {
+    "default": {
+      "private": {
+        "preamble": "你是 {persona_name} 的后台认知分析模块。分析私聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。",
+        "content_instruction": "以 {persona_name} 的第一人称「我」叙事，像日记一样记录对用户的观察。",
+        "first_stage": "· 发生了什么、事件顺序\n· 用户情绪变化\n· 你和用户之间的互动节奏",
+        "extra_rules": ""
+      },
+      "group": {
+        "preamble": "你是 {persona_name} 的后台认知分析模块。分析群聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。你需要理解谁说了什么。",
+        "participants_field": "\"participants\": [\"参与对话的所有昵称（不含 {persona_name} 自己）\"],\n    ",
+        "content_instruction": "以 {persona_name} 的第一人称「我」叙事，像日记一样记录观察到的事情。",
+        "first_stage": "· 参与者有哪些（通过 [昵称] 区分）\n· 发生了什么事、谁说了什么、事件顺序\n· 情绪基调\n· 人物之间的关系和互动模式",
+        "extra_rules": ""
+      }
+    },
+    "cute": {
+      "private": {
+        "preamble": "你是 {persona_name}，一个活泼可爱的小助手~ 分析私聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。",
+        "content_instruction": "用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录和朋友的聊天。可以用「呀」「呢」「哦」「~」但别太过。",
+        "first_stage": "· 今天发生了什么\n· 用户心情怎么样\n· 你们聊得开不开心",
+        "extra_rules": "9. content 语气温暖轻松，朋友聊天感，适当用「呀」「呢」「哦」「~」但不要堆砌\n10. 保留情绪细节，让摘要读起来有温度\n11. 可以用「今天」「刚刚」开头讲故事"
+      },
+      "group": {
+        "preamble": "你是 {persona_name}，一个活泼的群聊观察员~ 分析群聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。",
+        "participants_field": "\"participants\": [\"参与对话的所有昵称（不含 {persona_name} 自己）\"],\n    ",
+        "content_instruction": "用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录生活片段一样。。",
+        "first_stage": "· 参与者有哪些（看看谁在群里说话啦）\n· 发生了什么有趣的事、谁说了什么\n· 气氛怎么样——开心/平淡/火药味\n· 大家之间什么关系",
+        "extra_rules": "9. content 语气温暖轻松，朋友聊天感，适当用「呀」「呢」「哦」「~」但不要堆砌\n10. 保留情绪细节，让摘要读起来有温度\n11. 可以用「今天」「刚刚」开头讲故事"
+      }
+    },
+    "professional": {
+      "private": {
+        "preamble": "你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析私聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。",
+        "content_instruction": "以第三人称客观记录本次对话的关键信息、用户状态变化和行为模式。保持专业、精炼。",
+        "first_stage": "· 事件时序重建\n· 用户情绪状态变化\n· 交互模式分析",
+        "extra_rules": "9. content 用第三人称，保持客观专业，不使用语气词\n10. 按「事件→影响→模式」结构组织摘要\n11. 避免主观评价，优先记录可验证的事实"
+      },
+      "group": {
+        "preamble": "你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析群聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。",
+        "participants_field": "\"participants\": [\"参与对话的所有参与者昵称（不含 {persona_name}）\"],\n    ",
+        "content_instruction": "以第三人称客观记录群聊中的关键事件、参与者行为模式和关系变化。保持精炼、结构化。",
+        "first_stage": "· 参与者识别\n· 关键事件时序\n· 情绪基调量化\n· 参与者互动模式分析",
+        "extra_rules": "9. content 用第三人称，保持客观专业，不使用语气词\n10. 按「事件→影响→模式」结构组织摘要\n11. 避免主观评价，优先记录可验证的事实"
+      }
+    }
+  }
+}

@@ -64,17 +64,6 @@ class RetrievalMixin:
         # 构建图谱关系链（从图通道收集的节点标签查连通路径）
         chain_labels = getattr(self, '_graph_chain_labels', set())
         self._graph_paths = self._build_graph_paths(user_id, chain_labels) if chain_labels else []
-        # 确保至少一条完整叙事摘要不被 key_facts 挤掉
-        NARRATIVE_MIN_LEN = 150
-        if not any(len(c) > NARRATIVE_MIN_LEN for c, _ in result):
-            row = self.conn.execute(
-                "SELECT id, content FROM cognitive_distill "
-                "WHERE user_id = ? AND importance >= 0.7 AND length(content) > ? "
-                "ORDER BY created_at DESC LIMIT 1",
-                (user_id, NARRATIVE_MIN_LEN),
-            ).fetchone()
-            if row:
-                result[-1] = (row[1], 'recent')
         return result
 
     # ── 通道 1：时间重要性锚点 ──
@@ -88,7 +77,7 @@ class RetrievalMixin:
     def _channel_time_importance(self, user_id: str, session_id: str | None = None, limit: int = 2):
         """通道 1：时间衰减 × 恒定的 importance 加成，当前 session 条目额外推高"""
         rows = self.conn.execute("""
-            SELECT content, created_at, importance, session_id
+            SELECT summary, created_at, importance, session_id
             FROM cognitive_distill
             WHERE user_id = ? AND importance > 0.1
               AND (expires_at IS NULL OR expires_at > datetime('now'))
@@ -97,7 +86,7 @@ class RetrievalMixin:
 
         now = datetime.now()
         scored = []
-        for content, created_at, importance, row_sid in rows:
+        for summary, created_at, importance, row_sid in rows:
             days = 0
             if created_at:
                 try:
@@ -108,7 +97,7 @@ class RetrievalMixin:
             # 当前 session 条目加 session_boost，避免被旧高 importance 条目压过
             session_boost = 0.3 if session_id and row_sid == session_id else 0.0
             score = (t + session_boost) * (0.5 + importance)
-            scored.append((self._fuzz_time(created_at) + '，' + content, score, 'recent'))
+            scored.append((self._fuzz_time(created_at) + '，' + summary, score, 'recent'))
 
         scored.sort(key=lambda x: -x[1])
         return scored[:limit]
@@ -397,8 +386,7 @@ class RetrievalMixin:
             content, score, tag = item
             return score * ch_weights[tag_to_idx.get(tag, 0)]
 
-        # Phase 1：每通道保底（通道内原序，不受权重影响）
-        ch_taken = [0, 0, 0]
+        # Phase 1：每通道保底 ch_min[i] 条（通道内原序，不受权重影响）
         for i, ch in enumerate(channels):
             taken = 0
             for item in ch:
@@ -409,26 +397,25 @@ class RetrievalMixin:
                     seen.add(key)
                     merged.append(item)
                     taken += 1
-                    ch_taken[i] += 1
 
-        # Phase 2：每通道上限 ceil(total_cap / 通道数)，防止单通道垄断
-        max_per_ch = math.ceil(total_cap / len(channels))
-        all_items = []
+        # Phase 2：剩余 n = total_cap - sum(ch_min) 个名额
+        #         每通道取第 2~n+1 名（ch[1:n+1]），共 3n 条候选，按加权分取前 n
+        n = total_cap - sum(ch_min)
+        pool = []
         for ch in channels:
-            all_items.extend(ch)
-        all_items.sort(key=_weighted, reverse=True)
+            pool.extend(ch[1:1 + n])
+        pool.sort(key=_weighted, reverse=True)
 
-        for item in all_items:
+        for item in pool:
             if len(merged) >= total_cap:
                 break
-            tag_idx = tag_to_idx.get(item[2], 0)
-            if ch_taken[tag_idx] >= max_per_ch:
-                continue
+            if n <= 0:
+                break
             key = _hash_key(item[0])
             if key not in seen:
                 seen.add(key)
                 merged.append(item)
-                ch_taken[tag_idx] += 1
+                n -= 1
 
         merged.sort(key=_weighted, reverse=True)
         return [(content, tag) for content, score, tag in merged[:total_cap]]

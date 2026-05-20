@@ -14,7 +14,8 @@ class DBMixin:
                 user_id TEXT,
                 session_id TEXT,
                 content TEXT NOT NULL,
-                summary TEXT,
+                keylabel TEXT,
+                summary TEXT DEFAULT '',
                 mood TEXT DEFAULT '',
                 mood_intensity REAL DEFAULT 0.0,
                 importance REAL DEFAULT 0.3,
@@ -25,7 +26,7 @@ class DBMixin:
             );
             CREATE TABLE IF NOT EXISTS session_state (
                 session_id TEXT PRIMARY KEY, user_id TEXT, stance TEXT DEFAULT 'open',
-                mood REAL DEFAULT 0, focus_topic TEXT, turn_count INTEGER DEFAULT 0,
+                mood REAL DEFAULT 0, turn_count INTEGER DEFAULT 0,
                 stance_turns INTEGER DEFAULT 0, engagement_level TEXT DEFAULT 'coasting',
                 momentum_depth REAL DEFAULT 0.0, momentum_energy REAL DEFAULT 0.0,
                 last_active TIMESTAMP, dangling_threads TEXT DEFAULT '[]',
@@ -43,7 +44,6 @@ class DBMixin:
             CREATE TABLE IF NOT EXISTS identity_memory (
                 user_id TEXT PRIMARY KEY, traits TEXT DEFAULT '[]',
                 preferences TEXT DEFAULT '{}',
-                communication_style TEXT DEFAULT '',
                 self_identity TEXT DEFAULT '[]',
                 boundaries TEXT DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -143,7 +143,6 @@ CREATE TABLE IF NOT EXISTS shared_context (
             pass
         for col in [
             "ADD COLUMN preferences TEXT DEFAULT '{}'",
-            "ADD COLUMN communication_style TEXT DEFAULT ''",
             "ADD COLUMN self_identity TEXT DEFAULT '[]'",
             "ADD COLUMN boundaries TEXT DEFAULT '[]'",
         ]:
@@ -162,6 +161,14 @@ CREATE TABLE IF NOT EXISTS shared_context (
             pass
         try:
             self.conn.execute("ALTER TABLE cognitive_distill ADD COLUMN expires_at TIMESTAMP DEFAULT NULL")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self.conn.execute("ALTER TABLE cognitive_distill RENAME COLUMN summary TO keylabel")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self.conn.execute("ALTER TABLE cognitive_distill ADD COLUMN summary TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
         # Embedding 重建队列：记录因模型更换/维度变化需要重新向量的条目
@@ -201,8 +208,8 @@ CREATE TABLE IF NOT EXISTS shared_context (
 
         # 1. long_term_memory → cognitive_distill
         c.execute("""
-            INSERT INTO cognitive_distill (user_id, session_id, content, importance, created_at)
-            SELECT user_id, session_id, content,
+            INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, created_at)
+            SELECT user_id, session_id, content, content,
                    CASE WHEN memory_type='event' THEN 0.5 ELSE 0.3 END,
                    created_at
             FROM long_term_memory
@@ -223,8 +230,8 @@ CREATE TABLE IF NOT EXISTS shared_context (
         ev = c.execute("SELECT count(*) FROM event_memory").fetchone()[0]
         if ev:
             c.execute("""
-                INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at)
-                SELECT user_id, content, compressed_hint, COALESCE(novelty, 0.5), created_at
+                INSERT INTO cognitive_distill (user_id, content, keylabel, summary, importance, created_at)
+                SELECT user_id, content, compressed_hint, content, COALESCE(novelty, 0.5), created_at
                 FROM event_memory
             """)
         total = c.execute("SELECT count(*) FROM cognitive_distill").fetchone()[0]

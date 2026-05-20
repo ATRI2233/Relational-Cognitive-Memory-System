@@ -15,8 +15,8 @@
       "custom_model": "text-embedding-3-small",
       "total_cap": 5,
       "channel_min": [1, 1, 1],
-      "channel_weights": [1.0, 1.0, 0.4],
-      "time_decay_halflife": 30,
+      "channel_weights": [0.5, 1.0, 0.6],
+      "time_decay_halflife": 15,
       "emotional_resonance_bonus": 0.15
     },
     "post_analysis": {
