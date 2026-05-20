@@ -342,7 +342,7 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="安装 RCMS 到 AstrBot")
+    parser = argparse.ArgumentParser(description="安装/更新 RCMS 到 AstrBot")
     parser.add_argument(
         "--plugin-dir",
         help="AstrBot plugins 目录（默认自动查找）",
@@ -357,14 +357,19 @@ def main():
         action="store_true",
         help="导入 AstrBot 的 API 配置（url / token / model）到 RCMS 的 analysis 段",
     )
-    parser.add_argument(
-        "--pull",
-        action="store_true",
-        help="先 git pull 拉取最新代码，再安装（自动 --force）",
-    )
     args = parser.parse_args()
 
-    if args.pull:
+    # 在仓库内自动 git pull，不需要 --pull
+    if os.path.isdir(os.path.join(_HERE, ".git")):
+        print("拉取最新代码...")
+        result = subprocess.run(["git", "pull"], cwd=_HERE, capture_output=True, text=True)
+        out = result.stdout.strip()
+        if out:
+            print(out)
+        if result.returncode != 0:
+            print(f"git pull 失败: {result.stderr.strip()}")
+            sys.exit(1)
+        args.force = True
         print("拉取最新代码...")
         result = subprocess.run(["git", "pull"], cwd=_HERE, capture_output=True, text=True)
         print(result.stdout.strip())
