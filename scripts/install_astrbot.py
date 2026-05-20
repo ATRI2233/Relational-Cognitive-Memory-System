@@ -37,10 +37,25 @@ if not _HERE:
     if os.path.isdir(os.path.join(_HERE, "rcms_core")):
         subprocess.run(["git", "-C", _HERE, "pull"], capture_output=True)
     else:
-        result = subprocess.run(["git", "clone", _REPO_URL, _HERE], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"从 GitHub 拉取失败: {result.stderr.strip()}")
-            print("请手动从 RCMS 仓库根目录运行此脚本")
+        _MIRROR_URLS = [
+            _REPO_URL,
+            "https://ghproxy.net/https://github.com/ATRI2233/Relational-Cognitive-Memory-System.git",
+            "https://mirror.ghproxy.com/https://github.com/ATRI2233/Relational-Cognitive-Memory-System.git",
+        ]
+        _GIT_ENV = {**os.environ, "GIT_HTTP_VERSION": "HTTP/1.1"}
+        cloned = False
+        for url in _MIRROR_URLS:
+            print(f"尝试: git clone {url}")
+            result = subprocess.run(["git", "clone", url, _HERE], capture_output=True, text=True, env=_GIT_ENV)
+            if result.returncode == 0:
+                cloned = True
+                if url != _REPO_URL:
+                    subprocess.run(["git", "-C", _HERE, "remote", "set-url", "origin", _REPO_URL],
+                                   capture_output=True)
+                break
+            print(f"  失败: {result.stderr.strip()}")
+        if not cloned:
+            print("所有镜像均失败，请手动从 RCMS 仓库根目录运行此脚本")
             sys.exit(1)
     print("拉取完成")
 _SRC_PLUGIN = os.path.join(_HERE, "plugins", "rcms-astrbot")
@@ -357,26 +372,29 @@ def main():
         action="store_true",
         help="导入 AstrBot 的 API 配置（url / token / model）到 RCMS 的 analysis 段",
     )
+    parser.add_argument(
+        "--pull",
+        action="store_true",
+        help="先 git pull 拉取最新代码，再安装（自动 --force）",
+    )
     args = parser.parse_args()
 
-    # 在仓库内自动 git pull，不需要 --pull
-    if os.path.isdir(os.path.join(_HERE, ".git")):
+    if args.pull:
+        if not os.path.isdir(os.path.join(_HERE, ".git")):
+            print("错误: 当前目录不是 git 仓库，无法 pull")
+            sys.exit(1)
         print("拉取最新代码...")
-        result = subprocess.run(["git", "pull"], cwd=_HERE, capture_output=True, text=True)
+        env = {**os.environ, "GIT_HTTP_VERSION": "HTTP/1.1"}
+        result = subprocess.run(["git", "pull"], cwd=_HERE, capture_output=True, text=True, env=env)
         out = result.stdout.strip()
         if out:
             print(out)
         if result.returncode != 0:
-            print(f"git pull 失败: {result.stderr.strip()}")
-            sys.exit(1)
-        args.force = True
-        print("拉取最新代码...")
-        result = subprocess.run(["git", "pull"], cwd=_HERE, capture_output=True, text=True)
-        print(result.stdout.strip())
-        if result.returncode != 0:
-            print(f"git pull 失败: {result.stderr.strip()}")
-            sys.exit(1)
-        args.force = True
+            err = result.stderr.strip()
+            print(f"[WARN] git pull 失败: {err}")
+            print("[WARN] 使用本地已有代码继续安装")
+        else:
+            args.force = True
 
     target = args.plugin_dir or find_astrbot_plugin_dir()
     if not target:
