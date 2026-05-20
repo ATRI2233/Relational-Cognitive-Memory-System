@@ -4,9 +4,9 @@
 自动设置按人格分离的记忆存储（不同人格使用独立数据库）。
 
 用法:
-    python install_astrbot.py                    # 自动查找 ~/.astrbot
+    python install_astrbot.py                    # 自动查找 ~/.astrbot（默认先 git pull）
     python install_astrbot.py --plugin-dir D:/path/to/plugins  # 手动指定
-    python install_astrbot.py --pull             # 先 git pull 再安装（含 --force）
+    python install_astrbot.py --no-pull          # 跳过 git pull
 """
 import argparse
 import json
@@ -373,13 +373,13 @@ def main():
         help="导入 AstrBot 的 API 配置（url / token / model）到 RCMS 的 analysis 段",
     )
     parser.add_argument(
-        "--pull",
+        "--no-pull",
         action="store_true",
-        help="先 git pull 拉取最新代码，再安装（自动 --force）",
+        help="跳过 git pull，使用本地已有代码",
     )
     args = parser.parse_args()
 
-    if args.pull:
+    if not args.no_pull:
         if not os.path.isdir(os.path.join(_HERE, ".git")):
             print("错误: 当前目录不是 git 仓库，无法 pull")
             sys.exit(1)
