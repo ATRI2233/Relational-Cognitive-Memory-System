@@ -172,7 +172,6 @@ class AnalysisMixin:
                 ("preferences", "preferences", "{}"),
                 ("communication_style", "communication_style", ""),
                 ("self_identity", "self_identity", "[]"),
-                ("core_identity", "core_identity", "{}"),
             ]:
                 val = data.get(key)
                 if val is not None:
@@ -422,15 +421,13 @@ class AnalysisMixin:
                 lt_hint += f"\n沟通风格: {long_term['communication_style']}"
             if long_term.get("self_identity"):
                 lt_hint += f"\n自我认同: {json.dumps(long_term['self_identity'], ensure_ascii=False)}"
-            if long_term.get("core_identity"):
-                lt_hint += f"\n核心身份: {json.dumps(long_term['core_identity'], ensure_ascii=False)}"
             if long_term.get("boundaries"):
                 lt_hint += f"\n已知雷区: {json.dumps(long_term['boundaries'], ensure_ascii=False)}"
 
         # ── 人格风格分支 ──
         if personality_type == "cute":
             if is_group:
-                preamble = f"你是 {persona_name}，一个活泼的群聊观察员~ 分析群聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                preamble = f"你是 {persona_name}，一个活泼的群聊观察员~ 分析群聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。"
                 participants_field = '"participants": ["参与对话的所有昵称（不含 ' + persona_name + ' 自己）"],\n    '
                 content_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录生活片段一样。。"
                 first_stage = (
@@ -440,7 +437,7 @@ class AnalysisMixin:
                     "· 大家之间什么关系"
                 )
             else:
-                preamble = f"你是 {persona_name}，一个活泼可爱的小助手~ 分析私聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                preamble = f"你是 {persona_name}，一个活泼可爱的小助手~ 分析私聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。"
                 participants_field = ""
                 content_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录和朋友的聊天。可以用「呀」「呢」「哦」「~」但别太过。"
                 first_stage = (
@@ -456,7 +453,7 @@ class AnalysisMixin:
 
         elif personality_type == "professional":
             if is_group:
-                preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析群聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析群聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。"
                 participants_field = '"participants": ["参与对话的所有参与者昵称（不含 ' + persona_name + '）"],\n    '
                 content_instruction = "以第三人称客观记录群聊中的关键事件、参与者行为模式和关系变化。保持精炼、结构化。"
                 first_stage = (
@@ -466,7 +463,7 @@ class AnalysisMixin:
                     "· 参与者互动模式分析"
                 )
             else:
-                preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析私聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析私聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。"
                 participants_field = ""
                 content_instruction = "以第三人称客观记录本次对话的关键信息、用户状态变化和行为模式。保持专业、精炼。"
                 first_stage = (
@@ -482,7 +479,7 @@ class AnalysisMixin:
 
         else:  # default
             if is_group:
-                preamble = f"你是 {persona_name} 的后台认知分析模块。分析群聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。你需要理解谁说了什么。"
+                preamble = f"你是 {persona_name} 的后台认知分析模块。分析群聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。你需要理解谁说了什么。"
                 participants_field = '"participants": ["参与对话的所有昵称（不含 ' + persona_name + ' 自己）"],\n    '
                 content_instruction = f"以 {persona_name} 的第一人称「我」叙事，像日记一样记录观察到的事情。"
                 first_stage = (
@@ -492,7 +489,7 @@ class AnalysisMixin:
                     "· 人物之间的关系和互动模式"
                 )
             else:
-                preamble = f"你是 {persona_name} 的后台认知分析模块。分析私聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
+                preamble = f"你是 {persona_name} 的后台认知分析模块。分析私聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。[{persona_name}] 是你（Bot）自己的发言，其他 [昵称] 是对方的发言。"
                 participants_field = ""
                 content_instruction = f"以 {persona_name} 的第一人称「我」叙事，像日记一样记录对用户的观察。"
                 first_stage = (
@@ -542,13 +539,12 @@ class AnalysisMixin:
     "preferences": {{"likes": ["事物"], "dislikes": ["事物"]}},
     "communication_style": "总结用户的说话方式（纯文本）",
     "self_identity": ["用户如何看待自己"],
-    "core_identity": {{"职业": "", "角色": "", "标签": ""}},
-    "boundaries": ["雷区列表"],
+    "boundaries": ["用户明确反感、回避、不开心的话题，或观察到的雷区"],
     "dangling_threads": ["未完成话题"],
     "importance": 0.0~1.0,
     "entities": [
       {{
-        "name": "实体名", "canonical_name": "标准名", "type": "person|place|concept|activity",
+        "name": "实体名", "canonical_name": "标准名", "type": "person|place|activity|concept",
         "relations": [
           {{"target": "目标标准名", "relation": "关系类型"}}
         ]
@@ -564,10 +560,11 @@ class AnalysisMixin:
 3. speech_quirks 与 traits_updates 各自去重，与 lt_hint 对比后只输出新发现的
 4. key_facts 最多5条，按 importance 降序，保留具体细节
 5. 同一实体的不同表述用 canonical_name 统一消歧
-6. 关系提取：优先客观关系；鼓励链式 A→B→C；只提取文本内实体
-7. 无法提取的字段用 null 或空数组
-8. 输入过长时设置 meta.truncated = true
-9. summary 是 10-20 字的核心主题标签，必须包含具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」
+6. 关系提取：优先客观关系（朋友/同事/喜欢/讨厌/讨论过/使用/居住等），鼓励链式 A→B→C，只提取文本内实体
+7. 禁止把 {persona_name} 算作实体——{persona_name} 是你自己（Bot），不是用户"提到的人"
+8. 无法提取的字段用 null 或空数组
+9. 输入过长时设置 meta.truncated = true
+10. summary 是 10-20 字的核心主题标签，必须包含具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」
 {extra_rules}
 只输出 JSON。"""
 

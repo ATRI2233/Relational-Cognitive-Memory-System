@@ -46,7 +46,6 @@ class DBMixin:
                 communication_style TEXT DEFAULT '',
                 self_identity TEXT DEFAULT '[]',
                 boundaries TEXT DEFAULT '[]',
-                core_identity TEXT DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP
             );
@@ -147,7 +146,6 @@ CREATE TABLE IF NOT EXISTS shared_context (
             "ADD COLUMN communication_style TEXT DEFAULT ''",
             "ADD COLUMN self_identity TEXT DEFAULT '[]'",
             "ADD COLUMN boundaries TEXT DEFAULT '[]'",
-            "ADD COLUMN core_identity TEXT DEFAULT '{}'",
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE identity_memory {col}")

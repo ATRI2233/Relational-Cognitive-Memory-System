@@ -113,7 +113,7 @@ class MinimalRCMS(
 
     def _load_long_term_context(self, user_id: str) -> dict:
         identity = self.conn.execute(
-            "SELECT traits, preferences, communication_style, self_identity, boundaries, core_identity FROM identity_memory WHERE user_id = ?",
+            "SELECT traits, preferences, communication_style, self_identity, boundaries FROM identity_memory WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         entities = self.conn.execute("""
@@ -150,7 +150,6 @@ class MinimalRCMS(
             'communication_style': identity[2] if identity and identity[2] else '',
             'self_identity': _safe_json(identity[3], []) if identity else [],
             'boundaries': _safe_json(identity[4], []) if identity else [],
-            'core_identity': _safe_json(identity[5], {}) if identity else {},
             'entities': [{'name': r[0], 'type': r[1] or 'auto', 'relation': r[2], 'fact': r[3]} for r in entities],
             'shared_contexts': [r[0] for r in shared_rows],
         }

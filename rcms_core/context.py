@@ -116,11 +116,6 @@ class ContextMixin:
             si = long_term.get('self_identity', [])
             if si:
                 struct_lines.append(f"自我认同: {'、'.join(si[:3])}")
-            ci = long_term.get('core_identity', {})
-            if ci:
-                ci_parts = [v for v in ci.values() if v]
-                if ci_parts:
-                    struct_lines.append(f"身份: {'·'.join(ci_parts)}")
             bounds = long_term.get('boundaries', [])
             if bounds:
                 struct_lines.append(f"雷区: {'、'.join(bounds[:3])}")
@@ -159,28 +154,26 @@ class ContextMixin:
         if ctx_lines:
             parts.append("共同语境:\n" + '\n'.join(f'  · {c}' for c in ctx_lines))
 
-        # ── 三通道记忆（按融合分数排序，最高分通道在前） ──
+        # ── 三通道记忆（按固定顺序：语义检索 → 图谱关联 → 时间重要性） ──
         if memories:
             channel_map = {'recent': '时间·重要性', 'resonance': '语义检索', 'skeleton': '图谱关联'}
+            display_order = ['resonance', 'skeleton', 'recent']
             grouped = {}
-            order = []
             for content, tag in memories:
-                if tag not in grouped:
-                    grouped[tag] = []
-                    order.append(tag)
-                grouped[tag].append(content)
+                grouped.setdefault(tag, []).append(content)
             ch_lines = []
-            for key in order:
-                label = channel_map.get(key, key)
-                items = grouped[key]
-                ch_lines.append(f"【{label}】\n" + "\n".join(f"  · {c}" for c in items))
+            for key in display_order:
+                items = grouped.get(key)
+                if items:
+                    label = channel_map.get(key, key)
+                    ch_lines.append(f"【{label}】\n" + "\n".join(f"  · {c}" for c in items))
             if ch_lines:
                 parts.append("相关记忆:\n" + "\n\n".join(ch_lines))
 
         # ── 图谱关系链 ──
         graph_paths = getattr(self, '_graph_paths', [])
         if graph_paths:
-            parts.append("图谱关系链:\n" + '\n'.join(f'  · {p}' for p in graph_paths))
+            parts.append("【图谱关系链】\n" + '\n'.join(f'  · {p}' for p in graph_paths))
 
         # ── 未完成话题（超 10 轮自动过期） ──
         if dangling:
