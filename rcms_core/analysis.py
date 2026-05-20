@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from contextlib import nullcontext
 
 from openai import AsyncOpenAI
 
@@ -41,9 +42,14 @@ class AnalysisMixin:
     async def _apply_analysis(self, user_id: str, session_id: str, user_input: str, reply: str, data: dict):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         new_entries = []  # (entry_id, text_for_embedding) 待写回向量
-        if session_id:
-            self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, now_str))
-            self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
+        # 使用实例级 DB 锁序列化写入（短期阻塞）
+        lock = getattr(self, '_db_lock', None)
+        if lock:
+            lock.acquire()
+        try:
+            if session_id:
+                self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, now_str))
+                self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
 
         # 兼容新/旧输出格式：将可能的 dict 项归一化为旧版简单类型（string 列表）以免后续逻辑出错
         traits_updates = []
@@ -211,11 +217,11 @@ class AnalysisMixin:
 
         # 7. Dangling threads → cognitive_distill
         for dt in data.get("dangling_threads", []):
-            self.conn.execute(
+            cur = self.conn.execute(
                 "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, dt, dt[:40] + "..." if len(dt) > 40 else dt, 0.5, now_str),
+                (user_id, dt, dt, 0.5, now_str),
             )
-            new_entries.append((self.conn.execute("SELECT last_insert_rowid()").fetchone()[0], dt))
+            new_entries.append((cur.lastrowid, dt))
         if session_id and data.get("dangling_threads"):
             row = self.conn.execute("SELECT turn_count FROM session_state WHERE session_id = ?", (session_id,)).fetchone()
             current_turn = row[0] if row else 0
@@ -278,11 +284,11 @@ class AnalysisMixin:
                     continue
                 imp_val = importance  # transient 无保底，可被正常衰减清理
                 tran_count += 1
-            self.conn.execute(
+            cur = self.conn.execute(
                 "INSERT INTO cognitive_distill (user_id, content, summary, importance, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, content, content[:60], imp_val, expires_at, now_str),
+                (user_id, content, content, imp_val, expires_at, now_str),
             )
-            new_entries.append((self.conn.execute("SELECT last_insert_rowid()").fetchone()[0], content[:512]))
+            new_entries.append((cur.lastrowid, content[:512]))
 
         log_parts = []
         if data.get("traits_updates"): log_parts.append(f"traits+{len(data['traits_updates'])}")
@@ -291,9 +297,15 @@ class AnalysisMixin:
         if data.get("key_facts"): log_parts.append(f"facts+{len(data['key_facts'])}")
         if data.get("entities"): log_parts.append(f"ents+{len(data['entities'])}")
         if data.get("importance", 0) >= 0.5: log_parts.append("event")
-        logger.info(f"ANALYSIS: write user={user_id} {' | '.join(log_parts) if log_parts else 'no-updates'}")
+            logger.info(f"ANALYSIS: write user={user_id} {' | '.join(log_parts) if log_parts else 'no-updates'}")
 
-        self.conn.commit()
+            self.conn.commit()
+        finally:
+            if lock:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
 
         # 10b. 批量写回 key_facts / events / dangling_threads 的向量
         for eid, text in new_entries:
@@ -346,18 +358,46 @@ class AnalysisMixin:
             logger.warning(f"DISTILL: LLM call failed ({e})")
             return
 
+        # 保存原始 LLM 响应以便审计与后续人工回滚
+        try:
+            cur = self.conn.execute(
+                "INSERT INTO analysis_raw (user_id, session_id, content) VALUES (?, ?, ?)",
+                (user_id, session_id, content),
+            )
+            raw_id = cur.lastrowid
+            self.conn.commit()
+        except Exception:
+            logger.exception(f"DISTILL: failed to persist raw response user={user_id}")
+            raw_id = None
+
         if not content:
             logger.warning("DISTILL: empty response")
             return
 
         try:
             result = json.loads(content)
-            summary = result.get("summary", "")
+            distill_content = result.get("content", "") or result.get("summary", "")
+            distill_summary = result.get("summary", "")
             analysis = result.get("analysis", {})
-            if not summary:
+            if not distill_content:
+                logger.warning("DISTILL: no content in response")
+                return
+            # 向后兼容：旧格式 summary 是长叙事，新格式是短标签
+            if len(distill_summary) > 30:
+                kfs = (analysis or {}).get("key_facts", [])
+                kf_strings = [f for f in kfs if isinstance(f, str)]
+                distill_summary = "·".join([f[:10] for f in kf_strings[:3]])[:20] if kf_strings else distill_content[:20]
+            if not distill_summary:
                 logger.warning("DISTILL: no summary in response")
                 return
-            logger.info(f"DISTILL: ok summary={summary[:60]} mood={analysis.get('mood','?')}")
+            logger.info(f"DISTILL: ok summary={distill_summary[:30]} content_len={len(distill_content)}")
+            # 标记原始响应为已解析
+            if raw_id:
+                try:
+                    self.conn.execute("UPDATE analysis_raw SET parsed = 1 WHERE id = ?", (raw_id,))
+                    self.conn.commit()
+                except Exception:
+                    logger.exception(f"DISTILL: failed to mark raw response parsed id={raw_id} user={user_id}")
         except json.JSONDecodeError:
             logger.warning(f"DISTILL: invalid JSON: {content[:200]}")
             return
@@ -365,10 +405,10 @@ class AnalysisMixin:
         # 写入蒸馏摘要 + 清理碎片（带 mood，让通道 2 情绪共振真正工作）
         mood = analysis.get("mood", "")
         mood_intensity = analysis.get("mood_intensity", 0.0)
-        await self._apply_distill(user_id, session_id, last_turn, turn_count, summary, mood, mood_intensity)
+        await self._apply_distill(user_id, session_id, last_turn, turn_count, distill_content, distill_summary, mood, mood_intensity)
 
         # 写入 9 维分析（情感/特质/实体等）
-        await self._apply_analysis(user_id, session_id, summary[:80], "", analysis)
+        await self._apply_analysis(user_id, session_id, distill_content[:80], "", analysis)
 
     def _build_distill_prompt(self, snapshot_text: str, long_term: dict, persona_name: str = "Bot", personality_style: str = "", is_group: bool = False, personality_type: str = "default") -> str:
         """两阶段蒸馏分析 prompt：私聊/群聊双模板，支持三种人格风格"""
@@ -392,7 +432,7 @@ class AnalysisMixin:
             if is_group:
                 preamble = f"你是 {persona_name}，一个活泼的群聊观察员~ 分析群聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = '"participants": ["参与对话的所有昵称（不含 ' + persona_name + ' 自己）"],\n    '
-                summary_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录生活片段一样。。"
+                content_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录生活片段一样。。"
                 first_stage = (
                     "· 参与者有哪些（看看谁在群里说话啦）\n"
                     "· 发生了什么有趣的事、谁说了什么\n"
@@ -402,14 +442,14 @@ class AnalysisMixin:
             else:
                 preamble = f"你是 {persona_name}，一个活泼可爱的小助手~ 分析私聊对话快照，语气由消息内容决定。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = ""
-                summary_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录和朋友的聊天。可以用「呀」「呢」「哦」「~」但别太过。"
+                content_instruction = f"用 {persona_name} 的第一人称「我」来讲今天的故事，语气由消息内容决定，像记录和朋友的聊天。可以用「呀」「呢」「哦」「~」但别太过。"
                 first_stage = (
                     "· 今天发生了什么\n"
                     "· 用户心情怎么样\n"
                     "· 你们聊得开不开心"
                 )
             extra_rules = (
-                "9. summary 语气温暖轻松，朋友聊天感，适当用「呀」「呢」「哦」「~」但不要堆砌\n"
+                "9. content 语气温暖轻松，朋友聊天感，适当用「呀」「呢」「哦」「~」但不要堆砌\n"
                 "10. 保留情绪细节，让摘要读起来有温度\n"
                 "11. 可以用「今天」「刚刚」开头讲故事"
             )
@@ -418,7 +458,7 @@ class AnalysisMixin:
             if is_group:
                 preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析群聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = '"participants": ["参与对话的所有参与者昵称（不含 ' + persona_name + '）"],\n    '
-                summary_instruction = "以第三人称客观记录群聊中的关键事件、参与者行为模式和关系变化。保持精炼、结构化。"
+                content_instruction = "以第三人称客观记录群聊中的关键事件、参与者行为模式和关系变化。保持精炼、结构化。"
                 first_stage = (
                     "· 参与者识别\n"
                     "· 关键事件时序\n"
@@ -428,14 +468,14 @@ class AnalysisMixin:
             else:
                 preamble = f"你是 {persona_name} 的高级认知分析引擎。以专业分析师视角，客观结构化地分析私聊对话快照。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = ""
-                summary_instruction = "以第三人称客观记录本次对话的关键信息、用户状态变化和行为模式。保持专业、精炼。"
+                content_instruction = "以第三人称客观记录本次对话的关键信息、用户状态变化和行为模式。保持专业、精炼。"
                 first_stage = (
                     "· 事件时序重建\n"
                     "· 用户情绪状态变化\n"
                     "· 交互模式分析"
                 )
             extra_rules = (
-                "9. summary 用第三人称，保持客观专业，不使用语气词\n"
+                "9. content 用第三人称，保持客观专业，不使用语气词\n"
                 "10. 按「事件→影响→模式」结构组织摘要\n"
                 "11. 避免主观评价，优先记录可验证的事实"
             )
@@ -444,7 +484,7 @@ class AnalysisMixin:
             if is_group:
                 preamble = f"你是 {persona_name} 的后台认知分析模块。分析群聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。你需要理解谁说了什么。"
                 participants_field = '"participants": ["参与对话的所有昵称（不含 ' + persona_name + ' 自己）"],\n    '
-                summary_instruction = f"以 {persona_name} 的第一人称「我」叙事，像日记一样记录观察到的事情。"
+                content_instruction = f"以 {persona_name} 的第一人称「我」叙事，像日记一样记录观察到的事情。"
                 first_stage = (
                     "· 参与者有哪些（通过 [昵称] 区分）\n"
                     "· 发生了什么事、谁说了什么、事件顺序\n"
@@ -454,7 +494,7 @@ class AnalysisMixin:
             else:
                 preamble = f"你是 {persona_name} 的后台认知分析模块。分析私聊对话快照，以 {persona_name} 的第一人称视角产出分析。\n\n对话快照采用 [昵称] 内容 格式，[昵称] 代表消息发送者。"
                 participants_field = ""
-                summary_instruction = f"以 {persona_name} 的第一人称「我」叙事，像日记一样记录对用户的观察。"
+                content_instruction = f"以 {persona_name} 的第一人称「我」叙事，像日记一样记录对用户的观察。"
                 first_stage = (
                     "· 发生了什么、事件顺序\n"
                     "· 用户情绪变化\n"
@@ -482,7 +522,8 @@ class AnalysisMixin:
 第二阶段：提取 JSON。返回格式：
 
 {{
-  "summary": "{summary_instruction} 优先捕捉新变化，不要重复已知信息。保留具体细节和情绪转折。",
+  "content": "{content_instruction} 优先捕捉新变化，不要重复已知信息。保留具体细节和情绪转折。没有意义的事情可以不记；但要记就必须记细节，总字数控制在 200 字以内。",
+  "summary": "10-20 字的核心主题标签，必须包含 2-4 个具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」。不要叙事连接词（今天、然后、接着）。",
   "analysis": {{
     {participants_field}"key_facts": [
       "按 importance 降序排列的关键事实，保留时间/原因/经过/结果等具体细节，最多5条"
@@ -518,7 +559,7 @@ class AnalysisMixin:
 }}
 
 规则：
-1. summary 用第一人称（default/cute）或第三人称（professional），不要用第二人称「你」
+1. content 用第一人称（default/cute）或第三人称（professional），不要用第二人称「你」
 2. traits_updates 禁止提取「善于表达/喜欢思考/善于沟通」等无具体行为支撑的泛化特质；每条≤15字；必须与已知特质去重
 3. speech_quirks 与 traits_updates 各自去重，与 lt_hint 对比后只输出新发现的
 4. key_facts 最多5条，按 importance 降序，保留具体细节
@@ -526,5 +567,6 @@ class AnalysisMixin:
 6. 关系提取：优先客观关系；鼓励链式 A→B→C；只提取文本内实体
 7. 无法提取的字段用 null 或空数组
 8. 输入过长时设置 meta.truncated = true
+9. summary 是 10-20 字的核心主题标签，必须包含具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」
 {extra_rules}
 只输出 JSON。"""

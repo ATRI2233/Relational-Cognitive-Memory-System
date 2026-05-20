@@ -18,7 +18,6 @@ class MemoryMixin:
             "SELECT traits, preferences, communication_style, self_identity, boundaries, core_identity FROM identity_memory WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-        recent_events = self.conn.execute("SELECT summary, importance FROM cognitive_distill WHERE user_id = ? AND summary IS NOT NULL ORDER BY created_at DESC LIMIT 2", (user_id,)).fetchall()
         entities = self.conn.execute("""
             SELECT n1.label, n1.entity_type, e.relation, n2.label
             FROM memory_graph_edges e
@@ -63,8 +62,13 @@ class MemoryMixin:
     async def post_update_rules(self, user_id: str, session_id: str, user_input: str, stance: str, reply: str = ""):
         """纯管理操作（不做任何 LLM 替代的写入）"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        self._init_identity(user_id)
-        self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
+        # 使用实例级 DB 锁保证并发写入时的一致性
+        lock = getattr(self, '_db_lock', None)
+        if lock:
+            lock.acquire()
+        try:
+            self._init_identity(user_id)
+            self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
         # 悬案自动过期：超过 _DANGLING_EXPIRE_TURNS 轮无人提起则归档
         dt_row = self.conn.execute(
             "SELECT dangling_threads, turn_count FROM session_state WHERE session_id = ?", (session_id,)
@@ -80,7 +84,13 @@ class MemoryMixin:
                         self._archive_dangling(user_id, session_id, now_str, reason="过期")
             except (json.JSONDecodeError, ValueError):
                 logger.debug(f"RCMS: 解析 dangling_threads JSON 失败 user={user_id}")
-        self.conn.commit()
+            self.conn.commit()
+        finally:
+            if lock:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
 
     def check_distill_needed(self, session_id: str, persona_name: str = "Bot") -> tuple:
         """检查是否需要触发蒸馏。返回 (triggered, last_turn, turn_count, snapshot_text, sender_names)"""
@@ -124,42 +134,54 @@ class MemoryMixin:
         snapshot_text = "\n".join(lines[:30])
         return (True, last_turn, turn_count, snapshot_text, list(senders))
 
-    async def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, summary: str, mood: str = "", mood_intensity: float = 0.0):
+    async def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, content: str, summary: str = "", mood: str = "", mood_intensity: float = 0.0):
         """写入 LLM 蒸馏摘要（带 mood，供通道 2 情绪共振）+ 过期清理 + 图谱维护"""
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        # 1. 写入蒸馏摘要（带 mood/mood_intensity）
-        self.conn.execute(
-            "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, mood, mood_intensity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, session_id, summary, summary[:80], 0.8, mood, mood_intensity, now_str),
-        )
-        distill_id = self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        # 2. 更新 last_distill_turn/at
-        self.conn.execute(
-            "UPDATE session_state SET last_distill_turn = ?, last_distill_at = ? WHERE session_id = ?",
-            (turn_count, now_str, session_id),
-        )
-        # 3. 悬案归档
-        self._archive_dangling(user_id, session_id, now_str, reason="蒸馏")
-        # 3b. 清理已过期的 transient 记忆（不受 importance 限制）
-        expired = self.conn.execute(
-            "DELETE FROM cognitive_distill WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
-            (user_id, now_str),
-        ).rowcount
-        if expired:
-            logger.info(f"RCMS: 已清理 {expired} 条过期记忆 user={user_id}")
-        # 4. 清理遗漏的旧规则摘要（兼容旧数据，新系统不再写入 importance=0.3）
-        KEEP_RULE_SUMMARY = 10
-        self.conn.execute("""
-            DELETE FROM cognitive_distill WHERE user_id = ? AND importance = 0.3
-            AND id NOT IN (
-                SELECT id FROM cognitive_distill
-                WHERE user_id = ? AND importance = 0.3
-                ORDER BY created_at DESC LIMIT ?
+        if not summary:
+            summary = content[:20]
+        lock = getattr(self, '_db_lock', None)
+        if lock:
+            lock.acquire()
+        try:
+            # 1. 写入蒸馏摘要（带 mood/mood_intensity）
+            cur = self.conn.execute(
+                "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, mood, mood_intensity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, session_id, content, summary[:80], 0.8, mood, mood_intensity, now_str),
             )
-        """, (user_id, user_id, KEEP_RULE_SUMMARY))
-        # 5. 图谱维护：共现边衰减 + 孤立节点清理
-        self._maintain_graph(user_id)
-        self.conn.commit()
+            distill_id = cur.lastrowid
+            # 2. 更新 last_distill_turn/at
+            self.conn.execute(
+                "UPDATE session_state SET last_distill_turn = ?, last_distill_at = ? WHERE session_id = ?",
+                (turn_count, now_str, session_id),
+            )
+            # 3. 悬案归档
+            self._archive_dangling(user_id, session_id, now_str, reason="蒸馏")
+            # 3b. 清理已过期的 transient 记忆（不受 importance 限制）
+            expired = self.conn.execute(
+                "DELETE FROM cognitive_distill WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
+                (user_id, now_str),
+            ).rowcount
+            if expired:
+                logger.info(f"RCMS: 已清理 {expired} 条过期记忆 user={user_id}")
+            # 4. 清理遗漏的旧规则摘要（兼容旧数据，新系统不再写入 importance=0.3）
+            KEEP_RULE_SUMMARY = 10
+            self.conn.execute("""
+                DELETE FROM cognitive_distill WHERE user_id = ? AND importance = 0.3
+                AND id NOT IN (
+                    SELECT id FROM cognitive_distill
+                    WHERE user_id = ? AND importance = 0.3
+                    ORDER BY created_at DESC LIMIT ?
+                )
+            """, (user_id, user_id, KEEP_RULE_SUMMARY))
+            # 5. 图谱维护：共现边衰减 + 孤立节点清理
+            self._maintain_graph(user_id)
+            self.conn.commit()
+        finally:
+            if lock:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
         # 蒸馏摘要也需要向量
         vec = await self._get_embedding(summary[:512])
         if vec:
@@ -203,7 +225,7 @@ class MemoryMixin:
             content = f"{tag} " + "、".join(threads[:3])
             self.conn.execute(
                 "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, session_id, content, content[:60], 0.7, now_str),
+                (user_id, session_id, content, content.replace(tag, "").strip()[:20], 0.7, now_str),
             )
             self.conn.execute(
                 "UPDATE session_state SET dangling_threads = ? WHERE session_id = ?",

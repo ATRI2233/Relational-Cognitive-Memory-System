@@ -3,6 +3,16 @@
 > 未发行阶段，所有版本 ≤ v1.0。
 > 贡献者: [仓库主](https://github.com/ATRI)
 
+## v0.1.2 — 2026-05-20
+
+### refactor: cognitive_distill 向量嵌入源切换为 summary 短标签
+- Prompt JSON 模板：`summary` 拆分为 `content`（完整叙事）+ `summary`（10-20 字语义标签），新增规则 9 约束标签格式（含具体实体、禁止叙事连接词）
+- `_run_distill_analysis`：分别提取 `content`/`summary`，旧格式自动回退兼容（summary 超 30 字则用 key_facts 拼接兜底）
+- `_apply_distill` 签名改为 `(content, summary)`，DB 写入 `content` 列存完整文本、`summary` 列存短标签、embedding 用短标签
+- 关键事实/未结话题/悬案归档三处去除 `[:N]` 机械截断：关键事实和话题 `summary = content`；悬案归档去掉前缀取话题名
+- 清理 `_load_long_term_context` 中从未使用的 `recent_events` 死代码查询
+- 向后兼容：key_facts 回退路径加 `isinstance(f, str)` 守卫，防 LLM 混入 dict 崩溃
+
 ## v0.1.1 — 2026-05-19
 
 ### fix: 替换 silent `except Exception: pass` 为异常日志记录
