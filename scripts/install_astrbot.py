@@ -19,6 +19,8 @@ import sys
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
+_REPO_URL = "https://github.com/ATRI2233/Relational-Cognitive-Memory-System.git"
+
 # 源文件: RCMS 项目根目录（向上找含 rcms_core/ 的目录，不依赖固定层级）
 _HERE = None
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,8 +31,18 @@ for _ in range(5):
         break
     d = os.path.dirname(d)
 if not _HERE:
-    print("错误: 找不到 RCMS 源码目录（rcms_core/），请从 RCMS 仓库根目录运行此脚本")
-    sys.exit(1)
+    # 本地找不到源码 → 从 GitHub 拉取
+    print("本地未找到 RCMS 源码，从 GitHub 拉取...")
+    _HERE = os.path.join(os.path.dirname(_script_dir), "rcms_repo")
+    if os.path.isdir(os.path.join(_HERE, "rcms_core")):
+        subprocess.run(["git", "-C", _HERE, "pull"], capture_output=True)
+    else:
+        result = subprocess.run(["git", "clone", _REPO_URL, _HERE], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"从 GitHub 拉取失败: {result.stderr.strip()}")
+            print("请手动从 RCMS 仓库根目录运行此脚本")
+            sys.exit(1)
+    print("拉取完成")
 _SRC_PLUGIN = os.path.join(_HERE, "plugins", "rcms-astrbot")
 _CORE_DIRS = ["rcms_core"]
 _BACKEND_DIR = os.path.join(_HERE, "backends")
