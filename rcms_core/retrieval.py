@@ -668,15 +668,17 @@ class RetrievalMixin:
 
     def _store_embedding(self, user_id: str, record_id: int, embedding: list[float]):
         blob = np.array(embedding, dtype=np.float32).tobytes()
+        emb_dim = len(embedding) if embedding is not None else None
+        # 同时写入 embedding 与 embedding_dim，以便后续一致性检测
         self.conn.execute(
-            "UPDATE cognitive_distill SET embedding = ? WHERE id = ? AND user_id = ?",
-            (blob, record_id, user_id),
+            "UPDATE cognitive_distill SET embedding = ?, embedding_dim = ? WHERE id = ? AND user_id = ?",
+            (blob, emb_dim, record_id, user_id),
         )
         self.conn.commit()
 
     def _load_emb_cache(self, user_id: str):
         rows = self.conn.execute(
-            "SELECT id, content, embedding FROM cognitive_distill WHERE user_id = ? AND embedding IS NOT NULL ORDER BY id",
+            "SELECT id, content, embedding, embedding_dim FROM cognitive_distill WHERE user_id = ? AND embedding IS NOT NULL ORDER BY id",
             (user_id,),
         ).fetchall()
         if not rows:
@@ -686,10 +688,17 @@ class RetrievalMixin:
         vecs = []
         meta = []
         expected_dim = None
-        for row_id, content, blob in rows:
+        for row in rows:
+            # rows: (id, content, embedding[, embedding_dim])
+            if len(row) == 4:
+                row_id, content, blob, emb_dim = row
+            else:
+                row_id, content, blob = row
+                emb_dim = None
             vec = np.frombuffer(blob, dtype=np.float32)
             if expected_dim is None:
-                expected_dim = len(vec)
+                # 优先使用显式记录的 emb_dim（若有），否则用读取到的向量长度
+                expected_dim = int(emb_dim) if emb_dim else len(vec)
             if len(vec) == expected_dim:
                 vecs.append(vec)
                 meta.append((row_id, content))

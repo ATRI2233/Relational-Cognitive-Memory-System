@@ -73,6 +73,25 @@ CREATE TABLE IF NOT EXISTS shared_context (
             CREATE INDEX IF NOT EXISTS idx_cd_user ON cognitive_distill(user_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_cd_embed ON cognitive_distill(user_id) WHERE embedding IS NOT NULL;
         """)
+        # 新表：保存原始 LLM 蒸馏响应以便审计与回滚
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_raw (
+                    id INTEGER PRIMARY KEY,
+                    user_id TEXT,
+                    session_id TEXT,
+                    content TEXT,
+                    parsed INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+        except sqlite3.OperationalError:
+            pass
+        # Embedding 维度元数据列（用于检测模型变更）
+        try:
+            self.conn.execute("ALTER TABLE cognitive_distill ADD COLUMN embedding_dim INTEGER DEFAULT NULL")
+        except sqlite3.OperationalError:
+            pass
         for col in [
             "ADD COLUMN stance_turns INTEGER DEFAULT 0",
             "ADD COLUMN engagement_level TEXT DEFAULT 'coasting'",

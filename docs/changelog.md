@@ -13,6 +13,15 @@
 - 清理 `_load_long_term_context` 中从未使用的 `recent_events` 死代码查询
 - 向后兼容：key_facts 回退路径加 `isinstance(f, str)` 守卫，防 LLM 混入 dict 崩溃
 
+### feat: SQLite WAL 模式 + 写锁序列化 + 并发限流
+- `core.py`：初始化时启用 WAL 模式与 `busy_timeout=5000`，降低并发锁冲突概率；新增 `threading.RLock()` 实例级互斥锁
+- `session.py`：`save_turn` 加 `_db_lock` 保护，确保多协程并发写入不产生脏数据
+- `plugins/main.py`：后台任务（embedding/distill/post_update）改用 `Semaphore` 限制并发量 + `_schedule_task` 统一异常捕获
+
+### feat: embedding 维度一致性检测 + analysis_raw 审计表
+- `retrieval.py`：`_store_embedding` 同时写入 `embedding_dim`，`_load_emb_cache` 读取时做维度一致性检测，模型切换后自动跳过不兼容向量
+- `db.py`：新增 `analysis_raw` 表，保存每次蒸馏 LLM 原始 JSON 响应（含 parsed 标记），支持审计与回滚
+
 ## v0.1.1 — 2026-05-19
 
 ### fix: 替换 silent `except Exception: pass` 为异常日志记录

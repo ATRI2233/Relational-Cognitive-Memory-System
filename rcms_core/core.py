@@ -1,6 +1,7 @@
 import logging
 import os
 import sqlite3
+import threading
 from datetime import datetime
 from typing import Optional
 
@@ -79,7 +80,16 @@ class MinimalRCMS(
         self.analysis_config = analysis_config or {}
         self._llm_call = llm_call
         self._embed_call = embed_call
+        # 单一连接，但启用 WAL 与 busy timeout 以降低锁冲突概率
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA busy_timeout = 5000")
+        except Exception:
+            # 在极少数 sqlite 构建中 PRAGMA 可能不可用，忽略不阻塞初始化
+            pass
+        # 进程内用于序列化写操作的简单互斥锁（短期阻塞）
+        self._db_lock = threading.RLock()
         self._init_db()
         # Embedding 缓存
         self._emb_cache: dict[str, dict] = {}

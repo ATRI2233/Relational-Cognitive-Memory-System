@@ -81,6 +81,10 @@ class RcmsPlugin(star.Star):
         self._data_dir = os.path.join(_self, "data")
         os.makedirs(self._data_dir, exist_ok=True)
 
+        # 后台任务并发上限（可配置）
+        max_bg = int(self._get_cfg("max_background_tasks", 10))
+        self._task_sem = asyncio.Semaphore(max_bg)
+
         # 输出日志配置
         global _OUTPUT_LOG, _MAX_LOG_SIZE
         ol = self._get_cfg("output_log", {})
@@ -273,6 +277,23 @@ class RcmsPlugin(star.Star):
             )
             logger.info(f"RCMS: 创建人格记忆库 [{persona_name}] -> {db_path}")
         return self._rcms_instances[persona_name]
+
+    def _schedule_task(self, coro):
+        """调度后台任务，使用 semaphore 限制并发量并捕获异常。"""
+        async def _runner():
+            await self._task_sem.acquire()
+            try:
+                try:
+                    await coro
+                except Exception:
+                    logger.exception("RCMS: scheduled task failed")
+            finally:
+                try:
+                    self._task_sem.release()
+                except Exception:
+                    pass
+
+        asyncio.create_task(_runner())
 
     async def _resolve_persona(self, event: AstrMessageEvent) -> str:
         """解析当前会话使用哪个人格
@@ -510,7 +531,7 @@ class RcmsPlugin(star.Star):
                             system_prompt=system_prompt)
 
         # 事后处理异步化（不阻塞回复）
-        asyncio.create_task(self._async_post_update(
+        self._schedule_task(self._async_post_update(
             rcms, user_id, session_id, user_input, stance, reply
         ))
 
@@ -521,10 +542,10 @@ class RcmsPlugin(star.Star):
         # Embedding：新记忆入库后异步向量化
         if retrieval_cfg.get("embedding_enabled", retrieval_cfg.get("enabled", False)) and len(user_input) > 15:
             logger.debug(f"RCMS: [{persona_name}] schedule_embed")
-            asyncio.create_task(self._delayed_embed(rcms, user_id, session_id, user_input))
+            self._schedule_task(self._delayed_embed(rcms, user_id, session_id, user_input))
 
         # 蒸馏检查：post_update_rules 后触发 LLM 蒸馏分析
-        asyncio.create_task(self._check_and_distill(rcms, user_id, session_id, persona_name))
+        self._schedule_task(self._check_and_distill(rcms, user_id, session_id, persona_name))
 
         logger.info(f"RCMS: [{persona_name}] done turn_len={len(user_input)+len(reply)}")
 
