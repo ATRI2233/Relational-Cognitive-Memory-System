@@ -53,6 +53,22 @@ class ContextMixin:
                            user_input: str = "", user_id: str = "") -> str:
         parts = []
 
+        # ── 三通道记忆（按固定顺序：语义检索 → 图谱关联 → 时间重要性） ──
+        if memories:
+            channel_map = {'recent': '时间·重要性', 'resonance': '语义检索', 'skeleton': '图谱关联'}
+            display_order = ['resonance', 'skeleton', 'recent']
+            grouped = {}
+            for content, tag in memories:
+                grouped.setdefault(tag, []).append(content)
+            ch_lines = []
+            for key in display_order:
+                items = grouped.get(key)
+                if items:
+                    label = channel_map.get(key, key)
+                    ch_lines.append(f"【{label}】\n" + "\n".join(f"  · {c}" for c in items))
+            if ch_lines:
+                parts.append("相关记忆:\n" + "\n\n".join(ch_lines))
+
         # ── 会话统计 ──
         turn_count = 0
         dangling = ""
@@ -153,22 +169,6 @@ class ContextMixin:
                 ctx_lines.append(f"最近总聊: {focus}")
         if ctx_lines:
             parts.append("共同语境:\n" + '\n'.join(f'  · {c}' for c in ctx_lines))
-
-        # ── 三通道记忆（按固定顺序：语义检索 → 图谱关联 → 时间重要性） ──
-        if memories:
-            channel_map = {'recent': '时间·重要性', 'resonance': '语义检索', 'skeleton': '图谱关联'}
-            display_order = ['resonance', 'skeleton', 'recent']
-            grouped = {}
-            for content, tag in memories:
-                grouped.setdefault(tag, []).append(content)
-            ch_lines = []
-            for key in display_order:
-                items = grouped.get(key)
-                if items:
-                    label = channel_map.get(key, key)
-                    ch_lines.append(f"【{label}】\n" + "\n".join(f"  · {c}" for c in items))
-            if ch_lines:
-                parts.append("相关记忆:\n" + "\n\n".join(ch_lines))
 
         # ── 图谱关系链 ──
         graph_paths = getattr(self, '_graph_paths', [])

@@ -38,7 +38,7 @@ class RetrievalMixin:
             self.__retrieval_params = {
                 "total_cap": rc.get("total_cap", 5),
                 "channel_min": rc.get("channel_min", [1, 1, 1]),
-                "channel_weights": rc.get("channel_weights", [1.0, 1.0, 0.4]),
+                "channel_weights": rc.get("channel_weights", [0.7, 1.0, 0.4]),
                 "time_decay_halflife": rc.get("time_decay_halflife", 30),
                 "emotional_resonance_bonus": rc.get("emotional_resonance_bonus", 0.15),
             }
@@ -227,7 +227,7 @@ class RetrievalMixin:
                 if current_mood and mood and mood == current_mood:
                     score *= (1 + resonance_bonus)
 
-                scored.append((self._fuzz_time(created_at) + '，' + content, score, 'resonance'))
+                scored.append((content, score, 'resonance'))
 
             # vec 中还有 kw_rows 未覆盖的条目
             for rid, (cos_sim, content) in vec_results.items():
@@ -246,7 +246,7 @@ class RetrievalMixin:
                 score = importance * self._time_decay(days)
                 if current_mood and mood and mood == current_mood:
                     score *= (1 + resonance_bonus)
-                scored.append((self._fuzz_time(created_at) + '，' + content, score, 'resonance'))
+                scored.append((content, score, 'resonance'))
 
         scored.sort(key=lambda x: -x[1])
         return scored[:limit]
