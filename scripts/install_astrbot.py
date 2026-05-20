@@ -217,13 +217,7 @@ def _forward_api_config(rcms_config_path: str, astrbot_root: str):
 
 def install(target_dir: str, force: bool = False, forward_api: bool = False):
     plugin_dir = os.path.join(target_dir, PLUGIN_DIR_NAME)
-
-    if os.path.exists(plugin_dir) and not force:
-        print(f"发现已有目录: {plugin_dir}")
-        ans = input("覆盖代码文件，config.json 和数据库保留? (y/N): ").strip().lower()
-        if ans != "y":
-            print("取消")
-            return
+    is_update = os.path.exists(plugin_dir)
 
     os.makedirs(plugin_dir, exist_ok=True)
 
@@ -253,10 +247,16 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
     elif os.path.exists(config_dst):
         print("  [=] config.json 已存在，保留")
 
-    # 保留已有数据库（含人格分离后的多库）
+    # 数据库和 config 保留提示
+    config_dst = os.path.join(plugin_dir, "config.json")
     existing_dbs = [f for f in os.listdir(plugin_dir) if f.startswith("rcms_memory") and f.endswith(".db")]
+    preserved = []
+    if os.path.exists(config_dst):
+        preserved.append("config.json")
     if existing_dbs:
-        print(f"  [=] 已有 {len(existing_dbs)} 个数据库文件 (已保留)")
+        preserved.append(f"{len(existing_dbs)} 个数据库")
+    if preserved:
+        print(f"  [=] 已保留: {', '.join(preserved)}")
 
     # 扫描并提示人格信息（AstrBot 数据目录）
     astrbot_root = derive_astrbot_root(target_dir) or os.path.expanduser("~/.astrbot")
