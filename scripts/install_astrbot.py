@@ -32,14 +32,22 @@ def _find_root_by_config() -> str | None:
     """扫描可能位置，查找含 data/cmd_config.json 的 AstrBot 根目录"""
     candidates = [
         os.path.expanduser("~/.astrbot"),
+        os.path.expanduser("~"),
+        os.getcwd(),
         _HERE,
     ]
+    # 从当前目录向上找
+    d = os.getcwd()
+    for _ in range(5):
+        d = os.path.dirname(d)
+        candidates.append(d)
+
     for p in candidates:
         if os.path.isfile(os.path.join(p, "data", "cmd_config.json")):
             return p
 
-    # 未命中标准路径 → 扫描常见部署目录（/www/xxxAstrBotxxx/）
-    for root in ["/www", "/var/www", "/opt", "/home"]:
+    # 扫描常见部署根目录
+    for root in ["/www", "/var/www", "/opt", "/home"] + [os.path.splitdrive(os.getcwd())[0] + os.sep]:
         if not os.path.isdir(root):
             continue
         try:
