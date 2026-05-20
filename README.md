@@ -1,5 +1,11 @@
 # Relational Cognitive Memory System (RCMS)
 
+![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python)
+![SQLite](https://img.shields.io/badge/database-SQLite-brightgreen?style=flat-square&logo=sqlite)
+![Status](https://img.shields.io/badge/status-v1.0--stable-green?style=flat-square)
+![AstrBot](https://img.shields.io/badge/AstrBot-plugin-orange?style=flat-square)
+
 关系认知记忆系统 — 让 AI Agent 在长期对话中拥有人际关系感知。
 
 RCMS 不是简单的对话历史存储。它在每次对话后对 LLM 回复做 **事后蒸馏分析**，抽取用户画像、情绪氛围、实体关系、关键事实等多维信息，并在下次对话前通过 **三通道融合召回** 把最相关的记忆注入到 LLM 的上下文中。
