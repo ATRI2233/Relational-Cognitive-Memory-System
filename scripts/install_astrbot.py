@@ -251,17 +251,23 @@ def install(target_dir: str, force: bool = False, forward_api: bool = False):
 
     os.makedirs(plugin_dir, exist_ok=True)
 
-    # 复制适配器文件
+    # 复制适配器文件（跳过源=目标，如 main.py 软链接场景）
     for f in ["main.py", "metadata.yaml"]:
         src = os.path.join(_SRC_PLUGIN, f)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(plugin_dir, f))
+        dst = os.path.join(plugin_dir, f)
+        if os.path.exists(src) and os.path.realpath(src) != os.path.realpath(dst):
+            shutil.copy2(src, dst)
             print(f"  [+] {f}")
+        elif os.path.exists(src):
+            print(f"  [=] {f} （已就位）")
 
-    # 复制 RCMS 核心 + backends
+    # 复制 RCMS 核心 + backends（跳过源=目标的场景，避免自删）
     for d in _CORE_DIRS + ["backends"]:
         src = os.path.join(_HERE, d)
         dst = os.path.join(plugin_dir, d)
+        if os.path.realpath(src) == os.path.realpath(dst):
+            print(f"  [=] {d}/ （已就位）")
+            continue
         if os.path.exists(dst):
             shutil.rmtree(dst)
         if os.path.isdir(src):
