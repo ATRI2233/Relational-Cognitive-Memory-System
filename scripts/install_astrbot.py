@@ -19,8 +19,18 @@ import sys
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
-# 源文件: RCMS 项目根目录
-_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 源文件: RCMS 项目根目录（向上找含 rcms_core/ 的目录，不依赖固定层级）
+_HERE = None
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+d = _script_dir
+for _ in range(5):
+    if os.path.isdir(os.path.join(d, "rcms_core")):
+        _HERE = d
+        break
+    d = os.path.dirname(d)
+if not _HERE:
+    print("错误: 找不到 RCMS 源码目录（rcms_core/），请从 RCMS 仓库根目录运行此脚本")
+    sys.exit(1)
 _SRC_PLUGIN = os.path.join(_HERE, "plugins", "rcms-astrbot")
 _CORE_DIRS = ["rcms_core"]
 _BACKEND_DIR = os.path.join(_HERE, "backends")
