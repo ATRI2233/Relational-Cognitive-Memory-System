@@ -85,14 +85,15 @@ class MinimalRCMS(
         try:
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA busy_timeout = 5000")
-        except Exception:
-            # 在极少数 sqlite 构建中 PRAGMA 可能不可用，忽略不阻塞初始化
-            pass
+        except Exception as e:
+            logger.warning(f"RCMS: PRAGMA 设置失败 — WAL/busy_timeout 不可用 ({e})，DB 并发保护降级")
         # 进程内用于序列化写操作的简单互斥锁（短期阻塞）
         self._db_lock = threading.RLock()
         self._init_db()
         # Embedding 缓存
         self._emb_cache: dict[str, dict] = {}
+        # 维度不匹配待重建队列（record_id 集合）— 模型变更后自动积累
+        self._emb_rebuild_queue: set[int] = set()
         self._emb_client: Optional[AsyncOpenAI] = None
         rc = self.analysis_config.get("retrieval", {})
         self._emb_model = rc.get("custom_model", "") or rc.get("model", "text-embedding-3-small")

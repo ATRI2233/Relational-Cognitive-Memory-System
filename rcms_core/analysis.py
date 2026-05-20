@@ -51,254 +51,254 @@ class AnalysisMixin:
                 self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, now_str))
                 self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
 
-        # 兼容新/旧输出格式：将可能的 dict 项归一化为旧版简单类型（string 列表）以免后续逻辑出错
-        traits_updates = []
-        for t in data.get("traits_updates", []) or []:
-            if isinstance(t, dict):
-                trait = t.get("trait") or t.get("t") or None
-                if trait:
-                    traits_updates.append(trait)
-            elif isinstance(t, str):
-                traits_updates.append(t)
-
-        speech_quirks = []
-        for q in data.get("speech_quirks", []) or []:
-            if isinstance(q, dict):
-                quirk = q.get("quirk") or q.get("q") or q.get("text") or None
-                if quirk:
-                    speech_quirks.append(quirk)
-            elif isinstance(q, str):
-                speech_quirks.append(q)
-
-        dangling_threads = []
-        for dt in data.get("dangling_threads", []) or []:
-            if isinstance(dt, dict):
-                content = dt.get("content") or dt.get("text") or None
-                if content:
-                    dangling_threads.append(content)
-            elif isinstance(dt, str):
-                dangling_threads.append(dt)
-
-        key_facts_list = []
-        for kf in data.get("key_facts", []) or []:
-            if isinstance(kf, dict):
-                c = kf.get("content") or kf.get("text") or None
-                if c:
-                    key_facts_list.append(c)
-            elif isinstance(kf, str):
-                key_facts_list.append(kf)
-
-        _norm_data = dict(data)
-        _norm_data["traits_updates"] = traits_updates
-        _norm_data["speech_quirks"] = speech_quirks
-        _norm_data["dangling_threads"] = dangling_threads
-        _norm_data["key_facts"] = key_facts_list
-        data = _norm_data
-
-        # 1. Topic tracking — focus_topic from LLM analysis, 比关键词猜测精准
-        if data.get("topic_shift") and data.get("key_points"):
-            new_topic = data["key_points"][0][:60]
-            self.conn.execute(
-                "UPDATE session_state SET focus_topic = ? WHERE session_id = ?",
-                (new_topic, session_id),
-            )
-
-        # 2. Mood & intensity
-        mood = data.get("mood", "")
-        intensity = data.get("mood_intensity", 0.0)
-
-        # 2b. User state → session_state.stance
-        if data.get("user_state") and session_id:
-            self.conn.execute(
-                "UPDATE session_state SET stance = ? WHERE session_id = ?",
-                (data["user_state"], session_id),
-            )
-
-        # 3. (relationship arc removed)
-
-        # 4. Identity traits + quirks — 单次 LLM 已产出语义去重，无需额外 embedding API
-        identity = self.conn.execute("SELECT traits FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
-        if identity:
-            raw = json.loads(identity[0]) if identity[0] else []
-            trait_map = {}
-            for item in raw:
-                if isinstance(item, str):
-                    trait_map[item] = {"s": 3, "c": 0}
-                elif isinstance(item, dict):
-                    trait_map[item.get("t", "")] = {"s": item.get("s", 0), "c": item.get("c", 0)}
-
-            confirmed = set()
-            for t in data.get("traits_updates", []):
-                if t not in trait_map:
-                    trait_map[t] = {"s": 5, "c": 1}
-                else:
-                    trait_map[t]["s"] = 5
-                    trait_map[t]["c"] += 1
-                confirmed.add(t)
-
-            # Quirks join the pool
-            for q in data.get("speech_quirks", []):
-                q_entry = f"[口癖] {q}"
-                if q_entry not in trait_map:
-                    trait_map[q_entry] = {"s": 0, "c": 0}
-                trait_map[q_entry]["s"] = 5
-                trait_map[q_entry]["c"] += 1
-                confirmed.add(q_entry)
-
-            # Decay unconfirmed: strength -= 1, floor = min(c // 2, 2)
-            for t in list(trait_map.keys()):
-                if t not in confirmed:
-                    floor = min(trait_map[t]["c"] // 2, 2)
-                    trait_map[t]["s"] = max(trait_map[t]["s"] - 1, floor)
-                    if trait_map[t]["s"] <= 0:
-                        del trait_map[t]
-
-            # 容量上限：超过30条时按 s*2+c 排序保留前30
-            if len(trait_map) > 30:
-                sorted_t = sorted(trait_map.items(), key=lambda x: x[1]["s"] * 2 + x[1]["c"], reverse=True)[:30]
-                trait_map = dict(sorted_t)
-
-            new_traits_json = [{"t": t, "s": v["s"], "c": v["c"]} for t, v in trait_map.items()]
-            if new_traits_json != raw:
+            # 兼容新/旧输出格式：将可能的 dict 项归一化为旧版简单类型（string 列表）以免后续逻辑出错
+            traits_updates = []
+            for t in data.get("traits_updates", []) or []:
+                if isinstance(t, dict):
+                    trait = t.get("trait") or t.get("t") or None
+                    if trait:
+                        traits_updates.append(trait)
+                elif isinstance(t, str):
+                    traits_updates.append(t)
+    
+            speech_quirks = []
+            for q in data.get("speech_quirks", []) or []:
+                if isinstance(q, dict):
+                    quirk = q.get("quirk") or q.get("q") or q.get("text") or None
+                    if quirk:
+                        speech_quirks.append(quirk)
+                elif isinstance(q, str):
+                    speech_quirks.append(q)
+    
+            dangling_threads = []
+            for dt in data.get("dangling_threads", []) or []:
+                if isinstance(dt, dict):
+                    content = dt.get("content") or dt.get("text") or None
+                    if content:
+                        dangling_threads.append(content)
+                elif isinstance(dt, str):
+                    dangling_threads.append(dt)
+    
+            key_facts_list = []
+            for kf in data.get("key_facts", []) or []:
+                if isinstance(kf, dict):
+                    c = kf.get("content") or kf.get("text") or None
+                    if c:
+                        key_facts_list.append(c)
+                elif isinstance(kf, str):
+                    key_facts_list.append(kf)
+    
+            _norm_data = dict(data)
+            _norm_data["traits_updates"] = traits_updates
+            _norm_data["speech_quirks"] = speech_quirks
+            _norm_data["dangling_threads"] = dangling_threads
+            _norm_data["key_facts"] = key_facts_list
+            data = _norm_data
+    
+            # 1. Topic tracking — focus_topic from LLM analysis, 比关键词猜测精准
+            if data.get("topic_shift") and data.get("key_points"):
+                new_topic = data["key_points"][0][:60]
                 self.conn.execute(
-                    "UPDATE identity_memory SET traits = ?, updated_at = ? WHERE user_id = ?",
-                    (json.dumps(new_traits_json, ensure_ascii=False), now_str, user_id),
+                    "UPDATE session_state SET focus_topic = ? WHERE session_id = ?",
+                    (new_topic, session_id),
                 )
-
-        # 4b. 结构化身份字段（覆盖写，LLM 每次产出完整快照）
-        id_updates = []
-        id_params = []
-        for col, key, default in [
-            ("preferences", "preferences", "{}"),
-            ("communication_style", "communication_style", ""),
-            ("self_identity", "self_identity", "[]"),
-            ("core_identity", "core_identity", "{}"),
-        ]:
-            val = data.get(key)
-            if val is not None:
-                if isinstance(val, (dict, list)):
-                    val = json.dumps(val, ensure_ascii=False)
-                id_updates.append(f"{col} = ?")
-                id_params.append(val)
-        if id_updates:
-            id_params.extend([now_str, user_id])
-            self.conn.execute(
-                f"UPDATE identity_memory SET {', '.join(id_updates)}, updated_at = ? WHERE user_id = ?",
-                id_params,
-            )
-
-        # 5. Shared jokes/context
-        for joke in data.get("shared_jokes", []):
-            trigger = joke.get("trigger", "")
-            ctx = joke.get("context", "")
-            if trigger:
-                existing = self.conn.execute(
-                    "SELECT context_id FROM shared_context WHERE user_id = ? AND context_body LIKE ?",
-                    (user_id, f"%{trigger}%"),
-                ).fetchone()
-                if existing:
+    
+            # 2. Mood & intensity
+            mood = data.get("mood", "")
+            intensity = data.get("mood_intensity", 0.0)
+    
+            # 2b. User state → session_state.stance
+            if data.get("user_state") and session_id:
+                self.conn.execute(
+                    "UPDATE session_state SET stance = ? WHERE session_id = ?",
+                    (data["user_state"], session_id),
+                )
+    
+            # 3. (relationship arc removed)
+    
+            # 4. Identity traits + quirks — 单次 LLM 已产出语义去重，无需额外 embedding API
+            identity = self.conn.execute("SELECT traits FROM identity_memory WHERE user_id = ?", (user_id,)).fetchone()
+            if identity:
+                raw = json.loads(identity[0]) if identity[0] else []
+                trait_map = {}
+                for item in raw:
+                    if isinstance(item, str):
+                        trait_map[item] = {"s": 3, "c": 0}
+                    elif isinstance(item, dict):
+                        trait_map[item.get("t", "")] = {"s": item.get("s", 0), "c": item.get("c", 0)}
+    
+                confirmed = set()
+                for t in data.get("traits_updates", []):
+                    if t not in trait_map:
+                        trait_map[t] = {"s": 5, "c": 1}
+                    else:
+                        trait_map[t]["s"] = 5
+                        trait_map[t]["c"] += 1
+                    confirmed.add(t)
+    
+                # Quirks join the pool
+                for q in data.get("speech_quirks", []):
+                    q_entry = f"[口癖] {q}"
+                    if q_entry not in trait_map:
+                        trait_map[q_entry] = {"s": 0, "c": 0}
+                    trait_map[q_entry]["s"] = 5
+                    trait_map[q_entry]["c"] += 1
+                    confirmed.add(q_entry)
+    
+                # Decay unconfirmed: strength -= 1, floor = min(c // 2, 2)
+                for t in list(trait_map.keys()):
+                    if t not in confirmed:
+                        floor = min(trait_map[t]["c"] // 2, 2)
+                        trait_map[t]["s"] = max(trait_map[t]["s"] - 1, floor)
+                        if trait_map[t]["s"] <= 0:
+                            del trait_map[t]
+    
+                # 容量上限：超过30条时按 s*2+c 排序保留前30
+                if len(trait_map) > 30:
+                    sorted_t = sorted(trait_map.items(), key=lambda x: x[1]["s"] * 2 + x[1]["c"], reverse=True)[:30]
+                    trait_map = dict(sorted_t)
+    
+                new_traits_json = [{"t": t, "s": v["s"], "c": v["c"]} for t, v in trait_map.items()]
+                if new_traits_json != raw:
                     self.conn.execute(
-                        "UPDATE shared_context SET omission_count = omission_count + 1 WHERE context_id = ?",
-                        (existing[0],),
+                        "UPDATE identity_memory SET traits = ?, updated_at = ? WHERE user_id = ?",
+                        (json.dumps(new_traits_json, ensure_ascii=False), now_str, user_id),
                     )
-                else:
-                    self.conn.execute(
-                        "INSERT INTO shared_context (user_id, context_body, omission_count, confirmed) VALUES (?, ?, 1, 1)",
-                        (user_id, f"[梗] {trigger} → {ctx}"),
-                    )
-
-        # 6. Boundaries — 覆盖写（LLM 已参考现有雷区，产出即完整快照）
-        boundaries = data.get("boundaries")
-        if boundaries is not None and isinstance(boundaries, list):
-            self.conn.execute(
-                "UPDATE identity_memory SET boundaries = ?, updated_at = ? WHERE user_id = ?",
-                (json.dumps(boundaries, ensure_ascii=False), now_str, user_id),
-            )
-
-        # 7. Dangling threads → cognitive_distill
-        for dt in data.get("dangling_threads", []):
-            cur = self.conn.execute(
-                "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, dt, dt, 0.5, now_str),
-            )
-            new_entries.append((cur.lastrowid, dt))
-        if session_id and data.get("dangling_threads"):
-            row = self.conn.execute("SELECT turn_count FROM session_state WHERE session_id = ?", (session_id,)).fetchone()
-            current_turn = row[0] if row else 0
-            self.conn.execute(
-                "UPDATE session_state SET dangling_threads = ? WHERE session_id = ?",
-                (json.dumps({"threads": data["dangling_threads"], "turn": current_turn}, ensure_ascii=False), session_id),
-            )
-
-        # 8. Entities → 图谱（带 type 的多关系节点 + 反向边）
-        for ent in data.get("entities", []):
-            name = ent.get("name", "")
-            entity_type = ent.get("type", "auto")
-            relations = ent.get("relations", [])
-            if not name or not relations:
-                continue
-            from_id = self._upsert_graph_node(user_id, name, now_str, entity_type=entity_type)
-            if from_id < 0:
-                continue
-            for rel in relations:
-                target = rel.get("target", "")
-                relation = rel.get("relation", "")
-                if not target or not relation:
+    
+            # 4b. 结构化身份字段（覆盖写，LLM 每次产出完整快照）
+            id_updates = []
+            id_params = []
+            for col, key, default in [
+                ("preferences", "preferences", "{}"),
+                ("communication_style", "communication_style", ""),
+                ("self_identity", "self_identity", "[]"),
+                ("core_identity", "core_identity", "{}"),
+            ]:
+                val = data.get(key)
+                if val is not None:
+                    if isinstance(val, (dict, list)):
+                        val = json.dumps(val, ensure_ascii=False)
+                    id_updates.append(f"{col} = ?")
+                    id_params.append(val)
+            if id_updates:
+                id_params.extend([now_str, user_id])
+                self.conn.execute(
+                    f"UPDATE identity_memory SET {', '.join(id_updates)}, updated_at = ? WHERE user_id = ?",
+                    id_params,
+                )
+    
+            # 5. Shared jokes/context
+            for joke in data.get("shared_jokes", []):
+                trigger = joke.get("trigger", "")
+                ctx = joke.get("context", "")
+                if trigger:
+                    existing = self.conn.execute(
+                        "SELECT context_id FROM shared_context WHERE user_id = ? AND context_body LIKE ?",
+                        (user_id, f"%{trigger}%"),
+                    ).fetchone()
+                    if existing:
+                        self.conn.execute(
+                            "UPDATE shared_context SET omission_count = omission_count + 1 WHERE context_id = ?",
+                            (existing[0],),
+                        )
+                    else:
+                        self.conn.execute(
+                            "INSERT INTO shared_context (user_id, context_body, omission_count, confirmed) VALUES (?, ?, 1, 1)",
+                            (user_id, f"[梗] {trigger} → {ctx}"),
+                        )
+    
+            # 6. Boundaries — 覆盖写（LLM 已参考现有雷区，产出即完整快照）
+            boundaries = data.get("boundaries")
+            if boundaries is not None and isinstance(boundaries, list):
+                self.conn.execute(
+                    "UPDATE identity_memory SET boundaries = ?, updated_at = ? WHERE user_id = ?",
+                    (json.dumps(boundaries, ensure_ascii=False), now_str, user_id),
+                )
+    
+            # 7. Dangling threads → cognitive_distill
+            for dt in data.get("dangling_threads", []):
+                cur = self.conn.execute(
+                    "INSERT INTO cognitive_distill (user_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (user_id, dt, dt, 0.5, now_str),
+                )
+                new_entries.append((cur.lastrowid, dt))
+            if session_id and data.get("dangling_threads"):
+                row = self.conn.execute("SELECT turn_count FROM session_state WHERE session_id = ?", (session_id,)).fetchone()
+                current_turn = row[0] if row else 0
+                self.conn.execute(
+                    "UPDATE session_state SET dangling_threads = ? WHERE session_id = ?",
+                    (json.dumps({"threads": data["dangling_threads"], "turn": current_turn}, ensure_ascii=False), session_id),
+                )
+    
+            # 8. Entities → 图谱（带 type 的多关系节点 + 反向边）
+            for ent in data.get("entities", []):
+                name = ent.get("name", "")
+                entity_type = ent.get("type", "auto")
+                relations = ent.get("relations", [])
+                if not name or not relations:
                     continue
-                to_id = self._upsert_graph_node(user_id, target, now_str)
-                self._upsert_graph_edge(from_id, to_id, now_str, relation=relation, created_at=now_str)
-                # 只在有明确反向映射时插入反向边，不兜底"相关于"
-                if relation in self._INVERSE_RELATIONS:
-                    inv = self._INVERSE_RELATIONS[relation]
-                    self._upsert_graph_edge(to_id, from_id, now_str, relation=inv, created_at=now_str)
-
-        # 10. Key facts → cognitive_distill（permanent 保底 0.5，transient 无保底可被清理）
-        importance = data.get("importance", 0.0)
-        kf_imp = max(importance, 0.5)
-        kfs = data.get("key_facts", []) or data.get("key_facts_structured", [])
-        perm_count = 0
-        tran_count = 0
-        for kf in kfs:
-            if isinstance(kf, str):
-                content = kf
-                temporal = "permanent"
-                expires_at = None
-            elif isinstance(kf, dict):
-                content = kf.get("content", "")
-                temporal = kf.get("temporal", "permanent")
-                if temporal == "transient" and kf.get("expires_after_days"):
-                    expires_at = (datetime.now() + timedelta(days=int(kf["expires_after_days"]))).strftime('%Y-%m-%d %H:%M:%S')
-                else:
+                from_id = self._upsert_graph_node(user_id, name, now_str, entity_type=entity_type)
+                if from_id < 0:
+                    continue
+                for rel in relations:
+                    target = rel.get("target", "")
+                    relation = rel.get("relation", "")
+                    if not target or not relation:
+                        continue
+                    to_id = self._upsert_graph_node(user_id, target, now_str)
+                    self._upsert_graph_edge(from_id, to_id, now_str, relation=relation, created_at=now_str)
+                    # 只在有明确反向映射时插入反向边，不兜底"相关于"
+                    if relation in self._INVERSE_RELATIONS:
+                        inv = self._INVERSE_RELATIONS[relation]
+                        self._upsert_graph_edge(to_id, from_id, now_str, relation=inv, created_at=now_str)
+    
+            # 10. Key facts → cognitive_distill（permanent 保底 0.5，transient 无保底可被清理）
+            importance = data.get("importance", 0.0)
+            kf_imp = max(importance, 0.5)
+            kfs = data.get("key_facts", []) or data.get("key_facts_structured", [])
+            perm_count = 0
+            tran_count = 0
+            for kf in kfs:
+                if isinstance(kf, str):
+                    content = kf
+                    temporal = "permanent"
                     expires_at = None
-            else:
-                continue
-            if not content:
-                continue
-            if temporal == "permanent":
-                if perm_count >= 3:
+                elif isinstance(kf, dict):
+                    content = kf.get("content", "")
+                    temporal = kf.get("temporal", "permanent")
+                    if temporal == "transient" and kf.get("expires_after_days"):
+                        expires_at = (datetime.now() + timedelta(days=int(kf["expires_after_days"]))).strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        expires_at = None
+                else:
                     continue
-                imp_val = kf_imp
-                perm_count += 1
-            else:
-                if tran_count >= 5:
+                if not content:
                     continue
-                imp_val = importance  # transient 无保底，可被正常衰减清理
-                tran_count += 1
-            cur = self.conn.execute(
-                "INSERT INTO cognitive_distill (user_id, content, summary, importance, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, content, content, imp_val, expires_at, now_str),
-            )
-            new_entries.append((cur.lastrowid, content[:512]))
-
-        log_parts = []
-        if data.get("traits_updates"): log_parts.append(f"traits+{len(data['traits_updates'])}")
-        if data.get("shared_jokes"): log_parts.append(f"jokes+{len(data['shared_jokes'])}")
-        if data.get("boundaries"): log_parts.append(f"bounds+{len(data['boundaries'])}")
-        if data.get("key_facts"): log_parts.append(f"facts+{len(data['key_facts'])}")
-        if data.get("entities"): log_parts.append(f"ents+{len(data['entities'])}")
-        if data.get("importance", 0) >= 0.5: log_parts.append("event")
+                if temporal == "permanent":
+                    if perm_count >= 3:
+                        continue
+                    imp_val = kf_imp
+                    perm_count += 1
+                else:
+                    if tran_count >= 5:
+                        continue
+                    imp_val = importance  # transient 无保底，可被正常衰减清理
+                    tran_count += 1
+                cur = self.conn.execute(
+                    "INSERT INTO cognitive_distill (user_id, content, summary, importance, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, content, content, imp_val, expires_at, now_str),
+                )
+                new_entries.append((cur.lastrowid, content[:512]))
+    
+            log_parts = []
+            if data.get("traits_updates"): log_parts.append(f"traits+{len(data['traits_updates'])}")
+            if data.get("shared_jokes"): log_parts.append(f"jokes+{len(data['shared_jokes'])}")
+            if data.get("boundaries"): log_parts.append(f"bounds+{len(data['boundaries'])}")
+            if data.get("key_facts"): log_parts.append(f"facts+{len(data['key_facts'])}")
+            if data.get("entities"): log_parts.append(f"ents+{len(data['entities'])}")
+            if data.get("importance", 0) >= 0.5: log_parts.append("event")
             logger.info(f"ANALYSIS: write user={user_id} {' | '.join(log_parts) if log_parts else 'no-updates'}")
-
+    
             self.conn.commit()
         finally:
             if lock:

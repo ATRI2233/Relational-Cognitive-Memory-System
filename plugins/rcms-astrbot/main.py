@@ -547,6 +547,9 @@ class RcmsPlugin(star.Star):
         # 蒸馏检查：post_update_rules 后触发 LLM 蒸馏分析
         self._schedule_task(self._check_and_distill(rcms, user_id, session_id, persona_name))
 
+        # Embedding 重建队列：模型变更后的老向量逐步重嵌入
+        self._schedule_task(self._process_rebuild_queue(rcms, user_id))
+
         logger.info(f"RCMS: [{persona_name}] done turn_len={len(user_input)+len(reply)}")
 
     async def _delayed_embed(self, rcms: MinimalRCMS, user_id: str, session_id: str, content: str):
@@ -565,6 +568,27 @@ class RcmsPlugin(star.Star):
                 rcms._load_emb_cache(user_id)
         except Exception:
             logger.exception(f"RCMS: delayed_embed failed user={user_id} session={session_id}")
+
+    async def _process_rebuild_queue(self, rcms: MinimalRCMS, user_id: str, batch_size: int = 3):
+        """处理 embedding 重建队列：每轮最多重建 batch_size 条（模型变更后的老向量）"""
+        try:
+            rows = rcms.conn.execute(
+                "SELECT r.record_id, c.content FROM embedding_rebuild_queue r "
+                "JOIN cognitive_distill c ON r.record_id = c.id AND r.user_id = c.user_id "
+                "WHERE r.user_id = ? ORDER BY r.created_at ASC LIMIT ?",
+                (user_id, batch_size),
+            ).fetchall()
+            for rec_id, text in rows:
+                vec = await rcms._get_embedding(text[:512])
+                if vec:
+                    rcms._store_embedding(user_id, rec_id, vec)
+                rcms.conn.execute("DELETE FROM embedding_rebuild_queue WHERE user_id = ? AND record_id = ?", (user_id, rec_id))
+            if rows:
+                rcms.conn.commit()
+                rcms._load_emb_cache(user_id)
+                logger.info(f"RCMS: 重建队列已处理 {len(rows)} 条 user={user_id}")
+        except Exception:
+            logger.exception(f"RCMS: rebuild queue failed user={user_id}")
 
     async def _async_post_update(self, rcms: MinimalRCMS, user_id: str, session_id: str,
                                   user_input: str, stance: str, reply: str):

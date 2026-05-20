@@ -146,7 +146,7 @@ class RetrievalMixin:
         if all_keywords:
             emb_query = user_input + " " + " ".join(all_keywords)
 
-        vec_results = {}   # content → cosine_sim
+        vec_results: dict[int, tuple[float, str]] = {}   # record_id → (cosine_sim, content)
         try:
             if user_id not in self._emb_cache:
                 self._load_emb_cache(user_id)
@@ -161,7 +161,7 @@ class RetrievalMixin:
                     for idx in np.argsort(-scores):
                         if scores[idx] > 0.3:
                             rid, content = cache["meta"][idx]
-                            vec_results[content[:80]] = float(scores[idx])
+                            vec_results[rid] = (float(scores[idx]), content)
                     logger.info(f"Resonance: user={user_id} vec_candidates={len(vec_results)}")
         except Exception as e:
             logger.warning(f"Resonance: vec search failed ({e}), fallback to kw")
@@ -206,9 +206,10 @@ class RetrievalMixin:
 
         # vec_results 中有命中 → 用余弦为主分
         if vec_results:
+            kw_row_ids = {r[0] for r in kw_rows}
             for rid, content, created_at, importance, mood in kw_rows:
-                key = content[:80]
-                cos_sim = vec_results.get(key, 0.0)
+                entry = vec_results.get(rid)
+                cos_sim = entry[0] if entry else 0.0
                 days = 0
                 if created_at:
                     try:
@@ -229,8 +230,8 @@ class RetrievalMixin:
                 scored.append((self._fuzz_time(created_at) + '，' + content, score, 'resonance'))
 
             # vec 中还有 kw_rows 未覆盖的条目
-            for content, cos_sim in vec_results.items():
-                if not any(content == c[:80] for _, c, _, _, _ in kw_rows):
+            for rid, (cos_sim, content) in vec_results.items():
+                if rid not in kw_row_ids:
                     score = cos_sim * 0.6
                     scored.append((content, score, 'resonance'))
         else:
@@ -669,9 +670,10 @@ class RetrievalMixin:
     def _store_embedding(self, user_id: str, record_id: int, embedding: list[float]):
         blob = np.array(embedding, dtype=np.float32).tobytes()
         emb_dim = len(embedding) if embedding is not None else None
-        # 同时写入 embedding 与 embedding_dim，以便后续一致性检测
+        # 幂等写入：embedding IS NULL 保证不会覆盖已有的向量（避免 _delayed_embed 与
+        # _apply_analysis / _apply_distill 间因事件循环切换导致的双写）
         self.conn.execute(
-            "UPDATE cognitive_distill SET embedding = ?, embedding_dim = ? WHERE id = ? AND user_id = ?",
+            "UPDATE cognitive_distill SET embedding = ?, embedding_dim = ? WHERE id = ? AND user_id = ? AND embedding IS NULL",
             (blob, emb_dim, record_id, user_id),
         )
         self.conn.commit()
@@ -703,7 +705,23 @@ class RetrievalMixin:
                 vecs.append(vec)
                 meta.append((row_id, content))
             else:
-                logger.warning(f"EmbedCache: skip vector dim={len(vec)} (expected {expected_dim}) id={row_id}")
+                # 维度不匹配：清空向量 + 入重建队列，下次 background task 会重新嵌入
+                logger.warning(f"EmbedCache: 维度不匹配 id={row_id} dim={len(vec)} (expected {expected_dim})，标记重建")
+                try:
+                    self.conn.execute(
+                        "UPDATE cognitive_distill SET embedding = NULL WHERE id = ? AND user_id = ?",
+                        (row_id, user_id),
+                    )
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO embedding_rebuild_queue (user_id, record_id, reason) VALUES (?, ?, 'dim_mismatch')",
+                        (user_id, row_id),
+                    )
+                except Exception:
+                    logger.exception(f"EmbedCache: 标记重建失败 id={row_id}")
+        try:
+            self.conn.commit()
+        except Exception:
+            pass
         self._emb_cache[user_id] = {
             "vectors": np.array(vecs, dtype=np.float32) if vecs else np.empty((0, expected_dim or 0), dtype=np.float32),
             "meta": meta,

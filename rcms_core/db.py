@@ -166,6 +166,19 @@ CREATE TABLE IF NOT EXISTS shared_context (
             self.conn.execute("ALTER TABLE cognitive_distill ADD COLUMN expires_at TIMESTAMP DEFAULT NULL")
         except sqlite3.OperationalError:
             pass
+        # Embedding 重建队列：记录因模型更换/维度变化需要重新向量的条目
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS embedding_rebuild_queue (
+                    id INTEGER PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    record_id INTEGER NOT NULL,
+                    reason TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+        except sqlite3.OperationalError:
+            pass
         # Migration: 旧表 → cognitive_distill
         self._migrate_to_cognitive_distill()
         self.conn.commit()

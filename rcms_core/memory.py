@@ -69,22 +69,22 @@ class MemoryMixin:
         try:
             self._init_identity(user_id)
             self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
-        # 悬案自动过期：超过 _DANGLING_EXPIRE_TURNS 轮无人提起则归档
-        dt_row = self.conn.execute(
-            "SELECT dangling_threads, turn_count FROM session_state WHERE session_id = ?", (session_id,)
-        ).fetchone()
-        if dt_row and dt_row[0]:
-            try:
-                dt_data = json.loads(dt_row[0])
-                if isinstance(dt_data, dict) and dt_data.get("threads"):
-                    since_turn = dt_data.get("turn", 0)
-                    current_turn = dt_row[1] or 0
-                    expire = getattr(self, '_DANGLING_EXPIRE_TURNS', 15)
-                    if current_turn - since_turn >= expire:
-                        self._archive_dangling(user_id, session_id, now_str, reason="过期")
-            except (json.JSONDecodeError, ValueError):
-                logger.debug(f"RCMS: 解析 dangling_threads JSON 失败 user={user_id}")
-            self.conn.commit()
+            # 悬案自动过期：超过 _DANGLING_EXPIRE_TURNS 轮无人提起则归档
+            dt_row = self.conn.execute(
+                "SELECT dangling_threads, turn_count FROM session_state WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if dt_row and dt_row[0]:
+                try:
+                    dt_data = json.loads(dt_row[0])
+                    if isinstance(dt_data, dict) and dt_data.get("threads"):
+                        since_turn = dt_data.get("turn", 0)
+                        current_turn = dt_row[1] or 0
+                        expire = getattr(self, '_DANGLING_EXPIRE_TURNS', 15)
+                        if current_turn - since_turn >= expire:
+                            self._archive_dangling(user_id, session_id, now_str, reason="过期")
+                except (json.JSONDecodeError, ValueError):
+                    logger.debug(f"RCMS: 解析 dangling_threads JSON 失败 user={user_id}")
+                self.conn.commit()
         finally:
             if lock:
                 try:

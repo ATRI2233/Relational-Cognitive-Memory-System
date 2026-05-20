@@ -3,6 +3,29 @@
 > 未发行阶段，所有版本 ≤ v1.0。
 > 贡献者: [仓库主](https://github.com/ATRI)
 
+## v0.1.3 — 2026-05-20
+
+### chore: 全量问题清单对照验证 — high_priority_issues.md
+- 逐项对照代码验证 `docs/high_priority_issues.md` 中的 10 个 P0/P1 问题，结论：**8 个已解决，2 个场景性低风险**
+- 已解决：并发写入冲突 / embedding 维度一致性 / LLM JSON 健壮性 / 后台任务异常捕获 / save_turn 原子性 / 同步 I/O 设计合理性 / SQLite 版本兼容性 / 向量检索扩展性均为当前可接受状态
+- 保留跟踪：#3 迁移 DROP 回溯（低概率高影响）、#7 日志脱敏策略（视部署场景而定）
+- 对应 commit: `(current working tree)`
+
+### fix: analysis.py / memory.py try-finally 缩进修复
+- 自动格式化破坏了 try-finally 块内代码缩进（偏移 1 空格），导致 `IndentationError`，整个 RCMS 无法导入
+- 修正后 `compileall` 通过，`from rcms_core import MinimalRCMS` 恢复
+
+### chore: 更新 docs/rcms_p0_operations.md 为已实现状态
+- 该文档是计划阶段产物，4 个 P0 项已在 v0.1.2 中全部实现，文档改为标记已完成的参考记录
+
+### fix: `content[:80]` 作为向量匹配 key 改为 record_id
+- `retrieval.py:_channel_multi_resonance` 中 `vec_results` 用 `content[:80]` 做 dict key，不同记忆前 80 字相同会互相覆盖
+- 改为使用 `record_id` 作为 key，消除误匹配风险
+
+### fix: 清理 `context.py` 中 `recent_events` 死代码
+- `_load_long_term_context` 已不再返回 `events` 字段（v0.1.2 清理），但 `narrative_context` 消费端残留了 `long_term.get('events', [])` 代码
+- 删除该死代码段，`compileall` 验证通过
+
 ## v0.1.2 — 2026-05-20
 
 ### refactor: cognitive_distill 向量嵌入源切换为 summary 短标签

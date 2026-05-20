@@ -159,18 +159,6 @@ class ContextMixin:
         if ctx_lines:
             parts.append("共同语境:\n" + '\n'.join(f'  · {c}' for c in ctx_lines))
 
-        # ── 最近事件 ──
-        ev_lines = []
-        if long_term:
-            for ev in long_term.get('events', [])[:2]:
-                hint = ev.get('hint', '')
-                if hint:
-                    delta = ev.get('delta', 0)
-                    tag = {1: ' ✓', -1: ' ✗'}.get(delta, '')
-                    ev_lines.append(f"{hint}{tag}")
-        if ev_lines:
-            parts.append("最近事件:\n" + '\n'.join(f'  · {e}' for e in ev_lines))
-
         # ── 三通道记忆（按融合分数排序，最高分通道在前） ──
         if memories:
             channel_map = {'recent': '时间·重要性', 'resonance': '语义检索', 'skeleton': '图谱关联'}
