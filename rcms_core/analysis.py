@@ -570,3 +570,117 @@ class AnalysisMixin:
 9. summary 是 10-20 字的核心主题标签，必须包含具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」
 {extra_rules}
 只输出 JSON。"""
+
+    def check_distill_needed(self, session_id: str, persona_name: str = "Bot") -> tuple:
+        """检查是否需要触发蒸馏。返回 (triggered, last_turn, turn_count, snapshot_text, sender_names)"""
+        row = self.conn.execute(
+            "SELECT turn_count, last_distill_turn, last_distill_at FROM session_state WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return (False, 0, 0, "", [])
+        turn_count, last_turn, last_at = row[0] or 0, row[1] or 0, row[2]
+        if turn_count == 0:
+            return (False, 0, 0, "", [])
+        max_turns = getattr(self, '_DISTILL_MAX_TURNS', 30)
+        max_minutes = getattr(self, '_DISTILL_MAX_MINUTES', 60)
+        triggered = False
+        if turn_count - last_turn >= max_turns:
+            triggered = True
+        if not triggered and last_at:
+            elapsed = (datetime.now() - datetime.fromisoformat(str(last_at))).total_seconds() / 60
+            if elapsed >= max_minutes:
+                triggered = True
+        if not triggered:
+            return (False, last_turn, turn_count, "", [])
+        rows = self.conn.execute(
+            "SELECT role, content, sender_name FROM chat_history WHERE session_id = ? AND turn_num > ? AND turn_num <= ? ORDER BY turn_num, id",
+            (session_id, last_turn, turn_count),
+        ).fetchall()
+        if len(rows) < 6:
+            return (False, last_turn, turn_count, "", [])
+        senders = set()
+        lines = []
+        for role, content, sender_name in rows:
+            nick = sender_name or (role if role == 'assistant' else '用户')
+            if role == 'assistant':
+                nick = persona_name
+            if nick:
+                senders.add(nick)
+            lines.append(f"[{nick}] {content[:200]}")
+        snapshot_text = "\n".join(lines[:30])
+        return (True, last_turn, turn_count, snapshot_text, list(senders))
+
+    async def _apply_distill(self, user_id: str, session_id: str, last_turn: int, turn_count: int, content: str, summary: str = "", mood: str = "", mood_intensity: float = 0.0):
+        """写入 LLM 蒸馏摘要（带 mood，供通道 2 情绪共振）+ 过期清理 + 图谱维护"""
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if not summary:
+            summary = content[:20]
+        lock = getattr(self, '_db_lock', None)
+        if lock:
+            lock.acquire()
+        try:
+            cur = self.conn.execute(
+                "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, mood, mood_intensity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, session_id, content, summary[:80], 0.8, mood, mood_intensity, now_str),
+            )
+            distill_id = cur.lastrowid
+            self.conn.execute(
+                "UPDATE session_state SET last_distill_turn = ?, last_distill_at = ? WHERE session_id = ?",
+                (turn_count, now_str, session_id),
+            )
+            self._archive_dangling(user_id, session_id, now_str, reason="蒸馏")
+            expired = self.conn.execute(
+                "DELETE FROM cognitive_distill WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?",
+                (user_id, now_str),
+            ).rowcount
+            if expired:
+                logger.info(f"RCMS: 已清理 {expired} 条过期记忆 user={user_id}")
+            KEEP_RULE_SUMMARY = 10
+            self.conn.execute("""
+                DELETE FROM cognitive_distill WHERE user_id = ? AND importance = 0.3
+                AND id NOT IN (
+                    SELECT id FROM cognitive_distill
+                    WHERE user_id = ? AND importance = 0.3
+                    ORDER BY created_at DESC LIMIT ?
+                )
+            """, (user_id, user_id, KEEP_RULE_SUMMARY))
+            self._maintain_graph(user_id)
+            self.conn.commit()
+        finally:
+            if lock:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+        vec = await self._get_embedding(summary[:512])
+        if vec:
+            self._store_embedding(user_id, distill_id, vec)
+        logger.info(f"RCMS: 蒸馏完成 user={user_id} session={session_id} turn={turn_count} summary={summary[:60]}")
+
+    def _archive_dangling(self, user_id: str, session_id: str, now_str: str, reason: str = ""):
+        """将未结悬案归档到 cognitive_distill 并清空 session_state"""
+        row = self.conn.execute(
+            "SELECT dangling_threads FROM session_state WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if not row or not row[0]:
+            return
+        try:
+            data = json.loads(row[0])
+            if not isinstance(data, dict) or not data.get("threads"):
+                return
+            threads = data["threads"]
+            tag = f"[悬案归档·{reason}]" if reason else "[悬案归档]"
+            content = f"{tag} " + "、".join(threads[:3])
+            self.conn.execute(
+                "INSERT INTO cognitive_distill (user_id, session_id, content, summary, importance, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, session_id, content, content.replace(tag, "").strip()[:20], 0.7, now_str),
+            )
+            self.conn.execute(
+                "UPDATE session_state SET dangling_threads = ? WHERE session_id = ?",
+                ('[]', session_id),
+            )
+            logger.info(f"RCMS: dangling_threads archived ({reason}) user={user_id}")
+        except (json.JSONDecodeError, ValueError):
+            logger.debug(f"RCMS: 归档时解析 dangling_threads JSON 失败 user={user_id}")
+

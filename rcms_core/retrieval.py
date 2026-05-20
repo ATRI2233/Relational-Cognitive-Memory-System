@@ -496,6 +496,25 @@ class RetrievalMixin:
                 (from_id, to_id, now_str, relation, created_at or now_str),
             )
 
+    def _maintain_graph(self, user_id: str):
+        """图衰减与清理：语义边也衰减，孤立节点清理"""
+        self.conn.execute("""
+            UPDATE memory_graph_edges SET weight = ROUND(weight * 0.8, 2)
+            WHERE from_node_id IN (SELECT node_id FROM memory_graph_nodes WHERE user_id = ?)
+        """, (user_id,))
+        dead_edges = self.conn.execute("""
+            DELETE FROM memory_graph_edges WHERE weight < 0.3
+        """).rowcount
+        orphan_nodes = self.conn.execute("""
+            DELETE FROM memory_graph_nodes WHERE user_id = ? AND node_id NOT IN (
+                SELECT from_node_id FROM memory_graph_edges
+                UNION
+                SELECT to_node_id FROM memory_graph_edges
+            )
+        """, (user_id,)).rowcount
+        if dead_edges or orphan_nodes:
+            logger.info(f"RCMS: 图维护 user={user_id} deleted_edges={dead_edges} orphan_nodes={orphan_nodes}")
+
     # ── 辅助：原始工具 ──
 
     def _fuzz_time(self, dt_str: str) -> str:

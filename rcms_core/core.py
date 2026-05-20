@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sqlite3
@@ -14,7 +15,6 @@ from .db import DBMixin
 from .retrieval import RetrievalMixin
 from .context import ContextMixin
 from .session import SessionMixin
-from .memory import MemoryMixin
 from .analysis import AnalysisMixin
 
 logger = logging.getLogger("rcms")
@@ -26,7 +26,6 @@ class MinimalRCMS(
     RetrievalMixin,
     ContextMixin,
     SessionMixin,
-    MemoryMixin,
     AnalysisMixin,
 ):
     """MinimalRCMS — 关系认知记忆系统核心"""
@@ -106,6 +105,86 @@ class MinimalRCMS(
 
     def close(self):
         self.conn.close()
+
+    def _init_identity(self, user_id: str):
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self.conn.execute("INSERT OR IGNORE INTO identity_memory (user_id, traits, updated_at) VALUES (?, '[]', ?)", (user_id, now_str))
+        self.conn.commit()
+
+    def _load_long_term_context(self, user_id: str) -> dict:
+        identity = self.conn.execute(
+            "SELECT traits, preferences, communication_style, self_identity, boundaries, core_identity FROM identity_memory WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        entities = self.conn.execute("""
+            SELECT n1.label, n1.entity_type, e.relation, n2.label
+            FROM memory_graph_edges e
+            JOIN memory_graph_nodes n1 ON e.from_node_id = n1.node_id
+            JOIN memory_graph_nodes n2 ON e.to_node_id = n2.node_id
+            WHERE n1.user_id = ? AND e.relation != ''
+            ORDER BY e.weight DESC LIMIT 10
+        """, (user_id,)).fetchall()
+        shared_rows = self.conn.execute(
+            "SELECT context_body FROM shared_context WHERE user_id = ? ORDER BY context_id DESC LIMIT 4",
+            (user_id,),
+        ).fetchall()
+        raw_traits = json.loads(identity[0]) if identity and identity[0] else []
+        trait_details = []
+        for item in raw_traits:
+            if isinstance(item, str):
+                trait_details.append({"text": item, "strength": 3})
+            elif isinstance(item, dict):
+                trait_details.append({"text": item.get("t", ""), "strength": item.get("s", 0), "count": item.get("c", 0)})
+        trait_details = [p for p in trait_details if p["text"] and p["strength"] > 0]
+        def _safe_json(val, default):
+            if not val:
+                return default
+            try:
+                return json.loads(val)
+            except Exception:
+                return default
+        return {
+            'identity_traits': [p["text"] for p in trait_details],
+            'trait_details': trait_details,
+            'preferences': _safe_json(identity[1], {}) if identity else {},
+            'communication_style': identity[2] if identity and identity[2] else '',
+            'self_identity': _safe_json(identity[3], []) if identity else [],
+            'boundaries': _safe_json(identity[4], []) if identity else [],
+            'core_identity': _safe_json(identity[5], {}) if identity else {},
+            'entities': [{'name': r[0], 'type': r[1] or 'auto', 'relation': r[2], 'fact': r[3]} for r in entities],
+            'shared_contexts': [r[0] for r in shared_rows],
+        }
+
+    async def post_update_rules(self, user_id: str, session_id: str, user_input: str, stance: str, reply: str = ""):
+        """纯管理操作（不做任何 LLM 替代的写入）"""
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        lock = getattr(self, '_db_lock', None)
+        if lock:
+            lock.acquire()
+        try:
+            self._init_identity(user_id)
+            self.conn.execute("UPDATE session_state SET last_active = ? WHERE session_id = ?", (now_str, session_id))
+            dt_row = self.conn.execute(
+                "SELECT dangling_threads, turn_count FROM session_state WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if dt_row and dt_row[0]:
+                try:
+                    dt_data = json.loads(dt_row[0])
+                    if isinstance(dt_data, dict) and dt_data.get("threads"):
+                        since_turn = dt_data.get("turn", 0)
+                        current_turn = dt_row[1] or 0
+                        expire = getattr(self, '_DANGLING_EXPIRE_TURNS', 15)
+                        if current_turn - since_turn >= expire:
+                            self._archive_dangling(user_id, session_id, now_str, reason="过期")
+                except (json.JSONDecodeError, ValueError):
+                    logger.debug(f"RCMS: 解析 dangling_threads JSON 失败 user={user_id}")
+                self.conn.commit()
+        finally:
+            if lock:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
 
     # ── Chat（standalone） ──
 

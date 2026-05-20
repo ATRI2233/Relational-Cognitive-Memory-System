@@ -199,9 +199,9 @@ class ContextMixin:
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        parts.append("→ 以上是你通过长期对话积累的对他的了解，用来更好地理解他的意图。人格设定始终优先。")
+        parts.append("→ 以上是你通过长期对话积累的对他的了解，用来更好地理解他的意图。")
 
-        return "[RCMS 关系上下文]\n" + "\n\n".join(parts)
+        return "[RCMS 关系上下文,这里面放置了你对他的了解,按需使用]\n" + "\n\n".join(parts)
 
     async def prompt_compressor(self, user_id: str, session_id: str, user_input: str,
                            memories: list | None = None,
