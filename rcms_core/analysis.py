@@ -386,8 +386,7 @@ class AnalysisMixin:
                 kf_strings = [f for f in kfs if isinstance(f, str)]
                 distill_keylabel = "·".join([f[:10] for f in kf_strings[:3]])[:20] if kf_strings else distill_content[:20]
             if not distill_keylabel:
-                logger.warning("DISTILL: no keylabel in response")
-                return
+                distill_keylabel = distill_content[:20]
             logger.info(f"DISTILL: ok keylabel={distill_keylabel[:30]} content_len={len(distill_content)}")
             # 标记原始响应为已解析
             if raw_id:
@@ -399,6 +398,17 @@ class AnalysisMixin:
         except json.JSONDecodeError:
             logger.warning(f"DISTILL: invalid JSON: {content[:200]}")
             return
+
+        # 先更新 last_distill_turn，防止后续写入失败导致无限循环
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            self.conn.execute(
+                "UPDATE session_state SET last_distill_turn = ?, last_distill_at = ? WHERE session_id = ?",
+                (turn_count, now_str, session_id),
+            )
+            self.conn.commit()
+        except Exception:
+            logger.exception(f"DISTILL: failed to update last_distill_turn user={user_id}")
 
         # 写入蒸馏摘要 + 清理碎片（带 mood，让通道 2 情绪共振真正工作）
         mood = analysis.get("mood", "")
