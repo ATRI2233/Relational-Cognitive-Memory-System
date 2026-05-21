@@ -10,6 +10,11 @@
 - 剩余 ≥8 字硬编码 prompt 文本迁移（`lt_hint_label`、`fallback_prompt` 至 JSON）
 - 清理三个 group 人格条目中不再使用的 `participants_field`
 
+### feat: 图衰减算法改为按共现次数动态衰减 + 语义边保护
+- 删除统一 ×0.8 的硬衰减，改为 `0.80 + 0.15×MIN(ec,20)/20 + 语义边?0.05:0`
+- 共现次数越多衰减越慢，语义边额外 +0.05 保护，上限 0.95
+- 删除阈值从 0.3 升至 0.4
+
 ### fix: SQLite WAL checkpoint 管理
 - 初始化时设置 `wal_autocheckpoint=50`（~200KB 即触发），避免 WAL 膨胀至默认 4MB 才回写
 - `save_turn()` commit 后追加 `PRAGMA wal_checkpoint(PASSIVE)`，每轮写入后回写
