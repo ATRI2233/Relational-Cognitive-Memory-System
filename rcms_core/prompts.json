@@ -135,5 +135,7 @@
     "9. 输入过长时设置 meta.truncated = true",
     "10. keylabel 是 10-20 字的核心主题标签，必须包含具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」"
   ],
-  "output_footer": "只输出 JSON。"
+  "output_footer": "只输出 JSON。",
+  "lt_hint_label": "已了解的信息（后续字段需与之去重）：",
+  "fallback_prompt": "简短回复，一句话以内。\n\n你:"
 }

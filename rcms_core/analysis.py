@@ -436,6 +436,7 @@ class AnalysisMixin:
         schema = dict(dp.get("output_schema", {}))
         rules = list(dp.get("output_rules", []))
         footer = dp.get("output_footer", "只输出 JSON。")
+        lt_hint_label = dp.get("lt_hint_label", "已了解的信息（后续字段需与之去重）：")
 
         # 群聊才保留 participants 字段
         if not is_group:
@@ -465,7 +466,7 @@ class AnalysisMixin:
 对话快照：
 {snapshot_text}
 
-已了解的信息（后续字段需与之去重）：
+{lt_hint_label}
 {lt_hint}
 
 {intro}{schema_str}

@@ -7,6 +7,7 @@
 - 新增同轮共现机制：同一轮蒸馏的实体之间自动建空 relation 边（权重累积），后续语义边可覆盖
 - LLM prompt 强化规则 6 为必填，新增实体举例（绫→三角洲部队），提升 relation 提取率
 - LLM output 格式模板从硬编码 f-string 迁移至 `prompts.json`（`output_schema`/`output_rules`/`output_intro`/`output_footer`），改 prompt 无需碰 Python
+- 剩余 ≥8 字硬编码 prompt 文本迁移（`lt_hint_label`、`fallback_prompt` 至 JSON）
 - 清理三个 group 人格条目中不再使用的 `participants_field`
 
 ### fix: SQLite WAL checkpoint 管理

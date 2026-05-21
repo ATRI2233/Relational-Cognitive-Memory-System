@@ -200,7 +200,7 @@ class MinimalRCMS(
             reply = await backend.generate(prompt)
         except Exception:
             try:
-                reply = await backend.generate("简短回复，一句话以内。\n\n你:")
+                reply = await backend.generate(self._load_prompts().get("distill_prompt", {}).get("fallback_prompt", "简短回复，一句话以内。\n\n你:"))
             except Exception:
                 logger.exception(f"RCMS: chat() backend 两次调用均失败 user={user_id}")
                 reply = "嗯。"
