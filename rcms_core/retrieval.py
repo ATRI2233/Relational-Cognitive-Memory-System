@@ -484,13 +484,17 @@ class RetrievalMixin:
             )
 
     def _maintain_graph(self, user_id: str):
-        """图衰减与清理：语义边也衰减，孤立节点清理"""
+        """图衰减与清理：低频边快衰减，高频边慢衰减，语义边额外保护"""
         self.conn.execute("""
-            UPDATE memory_graph_edges SET weight = ROUND(weight * 0.8, 2)
+            UPDATE memory_graph_edges SET weight = ROUND(weight * MIN(
+                0.80 + 0.15 * CAST(MIN(encounter_count, 20) AS REAL) / 20.0
+                + CASE WHEN relation != '' THEN 0.05 ELSE 0.0 END,
+                0.95
+            ), 2)
             WHERE from_node_id IN (SELECT node_id FROM memory_graph_nodes WHERE user_id = ?)
         """, (user_id,))
         dead_edges = self.conn.execute("""
-            DELETE FROM memory_graph_edges WHERE weight < 0.3
+            DELETE FROM memory_graph_edges WHERE weight < 0.4
         """).rowcount
         orphan_nodes = self.conn.execute("""
             DELETE FROM memory_graph_nodes WHERE user_id = ? AND node_id NOT IN (
