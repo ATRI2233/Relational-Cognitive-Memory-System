@@ -1,5 +1,17 @@
 # 变更记录
 
+## v0.1.6 — 2026-05-21
+
+### feat: 跨用户提及感知 — user_mappings 表 + 多用户 context
+- 新增 `user_mappings` 表，按 `(session, user_id, label)` 唯一记录用户的所有名字标识，`source` 区分 nickname / alias / custom
+- `save_turn` 自动注册发言者的 `sender_name` 到映射表
+- `find_mentioned_users` 扫描消息文本匹配 session 内已知用户，返回被提及的 `(user_id, label)`
+- `bind_user_label` 接口支持手动绑定自定义标识（工号、别名等），覆盖已有同源标签
+- `build_multi_user_context` 为发言者和每个被提及者分别构建标注了全部姓名的独立 narrative context 块，格式 `[RCMS 关系上下文: 主名（角色，也被叫做：别名）]`
+- 插件 `on_llm_request` 简化为单行调用 `build_multi_user_context`
+- 新增 `memory_link` 表，为 cognitive_distill 记忆间显式关联做准备（建表阶段）
+- 对应 commit: `b0f8b8c`
+
 ## v0.1.5 — 2026-05-21
 
 ### feat: 图谱实体入库修复 + 同轮共现 + 输出模板全量提取至 JSON
