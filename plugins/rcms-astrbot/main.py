@@ -74,6 +74,7 @@ class RcmsPlugin(star.Star):
             logger.warning(f"RCMS: 未知注入方式 {self.injection_method}，使用 system_prompt")
             self.injection_method = "system_prompt"
         self._persona_cache: dict[str, str] = {}  # session_id → persona_name
+        self._injected_message: dict[str, str] = {}  # session_id → last user_input，防重复注入
         self._write_count = 0
         self._provider_callbacks = None  # 首次构建后缓存
 
@@ -454,12 +455,17 @@ class RcmsPlugin(star.Star):
         user_id = sender_id or self.user_id
         sender_name = event.get_sender_name() or sender_id
 
-        context_part = await rcms.build_multi_user_context(
-            session_id, user_input, user_id, sender_name,
-        )
+        # 防重复注入：同一用户输入（含多轮 LLM 调用）只注入一次
+        # 不依赖 DB turn_count（save_turn 会递增它导致去重失效），
+        # 而是用 user_input 文本做去重 key
+        skip_inject = self._injected_message.get(session_id) == user_input
 
-        # 防重复注入（AstrBot 单轮多次 LLM 调用场景，system_prompt 可能累积）
-        if "[RCMS 关系上下文" not in req.system_prompt:
+        if not skip_inject:
+            self._injected_message[session_id] = user_input
+            context_part = await rcms.build_multi_user_context(
+                session_id, user_input, user_id, sender_name,
+            )
+
             # 按配置的注入方式插入
             if self.injection_method == "system_prompt":
                 req.system_prompt += f"\n\n{context_part}"
@@ -486,6 +492,8 @@ class RcmsPlugin(star.Star):
                     tool_calls_info=info,
                     tool_calls_result=[result],
                 )
+        else:
+            context_part = event.get_extra("rcms_context_prompt", "")
 
         # 持久化中间状态供 response hook 使用
         event.set_extra("rcms_persona", persona_name)

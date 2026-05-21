@@ -56,7 +56,7 @@ class SessionMixin:
 
     def find_mentioned_users(self, session_id: str, text: str, speaker_id: str = "") -> list[tuple[str, str]]:
         """扫描消息文本，返回 (user_id, label)
-        优先匹配当前 session，无结果时回退到发言者参与过的其他 session"""
+        优先匹配当前 session → 发言者参与过的其他 session → 全局 user_mappings"""
         rows = self.conn.execute(
             "SELECT user_id, label FROM user_mappings WHERE session_id = ?",
             (session_id,),
@@ -69,7 +69,7 @@ class SessionMixin:
                 seen.add(uid)
                 result.append((uid, label))
 
-        # 当前 session 无匹配 → 查发言者参与过的其他 session
+        # 回退 1：查发言者参与过的其他 session
         if not result and speaker_id:
             rows = self.conn.execute("""
                 SELECT DISTINCT um.user_id, um.label
@@ -79,6 +79,18 @@ class SessionMixin:
                 )
                 AND um.user_id != ?
             """, (speaker_id, speaker_id)).fetchall()
+            for uid, label in rows:
+                if label and label in text and uid not in seen:
+                    seen.add(uid)
+                    result.append((uid, label))
+
+        # 回退 2：全局 user_mappings 标签匹配
+        # 被提及者可能从未和发言者同 session（如仅私聊过 bot）
+        if not result:
+            rows = self.conn.execute("""
+                SELECT DISTINCT user_id, label FROM user_mappings
+                WHERE label != '' AND label IS NOT NULL
+            """).fetchall()
             for uid, label in rows:
                 if label and label in text and uid not in seen:
                     seen.add(uid)
