@@ -88,7 +88,7 @@ def _find_root_by_config() -> str | None:
         d = os.path.dirname(d)
 
     for p in candidates:
-        if os.path.isfile(os.path.join(p, "data", "cmd_config.json")):
+        if any(os.path.isdir(os.path.join(p, "data", c)) for c in ("plugins", "plugin")):
             return p
 
     # 扫描常见部署根目录
