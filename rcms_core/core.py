@@ -111,6 +111,37 @@ class MinimalRCMS(
             pass
         self.conn.close()
 
+    async def build_multi_user_context(
+        self, session_id: str, user_input: str,
+        speaker_id: str, speaker_name: str,
+    ) -> str:
+        """为发言者 + 被提及用户分别构建标注了姓名的 narrative context 块"""
+        user_entries = [(speaker_id, speaker_name, "当前发言")]
+        for mid, label in self.find_mentioned_users(session_id, user_input):
+            if mid != speaker_id:
+                user_entries.append((mid, label, "被提及"))
+
+        blocks = []
+        for uid, display_name, role in user_entries:
+            # 查出该用户在当前 session 的所有名字
+            rows = self.conn.execute(
+                "SELECT label FROM user_mappings WHERE session_id = ? AND user_id = ?",
+                (session_id, uid),
+            ).fetchall()
+            name_parts = [r[0] for r in rows]
+            main_name = display_name if display_name in name_parts else (name_parts[0] if name_parts else display_name)
+            aliases = [n for n in name_parts if n != main_name]
+            alias_str = f"，也被叫做：{'、'.join(aliases)}" if aliases else ""
+            header = f"[RCMS 关系上下文: {main_name}（{role}{alias_str}）]"
+
+            mems = await self.retrieve_memories(uid, user_input, 'engaged', session_id=session_id)
+            lt = self._load_long_term_context(uid)
+            ctx = self.narrative_context('open', session_id, memories=mems, long_term=lt, user_id=uid)
+            blocks.append(f"{header}\n" + ctx)
+            logger.info(f"RCMS: multi_user_context user={display_name} role={role} memories={len(mems)}")
+
+        return "\n\n".join(blocks)
+
     def _init_identity(self, user_id: str):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self.conn.execute("INSERT OR IGNORE INTO identity_memory (user_id, traits, updated_at) VALUES (?, '[]', ?)", (user_id, now_str))

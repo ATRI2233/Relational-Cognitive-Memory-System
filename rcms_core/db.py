@@ -1,6 +1,8 @@
 import logging
 import sqlite3
 
+from .memory_link import ensure_memory_links
+
 logger = logging.getLogger("rcms")
 
 
@@ -71,6 +73,17 @@ CREATE TABLE IF NOT EXISTS shared_context (
             CREATE INDEX IF NOT EXISTS idx_sc_user ON shared_context(user_id);
             CREATE INDEX IF NOT EXISTS idx_cd_user ON cognitive_distill(user_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_cd_embed ON cognitive_distill(user_id) WHERE embedding IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS user_mappings (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'nickname',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(session_id, user_id, label)
+            );
+            CREATE INDEX IF NOT EXISTS idx_um_session ON user_mappings(session_id);
+            CREATE INDEX IF NOT EXISTS idx_um_label ON user_mappings(session_id, label);
         """)
         # 新表：保存原始 LLM 蒸馏响应以便审计与回滚
         try:
@@ -184,6 +197,7 @@ CREATE TABLE IF NOT EXISTS shared_context (
             """)
         except sqlite3.OperationalError:
             pass
+        ensure_memory_links(self.conn)
         # Migration: 旧表 → cognitive_distill
         self._migrate_to_cognitive_distill()
         self.conn.commit()
