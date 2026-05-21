@@ -89,53 +89,53 @@
         "first_stage": "· 参与者识别\n· 关键事件时序\n· 情绪基调量化\n· 参与者互动模式分析",
         "extra_rules": "9. content 用第三人称，保持客观专业，不使用语气词\n10. 按「事件→影响→模式」结构组织摘要\n11. 避免主观评价，优先记录可验证的事实"
       }
-    }
-  },
-  "output_intro": "分析要求——两阶段：\n第一阶段：理解对话脉络\n{first_stage}\n\n第二阶段：提取 JSON。返回格式：\n\n",
-  "output_schema": {
-    "content": "{content_instruction} 优先捕捉新变化，不要重复已知信息。保留具体细节和情绪转折，叙述自然流畅像讲故事一样。没有意义的事情可以不记；但要记就必须记细节，200 字左右。",
-    "summary": "50-100 字的简要概述，概括核心内容和情绪基调，用连贯的 1-2 句话",
-    "keylabel": "10-20 字的核心主题标签，必须包含 2-4 个具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」。不要叙事连接词（今天、然后、接着）。",
-    "analysis": {
-      "participants": ["参与对话的所有昵称（不含 {persona_name} 自己）"],
-      "key_facts": ["按 importance 降序排列的关键事实，保留时间/原因/经过/结果等具体细节，最多5条"],
-      "key_facts_structured": [
-        {"content": "永久特质", "temporal": "permanent", "expires_after_days": null},
-        {"content": "临时事件", "temporal": "transient", "expires_after_days": 14}
-      ],
-      "mood": "用两个词描述情绪，如「轻松好奇」「焦虑疲惫」",
-      "mood_intensity": "0.0~1.0",
-      "topic_shift": "true|false",
-      "key_points": ["事件脉络简要概括"],
-      "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
-      "traits_updates": ["有具体行为证据支撑的参与者特质，每条≤15字，与已知特质去重后只输出新发现的"],
-      "speech_quirks": ["说话做事的小细节小习惯，去重后只输出新发现的"],
-      "preferences": {"likes": ["事物"], "dislikes": ["事物"]},
-      "self_identity": ["用户如何看待自己"],
-      "boundaries": ["用户明确反感、回避、不开心的话题，或观察到的雷区"],
-      "dangling_threads": ["未完成话题"],
-      "importance": "0.0~1.0",
-      "entities": [
-        {"name": "三角洲部队", "canonical_name": "三角洲部队", "type": "activity", "relations": [{"target": "绫", "relation": "喜欢玩"}]},
-        {"name": "绫", "canonical_name": "绫", "type": "person", "relations": [{"target": "三角洲部队", "relation": "喜欢玩"}, {"target": "考研数学", "relation": "在学"}]},
-        {"name": "考研数学", "canonical_name": "考研数学", "type": "concept", "relations": []}
-      ]
     },
-    "meta": {"truncated": false}
+    "output_intro": "分析要求——两阶段：\n第一阶段：理解对话脉络\n{first_stage}\n\n第二阶段：提取 JSON。返回格式：\n\n",
+    "output_schema": {
+      "content": "{content_instruction} 优先捕捉新变化，不要重复已知信息。保留具体细节和情绪转折，叙述自然流畅像讲故事一样。没有意义的事情可以不记；但要记就必须记细节，200 字左右。",
+      "summary": "50-100 字的简要概述，概括核心内容和情绪基调，用连贯的 1-2 句话",
+      "keylabel": "10-20 字的核心主题标签，必须包含 2-4 个具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」。不要叙事连接词（今天、然后、接着）。",
+      "analysis": {
+        "participants": ["参与对话的所有昵称（不含 {persona_name} 自己）"],
+        "key_facts": ["按 importance 降序排列的关键事实，保留时间/原因/经过/结果等具体细节，最多5条"],
+        "key_facts_structured": [
+          {"content": "永久特质", "temporal": "permanent", "expires_after_days": null},
+          {"content": "临时事件", "temporal": "transient", "expires_after_days": 14}
+        ],
+        "mood": "用两个词描述情绪，如「轻松好奇」「焦虑疲惫」",
+        "mood_intensity": "0.0~1.0",
+        "topic_shift": "true|false",
+        "key_points": ["事件脉络简要概括"],
+        "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
+        "traits_updates": ["有具体行为证据支撑的参与者特质，每条≤15字，与已知特质去重后只输出新发现的"],
+        "speech_quirks": ["说话做事的小细节小习惯，去重后只输出新发现的"],
+        "preferences": {"likes": ["事物"], "dislikes": ["事物"]},
+        "self_identity": ["用户如何看待自己"],
+        "boundaries": ["用户明确反感、回避、不开心的话题，或观察到的雷区"],
+        "dangling_threads": ["未完成话题"],
+        "importance": "0.0~1.0",
+        "entities": [
+          {"name": "三角洲部队", "canonical_name": "三角洲部队", "type": "activity", "relations": [{"target": "绫", "relation": "喜欢玩"}]},
+          {"name": "绫", "canonical_name": "绫", "type": "person", "relations": [{"target": "三角洲部队", "relation": "喜欢玩"}, {"target": "考研数学", "relation": "在学"}]},
+          {"name": "考研数学", "canonical_name": "考研数学", "type": "concept", "relations": []}
+        ]
+      },
+      "meta": {"truncated": false}
+    },
+    "output_rules": [
+      "1. content 用第一人称（default/cute）或第三人称（professional），不要用第二人称「你」",
+      "2. traits_updates 禁止提取「善于表达/喜欢思考/善于沟通」等无具体行为证据支撑的泛化特质；每条≤15字；必须与已知特质去重",
+      "3. speech_quirks 与 traits_updates 各自去重，与 lt_hint 对比后只输出新发现的",
+      "4. key_facts 最多5条，按 importance 降序，保留具体细节",
+      "5. 同一实体的不同表述用 canonical_name 统一消歧",
+      "6. 实体关系必填规则：每个 entities 条目必须如实提取 relations，只要存在关系就填，至少 1 条。关系类型包括但不限于：朋友/同事/家人/恋人/敌人、喜欢/讨厌/关注/使用/拥有、讨论过/提到过/合作/教/学、位于/属于/相关。完全无关联的实体才留空数组。只提取文本中能确认的关系。",
+      "7. 禁止把 {persona_name} 算作实体——{persona_name} 是你自己（Bot），不是用户「提到的人」",
+      "8. 无法提取的字段用 null 或空数组",
+      "9. 输入过长时设置 meta.truncated = true",
+      "10. keylabel 是 10-20 字的核心主题标签，必须包含具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」"
+    ],
+    "output_footer": "只输出 JSON。",
+    "lt_hint_label": "已了解的信息（后续字段需与之去重）："
   },
-  "output_rules": [
-    "1. content 用第一人称（default/cute）或第三人称（professional），不要用第二人称「你」",
-    "2. traits_updates 禁止提取「善于表达/喜欢思考/善于沟通」等无具体行为证据支撑的泛化特质；每条≤15字；必须与已知特质去重",
-    "3. speech_quirks 与 traits_updates 各自去重，与 lt_hint 对比后只输出新发现的",
-    "4. key_facts 最多5条，按 importance 降序，保留具体细节",
-    "5. 同一实体的不同表述用 canonical_name 统一消歧",
-    "6. 实体关系必填规则：每个 entities 条目必须如实提取 relations，只要存在关系就填，至少 1 条。关系类型包括但不限于：朋友/同事/家人/恋人/敌人、喜欢/讨厌/关注/使用/拥有、讨论过/提到过/合作/教/学、位于/属于/相关。完全无关联的实体才留空数组。只提取文本中能确认的关系。",
-    "7. 禁止把 {persona_name} 算作实体——{persona_name} 是你自己（Bot），不是用户「提到的人」",
-    "8. 无法提取的字段用 null 或空数组",
-    "9. 输入过长时设置 meta.truncated = true",
-    "10. keylabel 是 10-20 字的核心主题标签，必须包含具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」"
-  ],
-  "output_footer": "只输出 JSON。",
-  "lt_hint_label": "已了解的信息（后续字段需与之去重）：",
   "fallback_prompt": "简短回复，一句话以内。\n\n你:"
 }
