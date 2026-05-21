@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime
 
 logger = logging.getLogger("rcms")
@@ -38,7 +39,12 @@ class SessionMixin:
             self.conn.execute("UPDATE session_state SET turn_count = turn_count + 1, last_active = ? WHERE session_id = ?", (timestamp, session_id))
             self.conn.commit()
             try:
-                self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                # WAL 超过 200KB 时强制 TRUNCATE，否则 PASSIVE
+                wal_path = getattr(self, 'db_path', '') + '-wal'
+                if wal_path and os.path.isfile(wal_path) and os.path.getsize(wal_path) > 200 * 1024:
+                    self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                else:
+                    self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except Exception:
                 pass
         finally:
