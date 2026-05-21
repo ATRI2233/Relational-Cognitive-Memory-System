@@ -1,7 +1,29 @@
 # 变更记录
 
-> 未发行阶段，所有版本 ≤ v1.0。
-> 贡献者: [仓库主](https://github.com/ATRI)
+## v0.1.5 — 2026-05-21
+
+### feat: 图谱实体入库修复 + 同轮共现 + 输出模板全量提取至 JSON
+- 修复 entities 入口过滤（`if not relations: continue`），无 relation 的实体也入库并建共现边，图不再为空
+- 新增同轮共现机制：同一轮蒸馏的实体之间自动建空 relation 边（权重累积），后续语义边可覆盖
+- LLM prompt 强化规则 6 为必填，新增实体举例（绫→三角洲部队），提升 relation 提取率
+- LLM output 格式模板从硬编码 f-string 迁移至 `prompts.json`（`output_schema`/`output_rules`/`output_intro`/`output_footer`），改 prompt 无需碰 Python
+- 清理三个 group 人格条目中不再使用的 `participants_field`
+
+### fix: SQLite WAL checkpoint 管理
+- 初始化时设置 `wal_autocheckpoint=50`（~200KB 即触发），避免 WAL 膨胀至默认 4MB 才回写
+- `save_turn()` commit 后追加 `PRAGMA wal_checkpoint(PASSIVE)`，每轮写入后回写
+- `close()` 时先 `PRAGMA wal_checkpoint(TRUNCATE)` 再关连接，确保退出时数据落库
+
+## v0.1.4 — 2026-05-21
+
+### feat: summary 字段重构+三通道优化
+- summary → keylabel（DB 列/变量/LLM prompt 字段名）
+- 新增 LLM summary（50-100 字概述，与 content 同级同 metadata）
+- 最近通道读取 summary 替代 content，非蒸馏路径写 summary = content 保底
+- 提示词全量提取至 prompts.json（mtime 自动重载）
+- _fusion() 两阶段重写，channel_weights [0.5,1.0,0.6]，半衰期 30→15
+- 移除 communication_style / focus_topic，[口癖] → [小细节小习惯]
+- 对应 commit: `156c632`
 
 ## v0.1.3 — 2026-05-20
 

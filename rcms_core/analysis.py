@@ -220,16 +220,18 @@ class AnalysisMixin:
                     (json.dumps({"threads": data["dangling_threads"], "turn": current_turn}, ensure_ascii=False), session_id),
                 )
     
-            # 8. Entities → 图谱（带 type 的多关系节点 + 反向边）
+            # 8. Entities → 图谱（节点保底 + 语义边优先 + 同轮共现兜底）
+            ent_ids = {}  # name -> node_id，用于后面建共现边
             for ent in data.get("entities", []):
                 name = ent.get("name", "")
                 entity_type = ent.get("type", "auto")
-                relations = ent.get("relations", [])
-                if not name or not relations:
+                if not name:
                     continue
                 from_id = self._upsert_graph_node(user_id, name, now_str, entity_type=entity_type)
                 if from_id < 0:
                     continue
+                ent_ids[name] = from_id
+                relations = ent.get("relations", [])
                 for rel in relations:
                     target = rel.get("target", "")
                     relation = rel.get("relation", "")
@@ -237,10 +239,17 @@ class AnalysisMixin:
                         continue
                     to_id = self._upsert_graph_node(user_id, target, now_str)
                     self._upsert_graph_edge(from_id, to_id, now_str, relation=relation, created_at=now_str)
-                    # 只在有明确反向映射时插入反向边，不兜底"相关于"
+                    # 只在有明确反向映射时插入反向边
                     if relation in self._INVERSE_RELATIONS:
                         inv = self._INVERSE_RELATIONS[relation]
                         self._upsert_graph_edge(to_id, from_id, now_str, relation=inv, created_at=now_str)
+            # 同轮共现：本轮出现的实体之间建空 relation 边（权重累积，后续语义边会覆盖）
+            names = list(ent_ids.keys())
+            for i in range(len(names)):
+                for j in range(i + 1, len(names)):
+                    a_id = ent_ids[names[i]]
+                    b_id = ent_ids[names[j]]
+                    self._upsert_graph_edge(a_id, b_id, now_str, relation="", created_at=now_str)
     
             # 10. Key facts → cognitive_distill（permanent 保底 0.5，transient 无保底可被清理）
             importance = data.get("importance", 0.0)
@@ -418,10 +427,33 @@ class AnalysisMixin:
         mode_key = "group" if is_group else "private"
         tpl = dp.get(ptype_key, {}).get(mode_key, {}) or dp.get("default", {}).get("private", {})
         preamble = tpl.get("preamble", "").format(persona_name=persona_name)
-        participants_field = tpl.get("participants_field", "").format(persona_name=persona_name) if is_group else ""
         content_instruction = tpl.get("content_instruction", "").format(persona_name=persona_name)
         first_stage = tpl.get("first_stage", "")
         extra_rules = tpl.get("extra_rules", "")
+
+        # ── 从 prompts.json 加载输出格式模板 ──
+        intro = dp.get("output_intro", "").replace("{first_stage}", first_stage)
+        schema = dict(dp.get("output_schema", {}))
+        rules = list(dp.get("output_rules", []))
+        footer = dp.get("output_footer", "只输出 JSON。")
+
+        # 群聊才保留 participants 字段
+        if not is_group:
+            analysis_schema = schema.get("analysis", {})
+            if isinstance(analysis_schema, dict):
+                analysis_schema.pop("participants", None)
+
+        # schema -> 格式化的 JSON 字符串
+        schema_str = json.dumps(schema, ensure_ascii=False, indent=2)
+
+        # 替换占位符
+        schema_str = schema_str.replace("{content_instruction}", content_instruction)
+        schema_str = schema_str.replace("{persona_name}", persona_name)
+
+        # 组装规则
+        rules_str = "\n".join(r.replace("{persona_name}", persona_name) for r in rules)
+        if extra_rules:
+            rules_str += "\n" + extra_rules
 
         return f"""[SYSTEM]
 {preamble}
@@ -436,61 +468,11 @@ class AnalysisMixin:
 已了解的信息（后续字段需与之去重）：
 {lt_hint}
 
-分析要求——两阶段：
-第一阶段：理解对话脉络
-{first_stage}
-
-第二阶段：提取 JSON。返回格式：
-
-{{
-  "content": "{content_instruction} 优先捕捉新变化，不要重复已知信息。保留具体细节和情绪转折，叙述自然流畅像讲故事一样。没有意义的事情可以不记；但要记就必须记细节，200 字左右。",
-  "summary": "50-100 字的简要概述，概括核心内容和情绪基调，用连贯的 1-2 句话",
-  "keylabel": "10-20 字的核心主题标签，必须包含 2-4 个具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」。不要叙事连接词（今天、然后、接着）。",
-  "analysis": {{
-    {participants_field}"key_facts": [
-      "按 importance 降序排列的关键事实，保留时间/原因/经过/结果等具体细节，最多5条"
-    ],
-    "key_facts_structured": [
-      {{"content": "永久特质", "temporal": "permanent", "expires_after_days": null}},
-      {{"content": "临时事件", "temporal": "transient", "expires_after_days": 14}}
-    ],
-    "mood": "用两个词描述情绪，如「轻松好奇」「焦虑疲惫」",
-    "mood_intensity": 0.0~1.0,
-    "topic_shift": true|false,
-    "key_points": ["事件脉络简要概括"],
-    "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
-    "traits_updates": ["有具体行为证据支撑的参与者特质，每条≤15字，与已知特质去重后只输出新发现的"],
-    "speech_quirks": ["说话做事的小细节小习惯，去重后只输出新发现的"],
-    "preferences": {{"likes": ["事物"], "dislikes": ["事物"]}},
-    "self_identity": ["用户如何看待自己"],
-    "boundaries": ["用户明确反感、回避、不开心的话题，或观察到的雷区"],
-    "dangling_threads": ["未完成话题"],
-    "importance": 0.0~1.0,
-    "entities": [
-      {{
-        "name": "实体名", "canonical_name": "标准名", "type": "person|place|activity|concept",
-        "relations": [
-          {{"target": "目标标准名", "relation": "关系类型"}}
-        ]
-      }}
-    ]
-  }},
-  "meta": {{"truncated": false}}
-}}
+{intro}{schema_str}
 
 规则：
-1. content 用第一人称（default/cute）或第三人称（professional），不要用第二人称「你」
-2. traits_updates 禁止提取「善于表达/喜欢思考/善于沟通」等无具体行为支撑的泛化特质；每条≤15字；必须与已知特质去重
-3. speech_quirks 与 traits_updates 各自去重，与 lt_hint 对比后只输出新发现的
-4. key_facts 最多5条，按 importance 降序，保留具体细节
-5. 同一实体的不同表述用 canonical_name 统一消歧
-6. 关系提取：优先客观关系（朋友/同事/喜欢/讨厌/讨论过/使用/居住等），鼓励链式 A→B→C，只提取文本内实体
-7. 禁止把 {persona_name} 算作实体——{persona_name} 是你自己（Bot），不是用户"提到的人"
-8. 无法提取的字段用 null 或空数组
-9. 输入过长时设置 meta.truncated = true
-10. keylabel 是 10-20 字的核心主题标签，必须包含具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」
-{extra_rules}
-只输出 JSON。"""
+{rules_str}
+{footer}"""
 
     def check_distill_needed(self, session_id: str, persona_name: str = "Bot") -> tuple:
         """检查是否需要触发蒸馏。返回 (triggered, last_turn, turn_count, snapshot_text, sender_names)"""

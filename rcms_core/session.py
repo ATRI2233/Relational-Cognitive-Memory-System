@@ -31,6 +31,10 @@ class SessionMixin:
             self.conn.execute("INSERT OR IGNORE INTO session_state (session_id, stance, turn_count, last_active) VALUES (?, 'open', 0, ?)", (session_id, timestamp))
             self.conn.execute("UPDATE session_state SET turn_count = turn_count + 1, last_active = ? WHERE session_id = ?", (timestamp, session_id))
             self.conn.commit()
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass
         finally:
             if lock:
                 try:

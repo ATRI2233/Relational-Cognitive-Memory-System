@@ -84,6 +84,7 @@ class MinimalRCMS(
         try:
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA busy_timeout = 5000")
+            self.conn.execute("PRAGMA wal_autocheckpoint = 50")  # ~200KB 即触发 checkpoint，避免 WAL 过度膨胀
         except Exception as e:
             logger.warning(f"RCMS: PRAGMA 设置失败 — WAL/busy_timeout 不可用 ({e})，DB 并发保护降级")
         # 进程内用于序列化写操作的简单互斥锁（短期阻塞）
@@ -104,6 +105,10 @@ class MinimalRCMS(
         logger.info(f"RCMS init: db={db_path} distill_turns={self._DISTILL_MAX_TURNS}min={self._DISTILL_MAX_MINUTES}")
 
     def close(self):
+        try:
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
         self.conn.close()
 
     def _init_identity(self, user_id: str):
