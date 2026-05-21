@@ -458,32 +458,34 @@ class RcmsPlugin(star.Star):
             session_id, user_input, user_id, sender_name,
         )
 
-        # 按配置的注入方式插入
-        if self.injection_method == "system_prompt":
-            req.system_prompt += f"\n\n{context_part}"
-        elif self.injection_method == "prompt_prefix":
-            req.prompt = f"{context_part}\n\n{req.prompt}" if req.prompt else context_part
-        elif self.injection_method == "faketool":
-            tool_id = f"rcms_{int(time.time())}"
-            info = AssistantMessageSegment(
-                content=None,
-                tool_calls=[ToolCall(
-                    id=tool_id,
-                    function=ToolCall.FunctionBody(
-                        name="get_rcms_context",
-                        arguments="{}"
-                    ),
-                )],
-            )
-            result = ToolCallMessageSegment(
-                role="tool",
-                tool_call_id=tool_id,
-                content=context_part,
-            )
-            req.tool_calls_result = ToolCallsResult(
-                tool_calls_info=info,
-                tool_calls_result=[result],
-            )
+        # 防重复注入（AstrBot 单轮多次 LLM 调用场景，system_prompt 可能累积）
+        if "[RCMS 关系上下文" not in req.system_prompt:
+            # 按配置的注入方式插入
+            if self.injection_method == "system_prompt":
+                req.system_prompt += f"\n\n{context_part}"
+            elif self.injection_method == "prompt_prefix":
+                req.prompt = f"{context_part}\n\n{req.prompt}" if req.prompt else context_part
+            elif self.injection_method == "faketool":
+                tool_id = f"rcms_{int(time.time())}"
+                info = AssistantMessageSegment(
+                    content=None,
+                    tool_calls=[ToolCall(
+                        id=tool_id,
+                        function=ToolCall.FunctionBody(
+                            name="get_rcms_context",
+                            arguments="{}"
+                        ),
+                    )],
+                )
+                result = ToolCallMessageSegment(
+                    role="tool",
+                    tool_call_id=tool_id,
+                    content=context_part,
+                )
+                req.tool_calls_result = ToolCallsResult(
+                    tool_calls_info=info,
+                    tool_calls_result=[result],
+                )
 
         # 持久化中间状态供 response hook 使用
         event.set_extra("rcms_persona", persona_name)

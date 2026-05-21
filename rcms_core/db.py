@@ -198,9 +198,39 @@ CREATE TABLE IF NOT EXISTS shared_context (
         except sqlite3.OperationalError:
             pass
         ensure_memory_links(self.conn)
+        # 从 chat_history 回填 user_mappings（初次部署时历史数据）
+        self._migrate_user_mappings()
         # Migration: 旧表 → cognitive_distill
         self._migrate_to_cognitive_distill()
         self.conn.commit()
+
+    def _migrate_user_mappings(self):
+        """从 chat_history 回填 user_mappings（历史数据初次建表时）"""
+        try:
+            # 检查 chat_history 是否有数据可供回填
+            has_history = self.conn.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='chat_history'"
+            ).fetchone()[0]
+            if not has_history:
+                return
+            existing = self.conn.execute(
+                "SELECT count(*) FROM user_mappings"
+            ).fetchone()[0]
+            if existing > 0:
+                return  # 已有数据，跳过回填
+            self.conn.execute("""
+                INSERT OR IGNORE INTO user_mappings (session_id, user_id, label, source)
+                SELECT DISTINCT session_id, user_id, sender_name, 'nickname'
+                FROM chat_history
+                WHERE sender_name != '' AND user_id != ''
+            """)
+            backfilled = self.conn.execute(
+                "SELECT count(*) FROM user_mappings"
+            ).fetchone()[0]
+            if backfilled:
+                logger.info(f"RCMS: 从 chat_history 回填 user_mappings {backfilled} 条")
+        except Exception as e:
+            logger.warning(f"RCMS: user_mappings 回填跳过 ({e})")
 
     def _migrate_to_cognitive_distill(self):
         """从 long_term_memory / event_memory / memory_embeddings 迁移到 cognitive_distill"""
