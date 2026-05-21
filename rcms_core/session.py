@@ -54,18 +54,36 @@ class SessionMixin:
                 except Exception:
                     pass
 
-    def find_mentioned_users(self, session_id: str, text: str) -> list[tuple[str, str]]:
-        """扫描消息文本，返回 (user_id, label) — 当前 session 中被提到的其他用户"""
+    def find_mentioned_users(self, session_id: str, text: str, speaker_id: str = "") -> list[tuple[str, str]]:
+        """扫描消息文本，返回 (user_id, label)
+        优先匹配当前 session，无结果时回退到发言者参与过的其他 session"""
         rows = self.conn.execute(
             "SELECT user_id, label FROM user_mappings WHERE session_id = ?",
             (session_id,),
         ).fetchall()
+
         result = []
         seen = set()
-        for user_id, label in rows:
-            if label and label in text and user_id not in seen:
-                seen.add(user_id)
-                result.append((user_id, label))
+        for uid, label in rows:
+            if label and label in text and uid not in seen:
+                seen.add(uid)
+                result.append((uid, label))
+
+        # 当前 session 无匹配 → 查发言者参与过的其他 session
+        if not result and speaker_id:
+            rows = self.conn.execute("""
+                SELECT DISTINCT um.user_id, um.label
+                FROM user_mappings um
+                WHERE um.session_id IN (
+                    SELECT session_id FROM user_mappings WHERE user_id = ?
+                )
+                AND um.user_id != ?
+            """, (speaker_id, speaker_id)).fetchall()
+            for uid, label in rows:
+                if label and label in text and uid not in seen:
+                    seen.add(uid)
+                    result.append((uid, label))
+
         return result
 
     def bind_user_label(self, session_id: str, user_id: str, label: str, source: str = 'custom'):

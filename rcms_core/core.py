@@ -117,7 +117,7 @@ class MinimalRCMS(
     ) -> str:
         """为发言者 + 被提及用户分别构建标注了姓名的 narrative context 块"""
         user_entries = [(speaker_id, speaker_name, "当前发言")]
-        for mid, label in self.find_mentioned_users(session_id, user_input):
+        for mid, label in self.find_mentioned_users(session_id, user_input, speaker_id):
             if mid != speaker_id:
                 user_entries.append((mid, label, "被提及"))
 
