@@ -455,6 +455,9 @@ class RcmsPlugin(star.Star):
         user_id = sender_id or self.user_id
         sender_name = event.get_sender_name() or sender_id
 
+        # 记录注入前的原始 system_prompt（用于日志，避免与 cp 重复）
+        original_sp = req.system_prompt
+
         # 防重复注入：同一用户输入（含多轮 LLM 调用）只注入一次
         # 不依赖 DB turn_count（save_turn 会递增它导致去重失效），
         # 而是用 user_input 文本做去重 key
@@ -503,7 +506,8 @@ class RcmsPlugin(star.Star):
         event.set_extra("rcms_user_id", user_id)
         event.set_extra("rcms_context_prompt", context_part)
         event.set_extra("rcms_sender_name", sender_name)
-        event.set_extra("rcms_system_prompt", req.system_prompt)
+        # 存注入前的 system_prompt（避免 sp 与 cp 重复）
+        event.set_extra("rcms_system_prompt", original_sp)
 
     @filter.on_llm_response()
     async def on_llm_response(

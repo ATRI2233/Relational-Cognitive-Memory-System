@@ -70,7 +70,9 @@ class SessionMixin:
                 result.append((uid, label))
 
         # 回退 1：查发言者参与过的其他 session
-        if not result and speaker_id:
+        # 不判断 not result，因为发言者的 label 可能在 text 中（如格式前缀），
+        # 导致 result 非空但真正的被提及者未被发现
+        if speaker_id:
             rows = self.conn.execute("""
                 SELECT DISTINCT um.user_id, um.label
                 FROM user_mappings um
@@ -86,15 +88,14 @@ class SessionMixin:
 
         # 回退 2：全局 user_mappings 标签匹配
         # 被提及者可能从未和发言者同 session（如仅私聊过 bot）
-        if not result:
-            rows = self.conn.execute("""
-                SELECT DISTINCT user_id, label FROM user_mappings
-                WHERE label != '' AND label IS NOT NULL
-            """).fetchall()
-            for uid, label in rows:
-                if label and label in text and uid not in seen:
-                    seen.add(uid)
-                    result.append((uid, label))
+        rows = self.conn.execute("""
+            SELECT DISTINCT user_id, label FROM user_mappings
+            WHERE label != '' AND label IS NOT NULL
+        """).fetchall()
+        for uid, label in rows:
+            if label and label in text and uid not in seen:
+                seen.add(uid)
+                result.append((uid, label))
 
         return result
 
