@@ -115,9 +115,8 @@
         "dangling_threads": ["未完成话题"],
         "importance": "0.0~1.0",
         "entities": [
-          {"name": "三角洲部队", "canonical_name": "三角洲部队", "type": "activity", "relations": [{"target": "绫", "relation": "喜欢玩"}]},
-          {"name": "绫", "canonical_name": "绫", "type": "person", "relations": [{"target": "三角洲部队", "relation": "喜欢玩"}, {"target": "考研数学", "relation": "在学"}]},
-          {"name": "考研数学", "canonical_name": "考研数学", "type": "concept", "relations": []}
+          {"name": "用户A", "canonical_name": "用户A", "type": "person", "relations": [{"target": "跑步", "relation": "喜欢"}]},
+          {"name": "跑步", "canonical_name": "跑步", "type": "activity", "relations": []}
         ]
       },
       "meta": {"truncated": false}
