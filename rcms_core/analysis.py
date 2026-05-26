@@ -252,7 +252,7 @@ class AnalysisMixin:
                     self._upsert_graph_edge(a_id, b_id, now_str, relation="", created_at=now_str)
     
             # 10. Key facts → cognitive_distill（permanent 保底 0.5，transient 无保底可被清理）
-            importance = data.get("importance", 0.0)
+            importance = float(data.get("importance", 0.0) or 0.0)
             kf_imp = max(importance, 0.5)
             kfs = data.get("key_facts", []) or data.get("key_facts_structured", [])
             perm_count = 0
