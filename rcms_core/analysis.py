@@ -371,6 +371,9 @@ class AnalysisMixin:
             logger.warning("DISTILL: empty response")
             return
 
+        # 清洗 LLM 响应：移除 <think> 推理块和 markdown 代码围栏
+        content = self._strip_llm_fences(content)
+
         try:
             result = json.loads(content)
             distill_content = result.get("content", "")
@@ -599,4 +602,15 @@ class AnalysisMixin:
             logger.info(f"RCMS: dangling_threads archived ({reason}) user={user_id}")
         except (json.JSONDecodeError, ValueError):
             logger.debug(f"RCMS: 归档时解析 dangling_threads JSON 失败 user={user_id}")
+
+    @staticmethod
+    def _strip_llm_fences(content: str) -> str:
+        """移除 LLM 响应中的 <think> 推理块和 markdown 代码围栏"""
+        import re
+        # 移除 <think>...</think> 块
+        content = re.sub(r'<think>[\s\S]*?</think>\s*', '', content)
+        # 移除 markdown 代码围栏
+        content = re.sub(r'```(?:json)?\s*', '', content)
+        content = content.strip()
+        return content
 
