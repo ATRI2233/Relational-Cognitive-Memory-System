@@ -1,50 +1,46 @@
-# RCMS — Relational Cognitive Memory System
+# RCMS — Relational Cognitive Memory System v2
 
-关系认知记忆系统。让 AI Agent 在长期对话中有人际关系感知：
-有共同记忆、有状态变化、有情绪氛围，但不走"完全模拟人类"路线。
+关系认知记忆系统。让 AI Agent 在长期对话中有人际关系感知。
 
 ## 项目结构
 
 ```
-rcms_core.py              # 单文件核心：记忆存储 / 检索 / 图扩散 / prompt 格式化
-backends/                  # LLM 后端（OpenAI / Mock）
-plugins/rcms-astrbot/     # AstrBot 插件适配器
-config.json                # 全局配置
-data/                      # SQLite 数据库存放目录
-scripts/                   # 工具脚本
+domain/                  # 领域层 — 纯业务，零外部依赖
+  ports/                 # 6个Protocol接口契约
+  entities/              # 实体 + 值对象（自验证）
+  services/              # 纯算法服务（无DB）
+  events/                # 6个领域事件（不可变）
+application/             # 应用层 — 编排
+  use_cases/             # 3个Use Case（Chat / Distill / Retrieve）
+  handlers/              # 4个Event Handler
+  event_bus.py           # 事件总线
+  analysis_writer.py     # 9维分析写入
+  prompt_builder.py      # Prompt模板构建
+infrastructure/          # 基础设施层
+  clock.py               # SystemClock / FrozenClock
+  config/settings.py     # pydantic-settings，60+字段全收口
+  persistence/           # 4个SQLite Repository
+adapter/                 # 适配器层
+  rcms_factory.py        # DI工厂
+  astrbot_plugin.py      # 精简AstrBot插件（~80行）
+config.json              # 全局配置
+scripts/                 # 工具脚本
+tests/                   # 34项集成测试
 ```
 
 ## Pipeline
 
 ```
-输入 → 关键词/图检索 → 记忆 → prompt_compressor → LLM → save_turn → _post_update
+输入 → RetrieveContextUseCase(三通道) → PromptBuilder → ChatUseCase
+                                                             ↓
+                                                    LLM → save_turn
+                                                             ↓
+                                          EventBus → Handlers → DistillUseCase
 ```
 
-AstrBot 插件中分两段执行：
-- `on_llm_request`: 检索记忆 → **narrative_context** → 注入 system_prompt
-- `on_llm_response`: save_turn → _record_output → _post_update
+## 架构原则
 
-## 数据库表
-
-session_state / chat_history — 会话层
-memory_graph_nodes / memory_graph_edges — 图检索
-long_term_memory — 旧版关键词 LIKE 记忆
-identity_memory / event_memory / emotional_trace / shared_context / relationship_arc — 长期5层表
-
-## 注入方式（AstrBot 插件）
-
-config.json → `general.injection_method`:
-- `system_prompt`: 追加到 `req.system_prompt` 尾部（默认）
-- `prompt_prefix`: 放在用户消息前
-- `faketool`: 以工具调用结果注入
-
-## 当前状态
-
-v2.0 重构中：已砍掉规则分析层（stance/momentum/engagement），
-待设计 LLM 直接产出分析的方案。
-
-## 开发约定
-
-- 语言：中文
-- 数据库：SQLite，每人格一个独立文件
-- 架构：单文件核心 + 后端隔离 + 插件适配
+- 契约先行：跨模块调用必须定义 Protocol
+- 依赖注入：构造函数显式传入所有依赖
+- 无状态业务：Use Case 不持有 DB Session
+- 配置收口：零硬编码字面量，全部从 pydantic-settings 读取
