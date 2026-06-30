@@ -28,6 +28,8 @@ RetrieveContextUseCase — 上下文检索与格式化 Use Case。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
+import re
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from domain.entities.memory import Memory, MemoryId, UserId, SessionId
@@ -42,6 +44,7 @@ from domain.services.fusion_service import FusionService, ChannelTag
 from domain.services.time_service import TimeService
 from domain.services.keyword_service import KeywordService
 
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
 # 依赖接口协议（应用层协议，尚未纳入 domain.ports）
@@ -482,8 +485,9 @@ class RetrieveContextUseCase:
                 items = grouped.get(key)
                 if items:
                     label = channel_labels.get(key, key)
+                    count_info = f"（共 {len(items)} 条）"
                     ch_lines.append(
-                        f"【{label}】\n"
+                        f"【{label}】{count_info}\n"
                         + "\n".join(f"  · {c}" for c in items)
                     )
             if ch_lines:
@@ -708,8 +712,9 @@ class RetrieveContextUseCase:
                 continue
             label = channel_labels.get(key, key)
             items = grouped[key][:2]
+            count_info = f"（共 {len(items)} 条）"
             mem_lines.append(
-                f"【{label}】\n" + "\n".join(f"  · {c}" for c in items)
+                f"【{label}】{count_info}\n" + "\n".join(f"  · {c}" for c in items)
             )
         mem_block = "\n\n".join(mem_lines) if mem_lines else ""
 
@@ -879,7 +884,7 @@ class RetrieveContextUseCase:
         """
         uid = UserId(user_id)
         memories = await self._memory_repo.get_by_user(
-            uid, limit=50, min_importance=0.1
+            uid, limit=200, min_importance=0.0
         )
         now = self._clock.now()
 
@@ -894,6 +899,11 @@ class RetrieveContextUseCase:
                 if mem.session_id.value == session_id:
                     session_boost = 0.3
             score = (t + session_boost) * (0.5 + mem.importance.value)
+
+            # 保护：高重要性记忆的最低分数保障
+            importance_floor = 0.05
+            min_score = importance_floor * mem.importance.value
+            score = max(score, min_score)
 
             # 格式化：模糊时间 + "，" + 摘要
             fuzz = self._time_service.fuzz_time(mem.created_at)
@@ -1050,18 +1060,37 @@ class RetrieveContextUseCase:
               chain_labels: 图中涉及的节点标签集合，供 _build_graph_paths 使用
         """
         kws = self._keyword_service.extract_keywords(user_input, max_kw=4)
-        if not kws:
-            return [], set()
 
-        # 搜索种子节点
+        # 1a. 先尝试直接关键词匹配
         seed_nodes: dict[int, GraphNode] = {}
         for kw in kws:
             nodes = await self._graph_repo.search_nodes(user_id, kw)
             for n in nodes:
                 seed_nodes[n.node_id] = n
 
+        # 1b. 再用图扩散扩展关键词（无论直接匹配有没有结果）
+        #     这样既有直接匹配的节点，也有语义关联的节点
+        diffusion_seed = kws if kws else [user_input[:20]]
+        diffused = await self._graph_diffuse(user_id, diffusion_seed)
+        if diffused:
+            expanded_kws = list(set(
+                (kws if kws else [])
+                + [label for label, _ in diffused[:8]]
+            ))
+            for kw in expanded_kws:
+                nodes = await self._graph_repo.search_nodes(user_id, kw)
+                for n in nodes:
+                    seed_nodes[n.node_id] = n
+
+        # 1c. 如果还是没有种子节点，降级取用户最常出现的节点
         if not seed_nodes:
-            return [], set()
+            user_nodes = await self._graph_repo.get_nodes_by_user(user_id)
+            if user_nodes:
+                user_nodes.sort(key=lambda n: n.freq, reverse=True)
+                seed_nodes = {n.node_id: n for n in user_nodes[:3]}
+            if not seed_nodes:
+                logger.debug("_channel_graph: no nodes matched for user %s", user_id)
+                return [], set()
 
         # 获取用户所有节点标签映射（供后续查 other node label）
         all_nodes = await self._graph_repo.get_nodes_by_user(user_id)

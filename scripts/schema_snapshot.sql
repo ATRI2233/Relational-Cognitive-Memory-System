@@ -62,6 +62,14 @@ CREATE INDEX IF NOT EXISTS idx_cd_embed ON cognitive_distill(user_id) WHERE embe
 CREATE INDEX IF NOT EXISTS idx_cd_user_imp ON cognitive_distill(user_id, importance DESC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cd_mood ON cognitive_distill(user_id, mood) WHERE mood IS NOT NULL;
 
+-- NOTE: 清理 [悬案归档] 系统运维噪音记录
+-- 若 cognitive_distill 中包含 [悬案归档] 或 [悬案归档·xxx] 前缀的记录,
+-- 它们是旧版系统自动写入的运维噪音, 可通过以下 SQL 清理:
+--   DELETE FROM cognitive_distill WHERE content LIKE '[悬案归档%';
+-- 清理后若 embedding 索引也需重建, 执行:
+--   DELETE FROM embedding_rebuild_queue WHERE source_table = 'cognitive_distill'
+--   AND record_id NOT IN (SELECT id FROM cognitive_distill);
+
 -- ============================================================
 -- 表: embedding_rebuild_queue
 -- 用途: Embedding 重建队列，记录因模型更换或维度变化

@@ -248,8 +248,9 @@ class PromptBuilder:
             items = grouped.get(key)
             if items:
                 label = channel_labels.get(key, key)
+                count_info = f"（共 {len(items)} 条）"
                 ch_lines.append(
-                    f"【{label}】\n"
+                    f"【{label}】{count_info}\n"
                     + "\n".join(f"  · {c}" for c in items)
                 )
 
@@ -556,7 +557,7 @@ class PromptBuilder:
             "channel_labels", self._channel_labels
         )
         display_order = self._templates.get(
-            "memories_display_order", ["resonance", "skeleton", "recent"]
+            "memories_display_order", ["resonance", "recent", "skeleton"]
         )
 
         parts: list[str] = []
@@ -667,9 +668,12 @@ class PromptBuilder:
             if key not in grouped:
                 continue
             label = channel_labels.get(key, key)
-            items = grouped[key][:2]
+            all_items = grouped[key]
+            total = len(all_items)
+            items = all_items[:2]
+            count_info = f"（共 {total} 条）" if total > 2 else f"（共 {total} 条）"
             mem_lines.append(
-                f"【{label}】\n"
+                f"【{label}】{count_info}\n"
                 + "\n".join(f"  · {c}" for c in items)
             )
 

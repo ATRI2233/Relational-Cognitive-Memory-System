@@ -102,24 +102,10 @@ class PostUpdateService:
         threads: list,
         now: datetime,
     ) -> None:
-        """归档过期悬案（analysis.py:580-604）
+        """归档过期悬案 — 只清空 session_state，不再写入 cognitive_distill。
 
-        将未结的悬案话题写入 cognitive_distill 表，
-        然后清空 session_state 中的 dangling_threads 字段。
+        `[悬案归档·过期]` 是系统内部运维噪音，不应写入 cognitive_distill，
+        否则时间/重要性通道会误将其作为用户记忆召回。
         """
-        tag = "[悬案归档·过期]"
-        content = f"{tag} " + "、".join(threads[:3])
-        keylabel = content.replace(tag, "").strip()[:20]
-
-        memory = Memory(
-            memory_id=MemoryId(0),
-            user_id=UserId(user_id),
-            session_id=SessionId(session_id),
-            content=content,
-            keylabel=keylabel,
-            summary=content,
-            importance=Importance(0.7),
-            created_at=now,
-        )
-        await self._memory_repo.save(memory)
+        # 不再写入 cognitive_distill，只清空 dangling_threads
         await self._session_repo.update_dangling_threads(SessionId(session_id), {"threads": [], "turn": 0})

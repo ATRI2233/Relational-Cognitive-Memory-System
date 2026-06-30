@@ -920,40 +920,24 @@ class DistillUseCase:
     async def _archive_dangling(
         self, user_id: str, session_id: str, now: datetime, reason: str = "",
     ) -> None:
-        """将未结悬案归档到 cognitive_distill 并清空 session_state。
+        """清空 session_state 中的 dangling_threads，不再写入 cognitive_distill。
 
-        对应 _archive_dangling（行 580-604）。
+        `[悬案归档]` 类记录是系统运维噪音，不应写入 cognitive_distill，
+        否则时间/重要性通道会误将其作为用户记忆召回。
 
         Args:
             user_id:    用户标识
             session_id: 会话标识
             now:        当前时间
-            reason:     归档原因描述
+            reason:     归档原因描述（保留参数，不再用于生成标签）
         """
-        # 行 582-586: 获取 session 的 dangling_threads
         dangling = await self._session_repo.get_dangling_threads(SessionId(session_id))
         if not dangling:
             return
         if not isinstance(dangling, dict) or not dangling.get("threads"):
             return
 
-        # 行 587-598: 归档到 cognitive_distill
-        threads = dangling["threads"]
-        tag = f"[悬案归档·{reason}]" if reason else "[悬案归档]"
-        archived_content = f"{tag} " + "、".join(threads[:3])
-        archive_memory = Memory(
-            memory_id=MemoryId(0),
-            user_id=UserId(user_id),
-            content=archived_content,
-            keylabel=archived_content.replace(tag, "").strip()[:20],
-            summary=archived_content,
-            importance=Importance(self._settings.archived_dangling_importance),
-            session_id=SessionId(session_id),
-            created_at=now,
-        )
-        await self._memory_repo.save(archive_memory)
-
-        # 行 598-601: 清空 session_state 中的 dangling_threads
+        # 不再写入 cognitive_distill，只清空 session_state
         await self._session_repo.update_dangling_threads(
             SessionId(session_id), {"threads": [], "turn": 0},
         )

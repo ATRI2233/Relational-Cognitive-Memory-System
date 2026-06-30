@@ -4,7 +4,7 @@
     "resonance": "语义检索",
     "skeleton": "图谱关联"
   },
-  "memories_display_order": ["resonance", "skeleton", "recent"],
+  "memories_display_order": ["resonance", "recent", "skeleton"],
   "narrative_context": {
     "prefix": "[RCMS 关系上下文,这里面放置了你对他的了解,按需使用]",
     "footer": "→ 以上是你通过长期对话积累的对他的了解，用来更好地理解他的意图。",
