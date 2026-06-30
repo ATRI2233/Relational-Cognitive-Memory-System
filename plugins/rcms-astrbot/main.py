@@ -450,9 +450,9 @@ class RcmsPlugin(star.Star):
             persona_name = await self._resolve_persona(event)
             rcms = self._get_rcms(persona_name)
 
-        session_id = event.unified_msg_origin
         sender_id = event.get_sender_id()
         user_id = sender_id or self.user_id
+        session_id = user_id  # 用 user_id（QQ号）做 session_id，好友/群聊记忆共享
         sender_name = event.get_sender_name() or sender_id
 
         # 记录注入前的原始 system_prompt（用于日志，避免与 cp 重复）
