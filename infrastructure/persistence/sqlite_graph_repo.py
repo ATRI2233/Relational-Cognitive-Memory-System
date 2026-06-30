@@ -582,7 +582,7 @@ class SQLiteGraphRepository(IGraphRepository):
                 continue
 
             path = _longest_from(label, {label})
-            if len(path) >= 2:
+            if len(path) >= 3:
                 segments: List[str] = []
                 cur = path[0]
                 for i in range(1, len(path)):
