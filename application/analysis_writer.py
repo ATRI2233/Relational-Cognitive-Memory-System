@@ -8,21 +8,14 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from domain.ports.identity_repo import IIdentityRepository
 from domain.ports.graph_repo import IGraphRepository
 from domain.ports.repositories import IMemoryRepository, ISessionRepository
 from domain.ports.clock import IClock
-from domain.entities.memory import (
-    Importance,
-    Memory,
-    MemoryId,
-    Mood,
-    SessionId,
-    UserId,
-)
+from domain.entities.memory import SessionId
 from domain.entities.identity import Boundary, Preferences, Trait
 
 # ═══════════════════════════════════════════════════════════════
@@ -39,8 +32,6 @@ class IAnalysisWriterSettings(Protocol):
 
     AnalysisWriter 只使用以下属性：
       - inverse_relations.inverse_relations
-      - analysis.permanent_fact_max
-      - analysis.transient_fact_max
     """
 
     inverse_relations: Any
@@ -50,11 +41,12 @@ logger = logging.getLogger("rcms")
 
 
 class AnalysisWriter:
-    """9 维分析写入服务
+    """分析结果写入服务
 
-    处理 LLM 蒸馏产出的全部 9 个维度的持久化：
+    处理 LLM 蒸馏产出的多维度持久化（不包含 key_facts 和 dangling_threads 的
+    cognitive_distill 写入）：
     mood / traits / preferences / self_identity / boundaries /
-    shared_context / dangling_threads / entities / key_facts
+    shared_context / dangling_threads(session_state) / entities
 
     原始逻辑在 analysis.py _apply_analysis（行 42-313）。
     """
@@ -92,9 +84,18 @@ class AnalysisWriter:
     async def write_all(
         self, user_id: str, session_id: str, analysis: dict[str, Any]
     ) -> list[tuple[int, str]]:
-        """写入完整的 9 维分析结果
+        """写入分析结果。
 
-        逐维写入，每步独立，前一步失败不影响后续步骤。
+        不再写入 key_facts 和 dangling_threads 到 cognitive_distill，
+        保留以下维度：
+          - 会话状态 & 用户立场
+          - 身份特质合并/衰减/截断
+          - 结构化身份字段（偏好、自我认同）
+          - 共享梗/上下文
+          - 边界/雷区
+          - 悬案线程 → session_state（不写 cognitive_distill）
+          - 实体 → 图谱
+          - 日志
 
         Args:
             user_id: 用户标识
@@ -102,54 +103,39 @@ class AnalysisWriter:
             analysis: LLM 产出的结构化分析数据
 
         Returns:
-            (entry_id, text_for_embedding) 元组列表, 供上层进行批量向量嵌入
+            始终返回空列表（不再产生待嵌入子条目）
         """
-        new_entries: list[tuple[int, str]] = []
-        now_str = self._clock.strftime()
         now_dt = self._clock.now()
         data = self._normalize_analysis(analysis)
 
-        # 1. 更新 session 活跃时间（行 50-52）
+        # 1. 更新 session 活跃时间
         await self._session_repo.update_last_active(SessionId(session_id), now_dt)
 
-        # 2. 提取 mood + mood_intensity（行 99-100），供后续维度使用
-        mood = data.get("mood", "")
-        mood_intensity = float(data.get("mood_intensity", 0.0))
-
-        # 3. 更新 user_state → session_state.stance（行 103-107）
+        # 2. 更新 user_state → session_state.stance
         await self._write_session_stance(session_id, data)
 
-        # 4. 写入 traits_updates + speech_quirks（行 112-158）
+        # 3. 写入 traits_updates + speech_quirks
         await self._write_traits(user_id, data)
 
-        # 5. 写入 preferences / self_identity（覆盖写，行 161-178）
+        # 4. 写入 preferences / self_identity（覆盖写）
         await self._write_preferences(user_id, data)
 
-        # 6. 写入 boundaries（覆盖写，行 200-206）
+        # 5. 写入 boundaries（覆盖写）
         await self._write_boundaries(user_id, data)
 
-        # 7. 写入 shared_context（upsert 梗，行 180-198）
+        # 6. 写入 shared_context（upsert 梗）
         await self._write_shared_context(user_id, data)
 
-        # 8. 处理 dangling_threads → cognitive_distill（行 208-221）
-        thread_ids = await self._write_dangling_threads(
-            user_id, session_id, data, now_dt, mood, mood_intensity,
-        )
-        new_entries.extend(thread_ids)
+        # 7. 处理 dangling_threads → session_state（不写入 cognitive_distill）
+        await self._write_dangling_threads(user_id, session_id, data)
 
-        # 9. 处理 entities → 图谱（行 223-252）
+        # 8. 处理 entities → 图谱
         await self._write_entities(user_id, data)
 
-        # 10. 处理 key_facts → cognitive_distill（行 254-290）
-        fact_ids = await self._write_key_facts(
-            user_id, session_id, data, now_dt, mood, mood_intensity,
-        )
-        new_entries.extend(fact_ids)
-
-        # 日志（行 292-299）
+        # 日志
         self._log_summary(user_id, data)
 
-        return new_entries
+        return []
 
     # ================================================================
     # 归一化（行 55-96）
@@ -395,50 +381,22 @@ class AnalysisWriter:
         user_id: str,
         session_id: str,
         data: dict,
-        now_dt: datetime,
-        mood: str,
-        mood_intensity: float,
-    ) -> list[tuple[int, str]]:
-        """处理 dangling_threads（行 208-221）
+    ) -> None:
+        """将悬案线程更新到 session_state（不再写入 cognitive_distill）。
 
-        每条悬案线程写入 cognitive_distill（行 209-214），
-        同时更新 session_state.dangling_threads 字段（行 215-221）。
+        仅更新 session_state.dangling_threads 字段供 PromptBuilder 使用，
+        不移除旧的 session_state 更新逻辑。
 
         Args:
             user_id: 用户标识
             session_id: 会话标识
             data: 归一化后的分析数据
-            now_dt: 当前时间（datetime 对象）
-            mood: 当前情绪标签
-            mood_intensity: 情绪强度
-
-        Returns:
-            (entry_id, text_for_embedding) 元组列表
         """
-        entries: list[tuple[int, str]] = []
         threads: list[str] = data.get("dangling_threads", [])
-
         if not threads:
-            return entries
+            return
 
-        # 每条悬案写入 cognitive_distill（行 209-214）
-        for dt in threads:
-            memory = Memory(
-                memory_id=MemoryId(0),
-                user_id=UserId(user_id),
-                content=dt,
-                keylabel=dt[:20] if len(dt) > 20 else dt,
-                summary=dt,
-                importance=Importance(0.5),
-                mood=Mood(mood),
-                mood_intensity=mood_intensity,
-                session_id=SessionId(session_id) if session_id else None,
-                created_at=now_dt,
-            )
-            memory_id = await self._memory_repo.save(memory)
-            entries.append((memory_id.value, dt))
-
-        # 更新 session 的悬案字段（行 215-221）
+        # 更新 session 的悬案字段
         if session_id:
             session = await self._session_repo.get(SessionId(session_id))
             current_turn = session.turn_count if session else 0
@@ -446,8 +404,6 @@ class AnalysisWriter:
                 SessionId(session_id),
                 {"threads": threads, "turn": current_turn},
             )
-
-        return entries
 
     # ================================================================
     # 维度 9：entities（行 223-252）
@@ -505,116 +461,12 @@ class AnalysisWriter:
                 await self._graph_repo.upsert_edge(a_id, b_id, "")
 
     # ================================================================
-    # 维度 10：key_facts（行 254-290）
-    # ================================================================
-
-    async def _write_key_facts(
-        self,
-        user_id: str,
-        session_id: str,
-        data: dict,
-        now_dt: datetime,
-        mood: str,
-        mood_intensity: float,
-    ) -> list[tuple[int, str]]:
-        """处理 key_facts → cognitive_distill（行 254-290）
-
-        根据 temporal 类型分别处理：
-          - permanent（永久）：保底 importance=0.5，每轮上限 3 条（行 276-280）
-          - transient（临时）：无保底，可被正常衰减清理，每轮上限 5 条（行 281-285）
-          - str 格式：默认视为 permanent（行 261-264）
-
-        支持 key_facts_structured 作为结构化备选源（行 257）。
-
-        Args:
-            user_id: 用户标识
-            session_id: 会话标识
-            data: 归一化后的分析数据
-            now_dt: 当前时间（datetime 对象）
-            mood: 当前情绪标签
-            mood_intensity: 情绪强度
-
-        Returns:
-            (entry_id, text_for_embedding) 元组列表
-        """
-        entries: list[tuple[int, str]] = []
-        importance_val = float(data.get("importance", 0.0) or 0.0)
-        kf_imp = max(importance_val, 0.5)  # permanent 保底（行 256）
-
-        # 优先使用 key_facts，空时降级到 key_facts_structured（行 257）
-        kfs = data.get("key_facts", None)
-        if kfs is None:
-            kfs = data.get("key_facts_structured", [])
-
-        if not kfs:
-            return entries
-
-        perm_count = 0
-        tran_count = 0
-        perm_max = self._settings.analysis.permanent_fact_max
-        tran_max = self._settings.analysis.transient_fact_max
-
-        for kf in kfs:
-            if isinstance(kf, str):
-                content = kf
-                temporal = "permanent"
-                expires_at = None
-                if perm_count >= perm_max:
-                    continue
-                imp_val = kf_imp
-                perm_count += 1
-            elif isinstance(kf, dict):
-                content = kf.get("content", "")
-                temporal = kf.get("temporal", "permanent")
-                if temporal == "transient":
-                    if tran_count >= tran_max:
-                        continue
-                    imp_val = importance_val  # transient 无保底（行 284）
-                    tran_count += 1
-                    expires_at = None
-                    if kf.get("expires_after_days"):
-                        expires_at = now_dt + timedelta(
-                            days=int(kf["expires_after_days"]),
-                        )
-                else:
-                    if perm_count >= perm_max:
-                        continue
-                    imp_val = kf_imp
-                    perm_count += 1
-                    expires_at = None
-            else:
-                continue
-
-            if not content:
-                continue
-
-            memory = Memory(
-                memory_id=MemoryId(0),
-                user_id=UserId(user_id),
-                content=content,
-                keylabel=content[:20] if len(content) > 20 else content,
-                summary=content,
-                importance=Importance(imp_val),
-                mood=Mood(mood),
-                mood_intensity=mood_intensity,
-                session_id=SessionId(session_id) if session_id else None,
-                expires_at=expires_at,
-                created_at=now_dt,
-            )
-            memory_id = await self._memory_repo.save(memory)
-            entries.append((memory_id.value, content))
-
-        return entries
-
-    # ================================================================
-    # 日志（行 292-299）
+    # 日志
     # ================================================================
 
     @staticmethod
     def _log_summary(user_id: str, data: dict) -> None:
-        """输出分析写入日志摘要（行 292-299）
-
-        统计本轮写入的各维度条目数，输出单行日志便于监控。
+        """输出分析写入日志摘要。
 
         Args:
             user_id: 用户标识
@@ -627,8 +479,6 @@ class AnalysisWriter:
             log_parts.append(f"jokes+{len(data['shared_jokes'])}")
         if data.get("boundaries"):
             log_parts.append(f"bounds+{len(data['boundaries'])}")
-        if data.get("key_facts"):
-            log_parts.append(f"facts+{len(data['key_facts'])}")
         if data.get("entities"):
             log_parts.append(f"ents+{len(data['entities'])}")
         try:

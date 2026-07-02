@@ -33,7 +33,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
 from domain.entities.identity import Boundary, Identity, Preferences, Trait
@@ -975,19 +975,17 @@ class DistillUseCase:
         data: dict,
         now: datetime,
     ) -> list[tuple[int, str]]:
-        """写入 9 维分析结果。
+        """写入多维度分析结果（不再写入 key_facts 和 dangling_threads 到 cognitive_distill）。
 
-        对应 _apply_analysis（行 42-313）的完整写入逻辑：
+        保留维度：
             1. 归一化数据
             2. 更新会话状态（last_active + user_state → stance）
             3. 身份特质合并/衰减/截断
             4. 结构化身份字段（偏好, 自我认知）
             5. 共享梗/上下文
             6. 边界/雷区
-            7. 悬案线程 → cognitive_distill
+            7. 悬案线程 → session_state（不写 cognitive_distill）
             8. 实体 → 图谱（节点 + 语义边 + 同轮共现）
-            9. 关键事实（permanent / transient）
-           10. 批量向量化
 
         Args:
             user_id:    用户标识
@@ -996,7 +994,7 @@ class DistillUseCase:
             now:        当前时间
 
         Returns:
-            [(entry_id, text_for_embedding), ...] 新写入的待嵌入条目列表
+            始终返回空列表（不再产生待嵌入子条目）
         """
         new_entries: list[tuple[int, str]] = []
 
@@ -1036,21 +1034,13 @@ class DistillUseCase:
         # Step 7: 边界/雷区 — 对应行 200-206
         await self._save_boundaries(user_id, data)
 
-        # Step 8: 悬案线程归档 — 对应行 208-221
-        dangling_entries = await self._save_dangling_threads(
-            user_id, session_id, data, now,
-        )
-        new_entries.extend(dangling_entries)
+        # Step 8: 悬案线程 → session_state（不写入 cognitive_distill）
+        await self._save_dangling_threads(user_id, session_id, data, now)
 
         # Step 9: 实体 → 图谱 — 对应行 223-252
         await self._sync_entities_to_graph(user_id, data)
 
-        # Step 10: 关键事实 — 对应行 254-290
-        fact_entries = await self._save_key_facts(user_id, data, now)
-        new_entries.extend(fact_entries)
-
-        # Step 11: 批量向量嵌入 — 对应行 309-313
-        await self._batch_embed_new_entries(user_id, new_entries)
+        # 不再写入 key_facts 到 cognitive_distill
 
         return new_entries
 
@@ -1211,51 +1201,29 @@ class DistillUseCase:
         session_id: str,
         data: dict,
         now: datetime,
-    ) -> list[tuple[int, str]]:
-        """将悬案线程写入 cognitive_distill + 更新 session_state。
+    ) -> None:
+        """将悬案线程更新到 session_state（不再写入 cognitive_distill）。
 
-        对应 _apply_analysis 行 208-221。
+        仅更新 session_state.dangling_threads 供 PromptBuilder 使用，
+        不再将悬案线程作为独立记忆写入 cognitive_distill。
 
         Args:
             user_id:    用户标识
             session_id: 会话标识
             data:       LLM 分析数据, 含 dangling_threads 字段
             now:        当前时间
-
-        Returns:
-            新创建的 (entry_id, text_for_embedding) 列表
         """
-        entries: list[tuple[int, str]] = []
         threads = data.get("dangling_threads", [])
+        if not threads:
+            return
 
-        for dt in threads:
-            memory = Memory(
-                memory_id=MemoryId(0),
-                user_id=UserId(user_id),
-                content=dt,
-                keylabel=dt,
-                summary=dt,
-                importance=Importance(self._settings.dangling_fallback_importance),
-                session_id=SessionId(session_id),
-                created_at=now,
-            )
-            memory_id = await self._memory_repo.save(memory)
-            entries.append(
-                (
-                    int(memory_id.value) if isinstance(memory_id, MemoryId) else int(memory_id),
-                    dt,
-                ),
-            )
-
-        if session_id and threads:
+        if session_id:
             session = await self._session_repo.get(SessionId(session_id))
             current_turn = session.turn_count if session else 0
             await self._session_repo.update_dangling_threads(
                 SessionId(session_id),
                 {"threads": threads, "turn": current_turn},
             )
-
-        return entries
 
     # ── Step 9: 实体 → 图谱 ──
 
@@ -1310,87 +1278,6 @@ class DistillUseCase:
                 a_id = ent_ids[names[i]]
                 b_id = ent_ids[names[j]]
                 await self._graph_repo.upsert_edge(a_id, b_id, relation="")
-
-    # ── Step 10: 关键事实 ──
-
-    async def _save_key_facts(
-        self,
-        user_id: str,
-        data: dict,
-        now: datetime,
-    ) -> list[tuple[int, str]]:
-        """将关键事实写入 cognitive_distill。
-
-        对应 _apply_analysis 行 254-290。
-        区分 permanent（保底 importance 0.5, 上限 3）和
-        transient（无保底, 上限 5, 可设置过期天数）。
-
-        Args:
-            user_id: 用户标识
-            data:    LLM 分析数据, 含 importance, key_facts, key_facts_structured
-            now:     当前时间
-
-        Returns:
-            新创建的 (entry_id, text_for_embedding) 列表
-        """
-        entries: list[tuple[int, str]] = []
-
-        # 行 255-256: 重要性保底
-        importance_raw = data.get("importance", 0.0) or 0.0
-        kf_imp = max(float(importance_raw), 0.5)
-
-        kfs = data.get("key_facts", []) or data.get("key_facts_structured", [])
-        perm_count = 0
-        tran_count = 0
-
-        for kf in kfs:
-            if isinstance(kf, str):
-                fact_content = kf
-                temporal = "permanent"
-                expires_at = None
-            elif isinstance(kf, dict):
-                fact_content = kf.get("content", "")
-                temporal = kf.get("temporal", "permanent")
-                if temporal == "transient" and kf.get("expires_after_days"):
-                    expires_at = now + timedelta(days=int(kf["expires_after_days"]))
-                else:
-                    expires_at = None
-            else:
-                continue
-
-            if not fact_content:
-                continue
-
-            if temporal == "permanent":
-                if perm_count >= self._settings.permanent_fact_max:
-                    continue
-                imp_val = kf_imp
-                perm_count += 1
-            else:
-                if tran_count >= self._settings.transient_fact_max:
-                    continue
-                imp_val = float(importance_raw)
-                tran_count += 1
-
-            memory = Memory(
-                memory_id=MemoryId(0),
-                user_id=UserId(user_id),
-                content=fact_content,
-                keylabel=fact_content,
-                summary=fact_content,
-                importance=Importance(imp_val),
-                expires_at=expires_at,
-                created_at=now,
-            )
-            memory_id = await self._memory_repo.save(memory)
-            entries.append(
-                (
-                    int(memory_id.value) if isinstance(memory_id, MemoryId) else int(memory_id),
-                    fact_content[:512],
-                ),
-            )
-
-        return entries
 
     # ── Step 11: 批量向量嵌入 ──
 

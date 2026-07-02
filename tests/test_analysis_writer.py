@@ -3,9 +3,9 @@ test_analysis_writer.py — AnalysisWriter 回归测试
 ===================================================
 
 覆盖场景：
-  1. Empty key_facts      — 验证 entry_ids NameError 已修复
+  1. Empty key_facts      — write_all 返回空列表
   2. String importance    — 字符串 vs 浮点数比较不抛 TypeError
-  3. Valid data           — 完整 9 维数据写入
+  3. Valid data           — 完整数据写入（不含 key_facts / dangling_threads 到 cognitive_distill）
   4. Missing fields       — 最小数据写入
   5. Unused variable      — now_str 回归检测
 
@@ -180,43 +180,35 @@ class TestAnalysisWriter:
         """每个测试方法后执行：关闭数据库连接。"""
         self.conn.close()
 
-    # ── 测试 1：Empty key_facts ─────────────────────────────────────
+    # ── 测试 1：write_all 不再返回子条目 ──
 
-    def test_write_key_facts_with_empty_input(self) -> None:
-        """Regression: key_facts 为空时不应引发 NameError。
-
-        原 bug：_write_key_facts 中 entry_ids 变量在空分支未初始化，
-        修复后应返回空列表而非 NameError。"""
+    def test_write_all_returns_empty_list(self) -> None:
+        """key_facts 和 dangling_threads 不再写入 cognitive_distill，
+        write_all 应始终返回空列表。"""
         result = _run_async(self.writer.write_all(
             user_id="test_user",
             session_id="test_session",
             analysis=_EMPTY_KEY_FACTS_ANALYSIS,
         ))
         assert result == [], (
-            f"空 key_facts 应返回空列表，收到 {result}"
+            f"write_all 应返回空列表，收到 {result}"
         )
 
-    # ── 测试 2：String importance ──────────────────────────────────
+    # ── 测试 2：String importance（仅验证不崩溃）──
 
     def test_importance_float_conversion_safe(self) -> None:
         """Regression: importance 为字符串时不应引发 TypeError。
 
         LLM JSON 有时返回字符串格式的 "0.5"。
-        _log_summary 中的 try/except 应安全转换，
-        _write_key_facts 中的 float() 也应兼容。"""
+        _log_summary 中的 try/except 应安全转换。"""
         try:
             result = _run_async(self.writer.write_all(
                 user_id="test_user",
                 session_id="test_session",
                 analysis=_STRING_IMPORTANCE_ANALYSIS,
             ))
-            # 验证写入成功且返回了内容
-            assert len(result) == 1, (
-                f"应写入 1 条 fact，收到 {len(result)}"
-            )
-            entry_id, text = result[0]
-            assert text == "字符串重要性事实"
-            assert isinstance(entry_id, int) and entry_id > 0
+            # write_all 不再写入事实，仅验证不崩溃
+            assert isinstance(result, list)
         except TypeError as e:
             pytest.fail(f"字符串 importance 不应引发 TypeError: {e}")
 
@@ -233,29 +225,21 @@ class TestAnalysisWriter:
             analysis=_VALID_ANALYSIS,
         ))
 
-        # 验证返回 entry 结构
+        # 验证返回空列表（不再写入子条目到 cognitive_distill）
         assert isinstance(result, list), (
             f"write_all 应返回 list，收到 {type(result)}"
         )
-        assert len(result) > 0, (
-            "有效数据应至少返回 1 条 entry"
+        assert result == [], (
+            f"write_all 应返回空列表，收到 {result}"
         )
 
-        for entry_id, text in result:
-            assert isinstance(entry_id, int) and entry_id > 0, (
-                f"entry_id 应为正 int，收到 {entry_id}"
-            )
-            assert isinstance(text, str) and len(text) > 0, (
-                f"text 应为非空 str，收到 {text!r}"
-            )
-
-        # 验证 cognitive_distill 有记录 (key_facts + dangling_threads)
+        # 验证 cognitive_distill 无记录（AnalysisWriter 不再写入子条目）
         distill_rows = self.conn.execute(
             "SELECT COUNT(*) FROM cognitive_distill WHERE user_id = ?",
             ("test_user",),
         ).fetchone()[0]
-        assert distill_rows >= 2, (
-            f"cognitive_distill 应 >= 2 条 (facts + threads)，实际 {distill_rows}"
+        assert distill_rows == 0, (
+            f"AnalysisWriter 不应写入 cognitive_distill，实为 {distill_rows}"
         )
 
         # 验证 identity_memory 有 traits
@@ -335,10 +319,7 @@ class TestAnalysisWriter:
         )
 
     def test_write_all_with_missing_mood(self) -> None:
-        """mood 缺失时不应崩溃。
-
-        _write_key_facts 和 _write_dangling_threads 都接收 mood 参数，
-        mood 缺失时 write_all 内部使用空字符串。"""
+        """mood 缺失时不应崩溃。"""
         partial = {
             "key_facts": [
                 {"content": "无 mood 的事实", "temporal": "permanent"},
@@ -349,7 +330,8 @@ class TestAnalysisWriter:
             session_id="test_session",
             analysis=partial,
         ))
-        assert len(result) == 1, "应成功写入 1 条 fact"
+        # key_facts 不再写入，仅验证不崩溃
+        assert isinstance(result, list)
 
     def test_write_all_with_missing_session_state(self) -> None:
         """session_state 行不存在时应优雅处理。
@@ -362,10 +344,9 @@ class TestAnalysisWriter:
             analysis=_VALID_ANALYSIS,
         ))
         assert isinstance(result, list)
-        # _VALID_ANALYSIS 有 2 条 key_facts + 2 条 dangling_threads
-        # 使用 >= 2 避免将来增加维度时硬编码失效
-        assert len(result) >= 2, (
-            f"_VALID_ANALYSIS 应至少产生 2 条 entry，收到 {len(result)}"
+        # 不再写入子条目 → 空列表
+        assert result == [], (
+            f"write_all 应返回空列表，收到 {len(result)}"
         )
 
         # 验证 session_state 不应有行（update_last_active 只是空 UPDATE）

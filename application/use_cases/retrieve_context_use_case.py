@@ -485,6 +485,9 @@ class RetrieveContextUseCase:
                 items = grouped.get(key)
                 if items:
                     label = channel_labels.get(key, key)
+                    # 图谱通道用 chains 替代单条三元组，增加信息量
+                    if key == "skeleton" and graph_paths:
+                        items = graph_paths
                     count_info = f"（共 {len(items)} 条）"
                     ch_lines.append(
                         f"【{label}】{count_info}\n"
@@ -634,15 +637,7 @@ class RetrieveContextUseCase:
                 + "\n".join(f"  · {c}" for c in ctx_lines)
             )
 
-        # ── 图谱关系链 ──
-        graph_chain_title = tmpl.get("graph_chain_title", "【图谱关系链】")
-        paths = graph_paths or self._graph_paths or []
-        if paths:
-            parts.append(
-                graph_chain_title + "\n"
-                + "\n".join(f"  · {p}" for p in paths)
-            )
-
+        # ── 图谱关系链（已删除，保留【图谱关联】通道即可）──
         # ── 未完成话题 ──
         stale_prefix = tmpl.get("dangling_stale_prefix", "↘ ")
         if dangling:
