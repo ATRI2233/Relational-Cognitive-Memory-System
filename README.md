@@ -17,6 +17,7 @@ RCMS 不是简单的对话历史存储。它在每次对话后对 LLM 回复做 
 - **情绪共振** — 识别当前对话的情绪氛围，召回忆中情绪匹配的条目
 - **图扩散检索** — 关键词通过知识图谱 BFS 扩散，找到语义关联的间接记忆
 - **多用户隔离** — 按 `user_id` / `session_id` 隔离数据，单库多租户
+- **本地观测站** — 插件自带 `http://127.0.0.1:8765`，能看每张表存了什么，也能逐条回放提示词的三路合成过程
 - **AstrBot 插件** — 仓库根目录即插件本体，可直接用 WebUI 安装、重装与更新
 
 ## 流水线概览
@@ -74,6 +75,7 @@ ctx = await core.retrieve_context_use_case.build_multi_user_context(
 | `analysis.post_analysis` | 蒸馏分析：模型来源、触发轮数/分钟、悬案过期轮数 |
 | `output_log` | JSONL 对话摘要日志（相对路径落在记忆库目录，超限自动裁剪） |
 | `storage.data_dir` | 记忆库目录，留空则用 AstrBot 数据区的 `plugin_data/astrbot_plugin_rcms` |
+| `webui` | 本地观测站：开关、地址、端口、是否记录三路召回追踪 |
 
 `analysis.retrieval.source` 与 `analysis.post_analysis.source` 各有两种取值：
 
@@ -92,6 +94,46 @@ ctx = await core.retrieve_context_use_case.build_multi_user_context(
 > 对话落库与蒸馏在**后台任务**里执行：每轮回复不会被蒸馏的 LLM 调用拖慢，
 > 插件重载时后台任务会被取消并等待收敛，不会留下半截事务。
 
+## 本地观测站
+
+插件自带一个**只读**的 localhost 网页，用来回答两个问题：记忆库里到底存了什么、这次提示词是怎么拼出来的。
+
+插件加载后就会启动，不需要额外安装任何东西（后端只用 Python 标准库）：
+
+```
+http://127.0.0.1:8765/
+```
+
+端口被占用时会自动往后顺延（8765–8774），实际地址会打在 AstrBot 日志里：
+
+```
+RCMS 观测站已就绪，浏览器打开 http://127.0.0.1:8765/ 可查看表数据与三路召回
+```
+
+### 两个视图
+
+**① 数据表** — 左边列出库里所有表（含中文用途说明与行数），点开就能翻页、在文本列里搜索。
+像 `memory_graph_edges` 这种只存 `node_id` 的表会自动联查出两端实体名，不会只看到一串数字。
+
+**② 三路召回** — 每次构建历史提示词都会留一条记录，点进去能看到完整链路：
+
+| 区块 | 内容 |
+| --- | --- |
+| 当次请求 | 用户输入、归属、提取的关键词、图扩散结果、Embedding 是否可用、耗时、融合参数 |
+| 三条通道 | 每路各自召回了哪些候选，逐条给出原始分、进度条与打分明细（余弦、重要性、时间衰减、同会话加成、边权、衰减后天数…） |
+| 融合结果 | 谁走了「保底」、谁走了「补位」、加权分多少、最终哪几条进了提示词，以及被去重丢弃的条目 |
+| 图谱关系链 | 从命中节点出发的连通路径 |
+| 最终注入文本 | 真正拼进 system prompt 的那段文字 |
+
+地址栏记的是当前视图，可以收藏或分享：`#/tables/memory_graph_edges`、`#/traces/17`。
+
+### 隐私与开销
+
+- 只监听回环地址（默认 `127.0.0.1`），不做鉴权，所以**不要把它改到公网地址**
+- 数据访问一律走 SQLite 只读连接（`mode=ro`），不会写入或修改记忆库
+- 追踪记录单独存在 `retrieval_trace` 表里，默认只保留最近 200 条，超出自动清理
+- 不想要就关掉：面板里把 `webui.enabled` 设为 false，或只设 `trace_enabled: false` 保留看板但不记录召回细节
+
 ## 数据与升级
 
 - 记忆库默认位于 `<AstrBot 数据目录>/plugin_data/astrbot_plugin_rcms/rcms_memory.db`
@@ -102,6 +144,7 @@ ctx = await core.retrieve_context_use_case.build_multi_user_context(
 
 ```
 main.py                    — AstrBot 插件入口（协议转换，只做 hook 与配置装配）
+observatory/               — 本地观测站：只读 HTTP 服务 + 单页前端（纯标准库）
 adapter/rcms_factory.py    — 依赖注入工厂，组装对象图
 application/               — 用例层：chat / distill / retrieve + 事件总线与 handler
 domain/                    — 领域层：实体、事件、端口、服务

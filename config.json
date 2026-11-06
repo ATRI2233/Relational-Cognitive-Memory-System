@@ -48,5 +48,12 @@
   },
   "storage": {
     "data_dir": ""
+  },
+  "webui": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "trace_enabled": true,
+    "trace_max": 200
   }
 }

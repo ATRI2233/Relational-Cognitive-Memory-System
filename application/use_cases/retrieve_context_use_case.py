@@ -28,9 +28,12 @@ RetrieveContextUseCase — 上下文检索与格式化 Use Case。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import inspect
 import logging
 import re
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+import time
+from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 from domain.entities.memory import Memory, MemoryId, UserId, SessionId
 from domain.entities.identity import Identity, Trait, Preferences, Boundary
@@ -270,6 +273,8 @@ class RetrieveContextUseCase:
         config: IRetrievalConfig,
         session_query_repo: ISessionQueryRepository,
         template_provider: ITextTemplateProvider,
+        trace_enabled: bool = False,
+        trace_sink: Callable[[dict], Any] | None = None,
     ) -> None:
         """初始化 RetrieveContextUseCase。
 
@@ -288,6 +293,9 @@ class RetrieveContextUseCase:
             config: 检索配置（channel_min / total_cap / 半衰期等）
             session_query_repo: 会话查询仓储扩展（跨会话查询）
             template_provider: 文案模板提供者（prompts.json 抽象）
+            trace_enabled: 是否采集「三路合成」的过程明细（供 WebUI 观测）。
+                关闭时零额外开销，默认关闭。
+            trace_sink: 追踪明细的落库回调（可为协程）。仅在 trace_enabled 时调用。
         """
         self._memory_repo = memory_repo
         self._identity_repo = identity_repo
@@ -306,6 +314,101 @@ class RetrieveContextUseCase:
 
         # ── 最后一次检索的图谱路径（供 graph_paths 属性向后兼容）──
         self._graph_paths: list[str] = []
+
+        # ── 三路合成追踪（WebUI 观测用，默认关闭）──
+        self._trace_enabled = trace_enabled
+        self._trace_sink = trace_sink
+        self._trace: dict | None = None
+        self._last_trace: dict | None = None
+
+    # ═══════════════════════════════════════════════════════════
+    # 三路合成追踪
+    # ═══════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _trace_hash(text: str) -> str:
+        """与 FusionService 内部一致的去重键，用于把融合结果映射回原条目。"""
+        return hashlib.md5(text.strip().encode("utf-8")).hexdigest()
+
+    def _trace_begin(self, user_input: str) -> None:
+        """开始一轮追踪。"""
+        if not self._trace_enabled:
+            self._trace = None
+            return
+        self._trace = {
+            "user_input": user_input,
+            "started_at": time.perf_counter(),
+            "elapsed_ms": 0,
+            "embedding_ok": False,
+            "embedding_dim": 0,
+            "keywords": [],
+            "time_filter": None,
+            "channels": {
+                ChannelTag.RECENT: [],
+                ChannelTag.RESONANCE: [],
+                ChannelTag.SKELETON: [],
+            },
+            "fusion": {},
+            "final": [],
+            "graph_paths": [],
+            "injected": "",
+            "_hash_to_id": {},
+        }
+
+    def _trace_candidate(
+        self,
+        tag: str,
+        text: str,
+        score: float,
+        memory_id: int | None = None,
+        detail: dict | None = None,
+    ) -> None:
+        """记录一条通道候选。
+
+        Args:
+            tag: 通道标签（recent / resonance / skeleton）。
+            text: 交给融合算法的文本（必须与通道返回值完全一致）。
+            score: 该通道内的原始分数。
+            memory_id: 对应 cognitive_distill 主键（可选）。
+            detail: 评分过程中的中间量，供 WebUI 展示（可选）。
+        """
+        trace = self._trace
+        if trace is None:
+            return
+        bucket = trace["channels"].get(tag)
+        if bucket is None:
+            return
+        if memory_id is not None:
+            trace["_hash_to_id"][self._trace_hash(text)] = memory_id
+        bucket.append(
+            {
+                "memory_id": memory_id,
+                "score": round(score, 6),
+                "text": text,
+                "detail": detail or {},
+            }
+        )
+
+    def _trace_finish(self) -> None:
+        """收尾：计算耗时、把融合结果映射回条目 id。"""
+        trace = self._trace
+        if trace is None:
+            return
+        trace["elapsed_ms"] = int(
+            (time.perf_counter() - trace.pop("started_at", time.perf_counter()))
+            * 1000
+        )
+        hash_to_id = trace.pop("_hash_to_id", {})
+        for item in trace.get("final", []):
+            item["memory_id"] = hash_to_id.get(self._trace_hash(item.get("content", "")))
+        self._last_trace = trace
+        self._trace = None
+
+    def take_last_trace(self) -> dict | None:
+        """取出并清空最近一次追踪明细。"""
+        trace = self._last_trace
+        self._last_trace = None
+        return trace
 
     @property
     def graph_paths(self) -> list[str]:
@@ -354,6 +457,7 @@ class RetrieveContextUseCase:
             return [], []
 
         config = self._config
+        self._trace_begin(user_input)
 
         # ── 三通道并行召回 ──
         channel_time = await self._channel_time(
@@ -368,11 +472,17 @@ class RetrieveContextUseCase:
         channel_graph, chain_labels = channel_graph_result
 
         # ── FusionService 融合 ──
-        result = self._fusion_service.fuse({
+        channels = {
             ChannelTag.RECENT: channel_time,
             ChannelTag.RESONANCE: channel_resonance,
             ChannelTag.SKELETON: channel_graph,
-        })
+        }
+        if self._trace is not None:
+            result, fusion_detail = self._fusion_service.fuse_with_detail(channels)
+            self._trace["fusion"] = fusion_detail
+            self._trace["final"] = list(fusion_detail.get("final", []))
+        else:
+            result = self._fusion_service.fuse(channels)
 
         # ── 构建图谱关系链（从 _channel_graph 收集的链标签查询连通路径）─
         graph_paths: list[str] = []
@@ -380,6 +490,9 @@ class RetrieveContextUseCase:
             graph_paths = await self._build_graph_paths(user_id, chain_labels)
 
         self._graph_paths = graph_paths
+        if self._trace is not None:
+            self._trace["graph_paths"] = graph_paths
+        self._trace_finish()
         return result, graph_paths
 
     async def load_long_term_context(self, user_id: str) -> dict:
@@ -845,7 +958,35 @@ class RetrieveContextUseCase:
             )
             blocks.append(f"{header}\n" + ctx)
 
+            # 三路合成追踪：补上「这次注入给 LLM 的到底是什么」
+            trace = self.take_last_trace()
+            if trace is not None:
+                trace["session_id"] = session_id
+                trace["user_id"] = uid
+                trace["display_name"] = display_name
+                trace["role"] = role
+                trace["injected"] = ctx
+                trace["header"] = header
+                trace["long_term"] = {
+                    "identity_traits": lt.get("identity_traits", []),
+                    "preferences": lt.get("preferences", {}),
+                    "entities": lt.get("entities", [])[:12],
+                    "shared_contexts": lt.get("shared_contexts", [])[:6],
+                }
+                await self._emit_trace(trace)
+
         return "\n\n".join(blocks)
+
+    async def _emit_trace(self, trace: dict) -> None:
+        """把追踪明细交给落库回调，失败不影响对话。"""
+        if self._trace_sink is None:
+            return
+        try:
+            result = self._trace_sink(trace)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            logger.warning("三路合成追踪落库失败: %s", exc)
 
     # ═══════════════════════════════════════════════════════════
     # 通道 1：时间重要性锚点
@@ -904,6 +1045,21 @@ class RetrieveContextUseCase:
             fuzz = self._time_service.fuzz_time(mem.created_at)
             text = mem.summary if mem.summary else mem.content
             formatted = f"{fuzz}，{text}" if fuzz else text
+            if self._trace is not None:
+                self._trace_candidate(
+                    ChannelTag.RECENT,
+                    formatted,
+                    score,
+                    memory_id=mem.memory_id.value,
+                    detail={
+                        "importance": round(mem.importance.value, 3),
+                        "time_decay": round(t, 4),
+                        "session_boost": session_boost,
+                        "created_at": str(mem.created_at),
+                        "summary": mem.summary or "",
+                        "mood": mem.mood.value if mem.mood else "",
+                    },
+                )
             scored.append((formatted, score))
 
         scored.sort(key=lambda x: -x[1])
@@ -950,6 +1106,12 @@ class RetrieveContextUseCase:
         kws = self._keyword_service.extract_keywords(user_input, max_kw=4)
         diffused = await self._graph_diffuse(user_id, kws)
         all_keywords = list(set(kws + [label for label, _ in diffused[:3]]))
+        if self._trace is not None:
+            self._trace["keywords"] = list(all_keywords)
+            self._trace["time_filter"] = time_range
+            self._trace["diffused_keywords"] = [
+                {"label": label, "weight": round(w, 4)} for label, w in diffused[:8]
+            ]
 
         # 3. 向量检索（用原查询 + 扩散词）
         #    Embedding 是可降级能力：关闭向量检索、上游模型不可用、或返回空向量时，
@@ -965,6 +1127,10 @@ class RetrieveContextUseCase:
             except Exception as exc:
                 logger.warning("语义通道向量化失败，本轮跳过: %s", exc)
                 query_vec = []
+        if self._trace is not None:
+            self._trace["embedding_ok"] = bool(query_vec)
+            self._trace["embedding_dim"] = len(query_vec)
+            self._trace["query_text"] = query_text[:512]
         vec_results: dict[int, tuple[float, Memory]] = {}
         if query_vec:
             embedding_results = await self._memory_repo.search_by_embedding(
@@ -1009,21 +1175,76 @@ class RetrieveContextUseCase:
                 else:
                     score = imp_decay * 0.5
 
-                if current_mood and mem.mood.value and mem.mood.value == current_mood:
+                mood_hit = bool(
+                    current_mood
+                    and mem.mood.value
+                    and mem.mood.value == current_mood
+                )
+                if mood_hit:
                     score *= 1 + config.emotional_resonance_bonus
 
+                if self._trace is not None:
+                    self._trace_candidate(
+                        ChannelTag.RESONANCE,
+                        mem.content,
+                        score,
+                        memory_id=mid,
+                        detail={
+                            "source": "vector+keyword",
+                            "cosine": round(cos_sim, 4),
+                            "importance": round(mem.importance.value, 3),
+                            "time_decay": round(t, 4),
+                            "importance_decay": round(imp_decay, 4),
+                            "mood_match": mood_hit,
+                            "mood": mem.mood.value if mem.mood else "",
+                        },
+                    )
                 scored.append((mem.content, score))
 
             for mid, (cos_sim, mem) in vec_results.items():
                 if mid not in kw_mem_map:
                     score = cos_sim * 0.6
+                    if self._trace is not None:
+                        self._trace_candidate(
+                            ChannelTag.RESONANCE,
+                            mem.content,
+                            score,
+                            memory_id=mid,
+                            detail={
+                                "source": "vector",
+                                "cosine": round(cos_sim, 4),
+                                "importance": round(mem.importance.value, 3),
+                                "mood_match": False,
+                                "mood": mem.mood.value if mem.mood else "",
+                            },
+                        )
                     scored.append((mem.content, score))
         else:
             for mem in kw_memories:
                 t = self._time_service.time_decay(mem.created_at)
                 score = mem.importance.value * t
-                if current_mood and mem.mood.value and mem.mood.value == current_mood:
+                mood_hit = bool(
+                    current_mood
+                    and mem.mood.value
+                    and mem.mood.value == current_mood
+                )
+                if mood_hit:
                     score *= 1 + config.emotional_resonance_bonus
+                if self._trace is not None:
+                    self._trace_candidate(
+                        ChannelTag.RESONANCE,
+                        mem.content,
+                        score,
+                        memory_id=mem.memory_id.value,
+                        detail={
+                            "source": "keyword-only",
+                            "cosine": 0.0,
+                            "importance": round(mem.importance.value, 3),
+                            "time_decay": round(t, 4),
+                            "mood_match": mood_hit,
+                            "mood": mem.mood.value if mem.mood else "",
+                        },
+                    )
                 scored.append((mem.content, score))
 
         scored.sort(key=lambda x: -x[1])
@@ -1119,6 +1340,7 @@ class RetrieveContextUseCase:
 
                 # 时间衰减：对 datetime 做规范化减法
                 w = edge.weight
+                days: int | None = None
                 if edge.last_seen is not None:
                     ref = now.replace(tzinfo=None) if now.tzinfo else now
                     ls = edge.last_seen.replace(tzinfo=None) if edge.last_seen.tzinfo else edge.last_seen
@@ -1144,6 +1366,22 @@ class RetrieveContextUseCase:
                         f"常被一起提及（相关度 {w:.1f}）"
                     )
                 score = w + 2.0 if edge.relation else w
+                if self._trace is not None:
+                    self._trace_candidate(
+                        ChannelTag.SKELETON,
+                        stmt,
+                        score,
+                        memory_id=None,
+                        detail={
+                            "from": src_label,
+                            "to": tgt_label,
+                            "relation": edge.relation or "",
+                            "edge_weight": round(edge.weight, 4),
+                            "decayed_weight": round(w, 4),
+                            "days_since_seen": days,
+                            "relation_bonus": 2.0 if edge.relation else 0.0,
+                        },
+                    )
                 results.append((stmt, score))
 
         results.sort(key=lambda x: -x[1])

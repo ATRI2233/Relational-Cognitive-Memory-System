@@ -170,6 +170,30 @@ CREATE TABLE IF NOT EXISTS user_mappings (
 
 CREATE INDEX IF NOT EXISTS idx_um_session ON user_mappings(session_id);
 CREATE INDEX IF NOT EXISTS idx_um_label ON user_mappings(session_id, label);
+
+CREATE TABLE IF NOT EXISTS retrieval_trace (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    user_id TEXT,
+    display_name TEXT,
+    role TEXT,
+    user_input TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    elapsed_ms INTEGER DEFAULT 0,
+    embedding_ok INTEGER DEFAULT 0,
+    embedding_dim INTEGER DEFAULT 0,
+    keywords TEXT DEFAULT '[]',
+    time_filter TEXT,
+    channels TEXT DEFAULT '{}',
+    fusion TEXT DEFAULT '{}',
+    final_tags TEXT DEFAULT '[]',
+    graph_paths TEXT DEFAULT '[]',
+    extra TEXT DEFAULT '{}',
+    injected TEXT DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_rt_created ON retrieval_trace(created_at);
+CREATE INDEX IF NOT EXISTS idx_rt_user ON retrieval_trace(user_id);
 """
 
 

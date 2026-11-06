@@ -53,6 +53,24 @@ class FusionService:
         Returns:
             [(content, tag), ...] 按权重降序，总数不超过 total_cap
         """
+        return self.fuse_with_detail(channels)[0]
+
+    def fuse_with_detail(
+        self, channels: dict[str, list[tuple[str, float]]]
+    ) -> tuple[list[tuple[str, str]], dict]:
+        """融合三通道结果，同时返回可观测的过程明细。
+
+        与 :meth:`fuse` 的唯一区别是额外产出一份 detail 字典，供 WebUI 展示
+        「保底哪几条、补位哪几条、哪些被去重丢掉」，算法本身完全一致。
+
+        Args:
+            channels: {tag: [(content_str, score), ...]}。
+
+        Returns:
+            (results, detail)：
+              results: [(content, tag), ...] 按加权分降序，不超过 total_cap
+              detail:  融合参数、保底阶段、补位候选、去重丢弃、最终明细
+        """
         ch_min = self._config.channel_min
         ch_weights = self._config.channel_weights
         total_cap = self._config.total_cap
@@ -66,8 +84,18 @@ class FusionService:
                 f"must each have at least 3 elements"
             )
 
+        detail: dict = {
+            "channel_min": list(ch_min),
+            "channel_weights": list(ch_weights),
+            "total_cap": total_cap,
+            "floor": [],       # 保底阶段实际取走的条目
+            "fill_pool": [],   # 补位阶段的候选池（已排序）
+            "dedup_dropped": [],
+            "final": [],
+        }
+
         seen: set[str] = set()
-        merged: list[tuple[str, str, float]] = []  # (content, tag, weighted_score)
+        merged: list[tuple[str, str, float, str]] = []  # (content, tag, weighted, stage)
         actual_taken = [0, 0, 0]  # actual items taken per channel in Phase 1
         attempted_taken = [0, 0, 0]  # items consumed from iterator per channel
 
@@ -85,8 +113,21 @@ class FusionService:
                 if key not in seen:
                     seen.add(key)
                     weighted = item_score * ch_weights[TAG_TO_INDEX[tag_key]]
-                    merged.append((content, tag_key, weighted))
+                    merged.append((content, tag_key, weighted, "floor"))
                     taken += 1
+                    detail["floor"].append(
+                        {
+                            "tag": tag_key,
+                            "weight": ch_weights[TAG_TO_INDEX[tag_key]],
+                            "raw_score": round(item_score, 6),
+                            "weighted": round(weighted, 6),
+                            "content": content,
+                        }
+                    )
+                else:
+                    detail["dedup_dropped"].append(
+                        {"tag": tag_key, "stage": "floor", "content": content}
+                    )
             actual_taken[TAG_TO_INDEX[tag_key]] = taken
             attempted_taken[TAG_TO_INDEX[tag_key]] = attempted
 
@@ -105,17 +146,38 @@ class FusionService:
                         pool.append((content, tag_key, weighted))
 
             pool.sort(key=lambda x: -x[2])
+            detail["fill_pool"] = [
+                {"tag": tag, "weighted": round(score, 6), "content": content}
+                for content, tag, score in pool
+            ]
             for content, tag_key, score in pool:
                 if len(merged) >= total_cap:
-                    break
+                    detail["dedup_dropped"].append(
+                        {"tag": tag_key, "stage": "overflow", "content": content}
+                    )
+                    continue
                 key = self._hash_key(content)
                 if key not in seen:
                     seen.add(key)
-                    merged.append((content, tag_key, score))
+                    merged.append((content, tag_key, score, "fill"))
+                else:
+                    detail["dedup_dropped"].append(
+                        {"tag": tag_key, "stage": "fill", "content": content}
+                    )
 
         # 返回 (content, tag) 结构，按加权分降序
         merged.sort(key=lambda x: -x[2])
-        return [(content, tag) for content, tag, _ in merged[:total_cap]]
+        ordered = merged[:total_cap]
+        detail["final"] = [
+            {
+                "tag": tag,
+                "stage": stage,
+                "weighted": round(score, 6),
+                "content": content,
+            }
+            for content, tag, score, stage in ordered
+        ]
+        return [(content, tag) for content, tag, _, _ in ordered], detail
 
     @staticmethod
     def _hash_key(content: str) -> str:

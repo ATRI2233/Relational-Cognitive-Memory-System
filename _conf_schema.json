@@ -237,5 +237,42 @@
         "default": ""
       }
     }
+  },
+  "webui": {
+    "description": "本地观测站",
+    "type": "object",
+    "hint": "插件自带的只读网页，用浏览器打开 http://127.0.0.1:端口 就能看到每张表的数据和三路召回的合成细节。",
+    "items": {
+      "enabled": {
+        "description": "启用观测站",
+        "hint": "关闭后不启动本地服务，也不会记录召回追踪。",
+        "type": "bool",
+        "default": true
+      },
+      "host": {
+        "description": "监听地址",
+        "hint": "默认只监听本机回环地址；改成 0.0.0.0 会把记忆库暴露到局域网，不建议。",
+        "type": "string",
+        "default": "127.0.0.1"
+      },
+      "port": {
+        "description": "端口",
+        "hint": "默认 8765；被占用时会自动往后顺延，实际地址见日志。",
+        "type": "int",
+        "default": 8765
+      },
+      "trace_enabled": {
+        "description": "记录召回追踪",
+        "hint": "每次构建提示词时记录三条通道的候选与融合过程，用于观测「历史提示词是怎么拼出来的」。",
+        "type": "bool",
+        "default": true
+      },
+      "trace_max": {
+        "description": "追踪保留条数",
+        "hint": "超出后自动删除最旧的记录。",
+        "type": "int",
+        "default": 200
+      }
+    }
   }
 }

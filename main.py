@@ -82,7 +82,7 @@ def _resolve_data_dir(config: dict) -> str:
     "astrbot_plugin_rcms",
     "RCMS",
     "Relational Cognitive Memory System v2",
-    "2.0.2",
+    "2.1.0",
     "https://github.com/ATRI2233/Relational-Cognitive-Memory-System",
 )
 class RcmsPlugin(star.Star):
@@ -102,6 +102,9 @@ class RcmsPlugin(star.Star):
         self._embed_fail_until = 0.0
         # 后台落库任务，terminate 时统一收敛
         self._bg_tasks: set[asyncio.Task] = set()
+        # 本地观测站（localhost 只读面板）
+        self._webui = None
+        self._webui_cfg: dict = {}
 
         # 仓库内附带的 config.json 作为默认值，AstrBot 面板配置优先覆盖
         _cfg_path = os.path.join(_self, "config.json")
@@ -113,6 +116,42 @@ class RcmsPlugin(star.Star):
             except (json.JSONDecodeError, IOError):
                 pass
 
+        # 观测站要在插件一加载就能打开，不能等到第一条消息
+        self._start_webui()
+
+    # ── 本地观测站 ──────────────────────────────────────────────────
+
+    def _start_webui(self) -> None:
+        """启动插件自带的 localhost 只读面板。
+
+        只读、只监听回环地址，失败不影响插件正常工作。
+        """
+        cfg = self._config.get("webui")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        self._webui_cfg = cfg
+        if not cfg.get("enabled", True):
+            logger.info("RCMS: 观测站已关闭（webui.enabled = false）")
+            return
+        try:
+            from observatory.server import RcmsWebServer
+
+            db_path = os.path.join(
+                _resolve_data_dir(self._config), "rcms_memory.db"
+            )
+            server = RcmsWebServer(
+                db_path=db_path,
+                host=str(cfg.get("host") or "127.0.0.1"),
+                port=int(cfg.get("port") or 8765),
+            )
+            if server.start():
+                self._webui = server
+                logger.info(
+                    "RCMS 观测站已就绪，浏览器打开 %s 可查看表数据与三路召回",
+                    server.url,
+                )
+        except Exception as exc:  # noqa: BLE001 - 观测站不能拖垮插件
+            logger.warning("RCMS: 观测站启动失败（不影响记忆功能）: %s", exc)
+
     def _get_core(self) -> CoreContext:
         if self._core is None:
             data_dir = _resolve_data_dir(self._config)
@@ -120,11 +159,20 @@ class RcmsPlugin(star.Star):
             db_path = os.path.join(data_dir, "rcms_memory.db")
             self._db_path = db_path
             llm_callable, embed_callable = self._build_callbacks()
+            trace_on = bool(self._webui_cfg.get("enabled", True)) and bool(
+                self._webui_cfg.get("trace_enabled", True)
+            )
+            try:
+                trace_max = int(self._webui_cfg.get("trace_max") or 200)
+            except (TypeError, ValueError):
+                trace_max = 200
             self._core = create_core(
                 db_path=db_path,
                 settings=self._build_settings(data_dir),
                 llm_call=llm_callable,
                 embed_call=embed_callable,
+                trace_enabled=trace_on,
+                trace_max=trace_max,
             )
         return self._core
 
@@ -160,6 +208,14 @@ class RcmsPlugin(star.Star):
 
         AstrBot 在卸载/重载插件时会 await 本方法，因此必须是协程。
         """
+        # 观测站与后台任务都不依赖 core，先停掉再关库
+        if self._webui is not None:
+            try:
+                self._webui.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("关闭观测站失败: %s", exc)
+            self._webui = None
+
         # 先收敛后台任务，否则它们会继续使用马上要被关闭的数据库连接
         if self._bg_tasks:
             pending = list(self._bg_tasks)

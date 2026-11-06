@@ -361,6 +361,8 @@ def create_core(
     trim_low_importance_fn: Optional[
         Callable[..., Awaitable[int]]
     ] = None,
+    trace_enabled: bool = False,
+    trace_max: int = 200,
 ) -> CoreContext:
     """创建完整 RCMS 核心对象图。
 
@@ -380,6 +382,8 @@ def create_core(
         persona_name: AI 角色的名称（默认 "Bot"）。
         save_shared_context_fn: 可选回调，用于 shared_context 的 upsert。
         trim_low_importance_fn: 可选回调，用于低重要性记忆截断。
+        trace_enabled: 是否记录「三路合成」追踪明细（供 WebUI 观测）。
+        trace_max: 追踪明细保留条数，超出后按 id 从旧到新删除。
 
     Returns:
         CoreContext 包含所有 Use Case 和辅助对象。
@@ -512,6 +516,50 @@ def create_core(
         )
         await asyncio.to_thread(conn.commit)
 
+    # ── 三路合成追踪落库（WebUI 观测用）─────────────────────────
+    async def _save_retrieval_trace(trace: dict) -> None:
+        extra = {
+            "query_text": trace.get("query_text", ""),
+            "diffused_keywords": trace.get("diffused_keywords", []),
+            "header": trace.get("header", ""),
+            "long_term": trace.get("long_term", {}),
+        }
+        row = (
+            str(trace.get("session_id", "")),
+            str(trace.get("user_id", "")),
+            str(trace.get("display_name", "")),
+            str(trace.get("role", "")),
+            str(trace.get("user_input", ""))[:2000],
+            int(trace.get("elapsed_ms", 0) or 0),
+            1 if trace.get("embedding_ok") else 0,
+            int(trace.get("embedding_dim", 0) or 0),
+            json.dumps(trace.get("keywords", []), ensure_ascii=False),
+            json.dumps(trace.get("time_filter"), ensure_ascii=False),
+            json.dumps(trace.get("channels", {}), ensure_ascii=False),
+            json.dumps(trace.get("fusion", {}), ensure_ascii=False),
+            json.dumps(trace.get("final", []), ensure_ascii=False),
+            json.dumps(trace.get("graph_paths", []), ensure_ascii=False),
+            json.dumps(extra, ensure_ascii=False),
+            str(trace.get("injected", "")),
+        )
+
+        def _write() -> None:
+            conn.execute(
+                "INSERT INTO retrieval_trace (session_id, user_id, display_name, "
+                "role, user_input, elapsed_ms, embedding_ok, embedding_dim, "
+                "keywords, time_filter, channels, fusion, final_tags, graph_paths, "
+                "extra, injected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                row,
+            )
+            conn.execute(
+                "DELETE FROM retrieval_trace WHERE id NOT IN ("
+                "  SELECT id FROM retrieval_trace ORDER BY id DESC LIMIT ?)",
+                (max(10, int(trace_max)),),
+            )
+            conn.commit()
+
+        await asyncio.to_thread(_write)
+
     # ── 默认低重要性记忆清理 ──
     if trim_low_importance_fn is None:
         _low_imp_threshold = config.maintenance.cleanup_importance_threshold
@@ -576,6 +624,8 @@ def create_core(
         config=config.retrieval,
         session_query_repo=_session_query_repo,
         template_provider=template_provider,
+        trace_enabled=trace_enabled,
+        trace_sink=_save_retrieval_trace if trace_enabled else None,
     )
 
     # ── 适配器: RetrieveContextUseCase → IRetrievalStrategy ──────
