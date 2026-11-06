@@ -177,6 +177,29 @@ class SQLiteSessionRepository(ISessionRepository):
             raise
         return self._row_to_session(row) if row else None
 
+    async def list_recent(self, limit: int = 20) -> list[Session]:
+        """按最近活跃倒序列出会话。
+
+        只服务启动补蒸：插件重启后没有「当前会话」这个概念，得先把
+        还欠着记忆的候选捞出来，再逐个判断要不要补蒸。
+
+        Args:
+            limit: 最多返回多少条
+
+        Returns:
+            Session 列表，按 last_active 倒序；表为空或查询失败返回空列表
+        """
+        try:
+            rows = self._conn.execute(
+                f"SELECT {_SESSION_COLUMNS} FROM session_state "
+                "ORDER BY last_active DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        except sqlite3.Error as e:
+            logger.error("列出最近会话失败 limit=%s: %s", limit, e)
+            return []
+        return [self._row_to_session(r) for r in rows]
+
     async def save(self, session: Session) -> None:
         """持久化会话状态（覆盖写入）。
 

@@ -249,6 +249,16 @@ class AnalysisSettings(BaseModel):
         le=1440,
         description="每 N 分钟触发蒸馏",
     )
+    catch_up_on_start: bool = Field(
+        default=True,
+        description="启动时补蒸上次关程序前没来得及蒸的会话",
+    )
+    catch_up_max_sessions: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="启动补蒸最多处理几个会话 (避免一次开机连打多个 LLM 请求)",
+    )
     dangling_expire_turns: int = Field(
         default=15,
         ge=3,
@@ -493,6 +503,8 @@ _config_json_mapping: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
     (("analysis", "post_analysis", "custom_model"), ("analysis", "llm", "model")),
     (("analysis", "post_analysis", "max_turns"), ("analysis", "max_turns")),
     (("analysis", "post_analysis", "max_minutes"), ("analysis", "max_minutes")),
+    (("analysis", "post_analysis", "catch_up_on_start"), ("analysis", "catch_up_on_start")),
+    (("analysis", "post_analysis", "catch_up_max_sessions"), ("analysis", "catch_up_max_sessions")),
     (("analysis", "post_analysis", "dangling_expire_turns"), ("analysis", "dangling_expire_turns")),
     (("analysis", "post_analysis", "personality_type"), ("analysis", "personality_type")),
     # output_log → logging

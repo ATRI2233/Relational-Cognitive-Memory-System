@@ -160,6 +160,20 @@
             "min": 5,
             "max": 1440
           },
+          "catch_up_on_start": {
+            "description": "启动时补蒸",
+            "hint": "聊了几轮没到门槛就关掉程序、之后不再回那个会话时，这些对话原本永远变不成记忆。开启后插件启动时会补一次。",
+            "type": "bool",
+            "default": true
+          },
+          "catch_up_max_sessions": {
+            "description": "启动补蒸上限（会话数）",
+            "hint": "一次启动最多补几个会话，避免攒了很多会话时开机连打一串模型请求。",
+            "type": "int",
+            "default": 3,
+            "min": 1,
+            "max": 10
+          },
           "dangling_expire_turns": {
             "description": "悬案过期轮数",
             "hint": "未完成话题超过此轮数无人提起则自动归档",

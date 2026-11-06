@@ -751,3 +751,172 @@ class TestTimeBasedDistillGate:
             ) < 2
         finally:
             conn.close()
+
+
+# ===================================================================
+# 测试：启动补蒸（catch_up）
+# 场景 —— 聊了几轮、没到门槛就关掉程序，之后不再回这个会话。
+# 蒸馏只在「新一轮对话存库」时检查，所以这些对话原本永远不会变成记忆。
+# ===================================================================
+
+
+class TestCatchUp:
+    """校验插件启动时的补蒸逻辑。"""
+
+    NOW = datetime(2026, 6, 15, 12, 0, 0)
+
+    @staticmethod
+    def _valid_response() -> str:
+        return json.dumps({
+            "content": "用户聊到一半就关掉了程序",
+            "keylabel": "半途而废的对话",
+            "summary": "用户聊到一半关掉程序",
+            "analysis": {"mood": "calm", "mood_intensity": 0.4},
+        }, ensure_ascii=False)
+
+    @classmethod
+    def _build(
+        cls,
+        tmp_path: Path,
+        sessions: list[Session],
+        llm: MockLLM | None = None,
+        max_sessions: int = 3,
+        on_start: bool = True,
+    ):
+        clock = MutableClock(cls.NOW)
+        conn = _init_db(str(tmp_path / "catchup.db"))
+        session_repo = SQLiteSessionRepository(conn, clock)
+        memory_repo = SQLiteMemoryRepository(conn, clock)
+        identity_repo = SQLiteIdentityRepository(conn, clock)
+        graph_repo = SQLiteGraphRepository(conn, clock)
+
+        settings = MockAnalysisSettings()
+        settings.max_turns = 30          # 轮次条件不参与，只看时间
+        settings.max_minutes = 60
+        settings.distill_min_turns = 1
+        settings.catch_up_on_start = on_start
+        settings.catch_up_max_sessions = max_sessions
+
+        for session in sessions:
+            _run_async(session_repo.save(session))
+            # chat_history 里要有真实消息，否则快照构建不出来
+            for i in range(1, 9):
+                conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content, turn_num, "
+                    "user_id, sender_name, created_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (session.session_id.value, "user" if i % 2 else "assistant",
+                     f"第 {i} 条", i, session.user_id.value, "小明",
+                     (cls.NOW - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")),
+                )
+        conn.commit()
+
+        async def chat_history_provider(
+            sid: SessionId, last_turn: int, turn_count: int,
+        ) -> list[TurnRecord]:
+            return [
+                TurnRecord(
+                    session_id=sid, role="user" if i % 2 else "assistant",
+                    content=f"第 {i} 条", turn_num=i, user_id="u1", sender_name="小明",
+                )
+                for i in range(1, 9)
+            ]
+
+        uc = DistillUseCase(
+            session_repo=session_repo,
+            memory_repo=memory_repo,
+            identity_repo=identity_repo,
+            graph_repo=graph_repo,
+            llm=llm or MockLLM(response=cls._valid_response()),
+            embedding=MockEmbedding(),
+            clock=clock,
+            event_bus=EventBus(),
+            settings=settings,
+            prompt_builder=DefaultDistillPromptBuilder(),
+            chat_history_provider=chat_history_provider,
+        )
+        return conn, uc, session_repo
+
+    @classmethod
+    def _stale_session(cls, sid: str, minutes_ago: float, turn_count: int = 6) -> Session:
+        """一个「开了很久、还欠着记忆」的会话。"""
+        return Session(
+            session_id=SessionId(sid),
+            user_id=UserId("u1"),
+            turn_count=turn_count,
+            last_active=cls.NOW,
+            first_seen_at=cls.NOW - timedelta(minutes=minutes_ago),
+        )
+
+    def test_abandoned_session_gets_distilled(self, tmp_path: Path) -> None:
+        """关程序前聊了 6 轮、现在早已超过 60 分钟 → 启动时补蒸出记忆。"""
+        conn, uc, repo = self._build(tmp_path, [self._stale_session("s1", 300)])
+        try:
+            results = _run_async(uc.catch_up())
+            assert len(results) == 1, f"应补蒸 1 个会话，实际 {len(results)}"
+            assert results[0].triggered and results[0].memory_id > 0
+            assert results[0].keylabel == "半途而废的对话"
+
+            row = conn.execute("SELECT count(*) FROM cognitive_distill").fetchone()
+            assert row[0] == 1
+
+            # 补完之后欠账清零，再补一次不会重复蒸馏
+            assert _run_async(uc.catch_up()) == []
+            session = _run_async(repo.get(SessionId("s1")))
+            assert session.last_distill_turn == session.turn_count
+        finally:
+            conn.close()
+
+    def test_fresh_session_is_left_alone(self, tmp_path: Path) -> None:
+        """刚聊完 10 分钟的会话不该被补蒸抢跑。"""
+        conn, uc, _repo = self._build(tmp_path, [self._stale_session("s1", 10)])
+        try:
+            assert _run_async(uc.catch_up()) == []
+            assert conn.execute("SELECT count(*) FROM cognitive_distill").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+    def test_session_without_debt_is_skipped(self, tmp_path: Path) -> None:
+        """已经蒸到最新一轮的会话，哪怕很旧也不该再打一次 LLM。"""
+        session = self._stale_session("s1", 5000)
+        session.last_distill_turn = session.turn_count
+        session.last_distill_at = self.NOW - timedelta(minutes=5000)
+        llm = MockLLM(response=self._valid_response())
+        conn, uc, _repo = self._build(tmp_path, [session], llm=llm)
+        try:
+            assert _run_async(uc.catch_up()) == []
+            assert llm.last_prompt == "", "没有欠账就不该调用 LLM"
+        finally:
+            conn.close()
+
+    def test_exclude_current_session(self, tmp_path: Path) -> None:
+        """正在聊的那个会话交给正常链路，补蒸要跳过它。"""
+        conn, uc, _repo = self._build(tmp_path, [self._stale_session("s1", 300)])
+        try:
+            assert _run_async(uc.catch_up(exclude_session_id="s1")) == []
+        finally:
+            conn.close()
+
+    def test_respects_max_sessions(self, tmp_path: Path) -> None:
+        """攒了很多欠账会话时，一次开机只补前 N 个，不倒豆子。"""
+        sessions = [self._stale_session(f"s{i}", 300) for i in range(1, 5)]
+        conn, uc, _repo = self._build(tmp_path, sessions, max_sessions=2)
+        try:
+            results = _run_async(uc.catch_up())
+            assert len(results) == 2, f"上限 2 个，实际补了 {len(results)}"
+            left = conn.execute(
+                "SELECT count(*) FROM session_state WHERE turn_count > last_distill_turn"
+            ).fetchone()[0]
+            assert left == 2, f"应还剩 2 个欠账会话，实际 {left}"
+        finally:
+            conn.close()
+
+    def test_can_be_disabled(self, tmp_path: Path) -> None:
+        """catch_up_on_start=False 时完全不动（给不想开机跑 LLM 的人）。"""
+        conn, uc, _repo = self._build(
+            tmp_path, [self._stale_session("s1", 300)], on_start=False,
+        )
+        try:
+            assert _run_async(uc.catch_up()) == []
+        finally:
+            conn.close()

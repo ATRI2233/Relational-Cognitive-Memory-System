@@ -82,7 +82,7 @@ def _resolve_data_dir(config: dict) -> str:
     "astrbot_plugin_rcms",
     "RCMS",
     "Relational Cognitive Memory System v2",
-    "2.3.1",
+    "2.4.0",
     "https://github.com/ATRI2233/Relational-Cognitive-Memory-System",
 )
 class RcmsPlugin(star.Star):
@@ -105,6 +105,9 @@ class RcmsPlugin(star.Star):
         # 本地观测站（localhost 只读面板）
         self._webui = None
         self._webui_cfg: dict = {}
+        # 启动补蒸：关程序前没来得及蒸的会话，加载后补一次
+        self._catch_up_task: asyncio.Task | None = None
+        self._catch_up_done = False
 
         # 仓库内附带的 config.json 作为默认值，AstrBot 面板配置优先覆盖
         _cfg_path = os.path.join(_self, "config.json")
@@ -119,6 +122,8 @@ class RcmsPlugin(star.Star):
         # 观测站要在插件一加载就能打开，不能等到第一条消息
         self._ensure_schema_ready()
         self._start_webui()
+        # 把上次关程序前没蒸完的会话补上（要等宿主把模型 provider 备好）
+        self._ensure_catch_up(delay=20)
 
     # ── 本地观测站 ──────────────────────────────────────────────────
 
@@ -193,6 +198,59 @@ class RcmsPlugin(star.Star):
                 )
         except Exception as exc:  # noqa: BLE001 - 观测站不能拖垮插件
             logger.warning("RCMS: 观测站启动失败（不影响记忆功能）: %s", exc)
+
+    # ── 启动补蒸 ────────────────────────────────────────────────────
+
+    def _ensure_catch_up(
+        self, delay: float = 0.0, exclude_session_id: str = "",
+    ) -> None:
+        """排一个后台补蒸任务（幂等）。
+
+        蒸馏只在新一轮对话存库（TurnSaved）时检查，所以「聊了几轮、没到
+        门槛就关掉程序、之后再也不回这个会话」的对话，原本永远不会变成
+        记忆。这里在插件加载后补一次。
+
+        两个时序细节：
+          - 加载时拿不到运行中的事件循环就先放弃，改由第一条消息补排；
+          - 加载时给 20 秒延迟，零配置下模型 provider 是运行期惰性解析的，
+            插件刚加载完就去要模型，很可能拿到空。
+        """
+        if not self.enabled or self._catch_up_done:
+            return
+        if self._catch_up_task is not None and not self._catch_up_task.done():
+            return  # 已经排上了，不重复排
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("RCMS: 当前没有事件循环，补蒸推迟到第一条消息")
+            return
+        task = loop.create_task(self._run_catch_up(delay, exclude_session_id))
+        self._catch_up_task = task
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def _run_catch_up(self, delay: float, exclude_session_id: str) -> None:
+        """后台任务：补蒸关程序前没来得及蒸的会话。只跑一次。"""
+        if self._catch_up_done:
+            return
+        self._catch_up_done = True
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            core = self._get_core()
+            results = await core.distill_use_case.catch_up(exclude_session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 补蒸失败不该影响正常对话
+            logger.warning("RCMS: 启动补蒸失败（不影响正常对话蒸馏）: %s", exc)
+            return
+        if results:
+            logger.info(
+                "RCMS 启动补蒸：补出 %d 条记忆 —— %s",
+                len(results), "、".join(r.keylabel for r in results if r.keylabel),
+            )
+        else:
+            logger.debug("RCMS 启动补蒸：没有欠账的会话")
 
     def _get_core(self) -> CoreContext:
         if self._core is None:
@@ -625,6 +683,9 @@ class RcmsPlugin(star.Star):
             await core.chat_use_case.save_turn_only(request, reply=reply)
             logger.info(f"RCMS: [{sid}] saved turn")
             self._write_output_log(sid, uid, user_input, reply)
+            # 加载时没排上补蒸（拿不到事件循环）就用第一条消息补排；
+            # 当前会话排除掉，它走正常的每轮蒸馏链路。
+            self._ensure_catch_up(exclude_session_id=sid)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

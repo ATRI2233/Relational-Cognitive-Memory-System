@@ -218,6 +218,21 @@ class ISessionRepository(Protocol):
         """
         ...
 
+    async def list_recent(self, limit: int = 20) -> list[Session]:
+        """按最近活跃倒序列出会话。
+
+        蒸馏只在「新的一轮对话存库」时检查，所以聊到一半关掉程序、
+        之后不再回这个会话的对话永远不会变成记忆。插件启动时靠这个方法
+        把候选会话捞出来，再逐个判断要不要补蒸。
+
+        Args:
+            limit: 最多返回多少条
+
+        Returns:
+            Session 列表，按 last_active 倒序；表为空时返回空列表
+        """
+        ...
+
     async def save(self, session: Session) -> None:
         """持久化会话状态（覆盖写入）。
 

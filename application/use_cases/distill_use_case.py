@@ -83,7 +83,10 @@ class IAnalysisSettings(Protocol):
     maintenance: IMaintenanceSettings
     permanent_fact_max: int
     transient_fact_max: int
-
+    # 启动补蒸（关程序前没来得及蒸的会话）。用 getattr 兜底读取，
+    # 老配置对象没有这两个字段也不会炸。
+    catch_up_on_start: bool
+    catch_up_max_sessions: int
 
 # ════════════════════════════════════════════════════════════════════
 # DTOs
@@ -573,6 +576,65 @@ class DistillUseCase:
             memory_id=memory_id.value if isinstance(memory_id, MemoryId) else int(memory_id),
             keylabel=keylabel,
         )
+
+    # ────────────────────────────────────────────────────────────
+    # 启动补蒸
+    # ────────────────────────────────────────────────────────────
+
+    async def catch_up(self, exclude_session_id: str = "") -> list[DistillResult]:
+        """补蒸「上次关程序前没来得及蒸」的会话。
+
+        蒸馏原来只在新一轮对话存库（TurnSaved）时检查，于是这里有个洞：
+        一个会话聊了几轮、还没到门槛就把程序关了，如果之后再也不回这个
+        会话（换会话聊、或者直接不聊了），那些对话就永远躺在 chat_history
+        里，一条记忆也产不出来。
+
+        插件启动时调一次这个方法：凡是「还有没蒸过的轮次」且「距锚点
+        （上次蒸馏时间，没蒸过就是会话首条消息）已经超过 max_minutes」的
+        会话，就补蒸一次。时间照样按墙钟算，关程序的那段时间不作废。
+
+        刻意限制处理数量：一次开机最多补 catch_up_max_sessions 个会话，
+        按最近活跃倒序，避免攒了几十个会话时开机就连打一串 LLM 请求。
+
+        Args:
+            exclude_session_id: 跳过这个会话（用户正在聊的那个，正常链路会管）
+
+        Returns:
+            实际产出记忆的 DistillResult 列表
+        """
+        if not getattr(self._settings, "catch_up_on_start", True):
+            return []
+        limit = max(1, int(getattr(self._settings, "catch_up_max_sessions", 3)))
+
+        try:
+            sessions = await self._session_repo.list_recent(limit * 4)
+        except Exception as exc:  # noqa: BLE001 - 补蒸失败不该影响插件
+            logger.warning("补蒸：读取会话列表失败: %s", exc)
+            return []
+
+        done: list[DistillResult] = []
+        for session in sessions:
+            if len(done) >= limit:
+                break
+            sid = session.session_id.value
+            if exclude_session_id and sid == exclude_session_id:
+                continue
+            # 没有欠账（已蒸到最新一轮）就不碰
+            if session.turn_count <= session.last_distill_turn:
+                continue
+            try:
+                result = await self.check_and_run(
+                    session.user_id.value if session.user_id else sid, sid,
+                )
+            except Exception as exc:  # noqa: BLE001 - 单个会话失败不拖累其他
+                logger.warning("补蒸失败 session=%s: %s", sid[:8], exc)
+                continue
+            if result.triggered:
+                logger.info(
+                    "补蒸完成 session=%s keylabel=%s", sid[:8], result.keylabel,
+                )
+                done.append(result)
+        return done
 
     # ────────────────────────────────────────────────────────────
     # 内部方法：条件检查 + 快照构建
