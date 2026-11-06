@@ -20,7 +20,11 @@
         "hint": "system_prompt：追加到人格提示词尾部；prompt_prefix：放在用户消息前；faketool：以工具调用结果注入。",
         "type": "string",
         "default": "system_prompt",
-        "options": ["system_prompt", "prompt_prefix", "faketool"]
+        "options": [
+          "system_prompt",
+          "prompt_prefix",
+          "faketool"
+        ]
       }
     }
   },
@@ -43,7 +47,10 @@
             "hint": "astrbot：从 AstrBot 配置读取；custom：手动输入",
             "type": "string",
             "default": "astrbot",
-            "options": ["astrbot", "custom"]
+            "options": [
+              "astrbot",
+              "custom"
+            ]
           },
           "astrbot_source_id": {
             "description": "AstrBot 提供商 ID",
@@ -81,8 +88,16 @@
             "description": "每通道最低保底条数",
             "hint": "[ch1, ch2, ch3] 各自的最低保障数量",
             "type": "list",
-            "default": [1, 1, 1],
-            "items": {"type": "int", "min": 0, "max": 10}
+            "default": [
+              1,
+              1,
+              1
+            ],
+            "items": {
+              "type": "int",
+              "min": 0,
+              "max": 10
+            }
           },
           "time_decay_halflife": {
             "description": "重要性半衰期（天）",
@@ -111,7 +126,10 @@
             "hint": "astrbot：从 AstrBot 配置读取；custom：手动输入",
             "type": "string",
             "default": "astrbot",
-            "options": ["astrbot", "custom"]
+            "options": [
+              "astrbot",
+              "custom"
+            ]
           },
           "astrbot_source_id": {
             "description": "AstrBot 提供商 ID",
@@ -171,7 +189,7 @@
     "items": {
       "enabled": {
         "description": "启用输出日志",
-        "hint": "每次回复后记录 JSONL 日志，用于分析对话模式。",
+        "hint": "每次回复后记录 JSONL 日志，用于分析对话模式。日志不会写入插件目录。",
         "type": "bool",
         "default": true
       },
@@ -185,7 +203,7 @@
       },
       "path": {
         "description": "日志文件路径",
-        "hint": "相对插件目录或绝对路径。",
+        "hint": "相对路径会写入记忆库目录（storage.data_dir），避免升级插件时被删除；也可填绝对路径。",
         "type": "string",
         "default": "rcms_output.jsonl"
       }
@@ -200,7 +218,11 @@
         "hint": "debug 输出详细 pipeline 日志，info 只输出关键信息。",
         "type": "string",
         "default": "info",
-        "options": ["debug", "info", "warning"]
+        "options": [
+          "debug",
+          "info",
+          "warning"
+        ]
       }
     }
   },

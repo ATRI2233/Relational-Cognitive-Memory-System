@@ -241,7 +241,12 @@ class RcmsPlugin(star.Star):
         try:
             log_path = str(log_cfg.get("path") or "rcms_output.jsonl")
             if not os.path.isabs(log_path):
-                log_path = os.path.join(_self, log_path)
+                # 相对路径一律落到记忆库目录。插件目录在 WebUI 更新/重装时会被整体
+                # 删除重建，写在里面的文件必然丢失；v1 时代写在插件目录的 rcms.log
+                # 还曾长期占用目录句柄，导致卸载直接报 WinError 32。
+                log_dir = _resolve_data_dir(self._config)
+                os.makedirs(log_dir, exist_ok=True)
+                log_path = os.path.join(log_dir, log_path)
             max_bytes = int(log_cfg.get("max_size_mb", 5)) * 1024 * 1024
             entry = json.dumps(
                 {
