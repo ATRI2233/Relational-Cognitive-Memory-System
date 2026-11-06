@@ -44,7 +44,10 @@ from application.analysis_writer import AnalysisWriter
 from application.prompt_builder import PromptBuilder
 
 from application.use_cases.chat_use_case import ChatUseCase
-from application.use_cases.distill_use_case import DistillUseCase
+from application.use_cases.distill_use_case import (
+    DefaultDistillPromptBuilder,
+    DistillUseCase,
+)
 from application.use_cases.retrieve_context_use_case import (
     RetrieveContextUseCase,
 )
@@ -397,7 +400,11 @@ def create_core(
 
     # ── 数据库连接 ──────────────────────────────────────────────────
     try:
-        conn = sqlite3.connect(db_path)
+        # analysis_raw 审计日志的写入走 asyncio.to_thread（见下方
+        # _save_raw_analysis_fn / _mark_raw_parsed_fn），必须允许跨线程使用连接，
+        # 否则每次蒸馏都会抛 "SQLite objects created in a thread can only be used
+        # in that same thread"，整个蒸馏流程中断。
+        conn = sqlite3.connect(db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={config.storage.busy_timeout_ms}")
@@ -538,7 +545,10 @@ def create_core(
         clock=clock,
         event_bus=event_bus,
         settings=config.analysis,
-        prompt_builder=None,  # 使用 DefaultDistillPromptBuilder（内置）
+        # 必须注入已加载的 prompts.json 模板：传 None 会退化成无模板的
+        # DefaultDistillPromptBuilder()，生成的 prompt 里人设、输出 schema、
+        # 规则全为空，LLM 无法产出可解析的 JSON，蒸馏永远失败。
+        prompt_builder=DefaultDistillPromptBuilder(prompts_templates),
         persona_name=persona_name,
         chat_history_provider=_chat_history_provider,
         save_shared_context_fn=save_shared_context_fn,

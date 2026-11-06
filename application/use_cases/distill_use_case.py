@@ -952,16 +952,25 @@ class DistillUseCase:
         Args:
             user_id: 用户标识
         """
+        # keep_rule_summary 定义在 StorageMaintenanceSettings 上，而本 Use Case
+        # 拿到的是 AnalysisSettings，直接访问 self._settings.maintenance 会抛
+        # AttributeError，导致蒸馏写完摘要就中断，9 维分析 / 图谱维护 / 向量
+        # 嵌入全部被跳过。这里按「maintenance → 自身上同名属性 → 默认 10」兜底。
+        keep_limit = getattr(
+            getattr(self._settings, "maintenance", None), "keep_rule_summary", None
+        )
+        if keep_limit is None:
+            keep_limit = getattr(self._settings, "keep_rule_summary", 10)
         low_imp_memories = await self._memory_repo.get_by_user(
             UserId(user_id),
-            limit=self._settings.maintenance.keep_rule_summary,
+            limit=keep_limit,
             min_importance=0.3,
         )
-        if len(low_imp_memories) < self._settings.keep_rule_summary:
+        if len(low_imp_memories) < keep_limit:
             return
         if self._trim_low_importance_fn is not None:
             await self._trim_low_importance_fn(
-                UserId(user_id), self._settings.keep_rule_summary,
+                UserId(user_id), keep_limit,
             )
 
     # ────────────────────────────────────────────────────────────
