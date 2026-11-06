@@ -1,0 +1,5 @@
+# RCMS 运行依赖（AstrBot 插件安装时可自动装）
+jieba>=0.42.1
+pydantic>=2.0
+pydantic-settings>=2.0
+openai>=1.0

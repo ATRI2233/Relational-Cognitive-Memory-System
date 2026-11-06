@@ -9,12 +9,6 @@
         "type": "bool",
         "default": true
       },
-      "persona_separated": {
-        "description": "按人格隔离记忆",
-        "hint": "启用后每个人格使用独立数据库，不同人格的记忆互不干扰。关闭则统一使用一个记忆库。",
-        "type": "bool",
-        "default": true
-      },
       "user_id": {
         "description": "用户标识（备用）",
         "hint": "当无法从事件获取发送者 ID 时使用的备用用户 ID。",
@@ -207,6 +201,18 @@
         "type": "string",
         "default": "info",
         "options": ["debug", "info", "warning"]
+      }
+    }
+  },
+  "storage": {
+    "description": "存储",
+    "type": "object",
+    "items": {
+      "data_dir": {
+        "description": "记忆库目录",
+        "hint": "留空使用 AstrBot 数据区的 plugin_data/astrbot_plugin_rcms。注意：升级插件会删除插件目录，别把 data_dir 设在插件目录内，否则记忆库会丢。",
+        "type": "string",
+        "default": ""
       }
     }
   }

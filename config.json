@@ -1,7 +1,6 @@
 {
   "general": {
     "enabled": true,
-    "persona_separated": true,
     "user_id": "default_user",
     "injection_method": "system_prompt"
   },
@@ -14,8 +13,16 @@
       "custom_base_url": "https://api.openai.com/v1",
       "custom_model": "text-embedding-3-small",
       "total_cap": 5,
-      "channel_min": [1, 1, 1],
-      "channel_weights": [0.5, 1.0, 0.6],
+      "channel_min": [
+        1,
+        1,
+        1
+      ],
+      "channel_weights": [
+        0.5,
+        1.0,
+        0.6
+      ],
       "time_decay_halflife": 15,
       "emotional_resonance_bonus": 0.15
     },
@@ -38,5 +45,8 @@
   },
   "debug": {
     "log_level": "info"
+  },
+  "storage": {
+    "data_dir": ""
   }
 }
