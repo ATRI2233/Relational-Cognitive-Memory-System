@@ -4,13 +4,16 @@
     "resonance": "语义检索",
     "skeleton": "图谱关联"
   },
-  "memories_display_order": ["resonance", "recent", "skeleton"],
+  "memories_display_order": [
+    "resonance",
+    "recent",
+    "skeleton"
+  ],
   "narrative_context": {
     "prefix": "[RCMS 关系上下文,这里面放置了你对他的了解,按需使用]",
     "footer": "→ 以上是你通过长期对话积累的对他的了解，用来更好地理解他的意图。",
     "memories_title": "相关记忆",
     "session_warmup_title": "[上次聊到]",
-    "turn_count_template": "聊了 {count} 轮",
     "profile_title": "他是什么样的",
     "remaining_traits_template": "及其他 {count} 条特质",
     "quirk_prefix": "小细节小习惯",
@@ -21,8 +24,6 @@
     "pref_dislikes": "不喜欢",
     "self_identity": "自我认同",
     "boundaries": "雷区",
-    "context_title": "相关人物与地点",
-    "entity_label_template": "他提过的{type}",
     "graph_chain_title": "【图谱关系链】",
     "warmup_days_today": "距上次对话：今天",
     "warmup_days_yesterday": "距上次对话：昨天",
@@ -94,30 +95,78 @@
       "summary": "50-100 字的简要概述，概括核心内容和情绪基调，用连贯的 1-2 句话",
       "keylabel": "10-20 字的核心主题标签，必须包含 2-4 个具体实体/主题词，不能是 content 的缩写。如「游戏对比与考研拖延自省」。不要叙事连接词（今天、然后、接着）。",
       "analysis": {
-        "participants": ["参与对话的所有昵称（不含 {persona_name} 自己）"],
-        "key_facts": ["按 importance 降序排列的关键事实，保留时间/原因/经过/结果等具体细节，最多5条"],
+        "participants": [
+          "参与对话的所有昵称（不含 {persona_name} 自己）"
+        ],
+        "key_facts": [
+          "按 importance 降序排列的关键事实，保留时间/原因/经过/结果等具体细节，最多5条"
+        ],
         "key_facts_structured": [
-          {"content": "永久特质", "temporal": "permanent", "expires_after_days": null},
-          {"content": "临时事件", "temporal": "transient", "expires_after_days": 14}
+          {
+            "content": "永久特质",
+            "temporal": "permanent",
+            "expires_after_days": null
+          },
+          {
+            "content": "临时事件",
+            "temporal": "transient",
+            "expires_after_days": 14
+          }
         ],
         "mood": "用两个词描述情绪，如「轻松好奇」「焦虑疲惫」",
         "mood_intensity": "0.0~1.0",
         "topic_shift": "true|false",
-        "key_points": ["事件脉络简要概括"],
+        "key_points": [
+          "事件脉络简要概括"
+        ],
         "user_state": "open|reflective|guarded|playful|analytical|distant|intimate",
-        "traits_updates": ["有具体行为证据支撑的参与者特质，每条≤15字，与已知特质去重后只输出新发现的"],
-        "speech_quirks": ["说话做事的小细节小习惯，去重后只输出新发现的"],
-        "preferences": {"likes": ["事物"], "dislikes": ["事物"]},
-        "self_identity": ["用户如何看待自己"],
-        "boundaries": ["用户明确反感、回避、不开心的话题，或观察到的雷区"],
-        "dangling_threads": ["未完成话题"],
+        "traits_updates": [
+          "有具体行为证据支撑的参与者特质，每条≤15字，与已知特质去重后只输出新发现的"
+        ],
+        "speech_quirks": [
+          "说话做事的小细节小习惯，去重后只输出新发现的"
+        ],
+        "preferences": {
+          "likes": [
+            "事物"
+          ],
+          "dislikes": [
+            "事物"
+          ]
+        },
+        "self_identity": [
+          "用户如何看待自己"
+        ],
+        "boundaries": [
+          "用户明确反感、回避、不开心的话题，或观察到的雷区"
+        ],
+        "dangling_threads": [
+          "未完成话题"
+        ],
         "importance": "0.0~1.0",
         "entities": [
-          {"name": "用户A", "canonical_name": "用户A", "type": "person", "relations": [{"target": "跑步", "relation": "喜欢"}]},
-          {"name": "跑步", "canonical_name": "跑步", "type": "activity", "relations": []}
+          {
+            "name": "用户A",
+            "canonical_name": "用户A",
+            "type": "person",
+            "relations": [
+              {
+                "target": "跑步",
+                "relation": "喜欢"
+              }
+            ]
+          },
+          {
+            "name": "跑步",
+            "canonical_name": "跑步",
+            "type": "activity",
+            "relations": []
+          }
         ]
       },
-      "meta": {"truncated": false}
+      "meta": {
+        "truncated": false
+      }
     },
     "output_rules": [
       "1. content 用第一人称（default/cute）或第三人称（professional），不要用第二人称「你」",

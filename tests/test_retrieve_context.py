@@ -566,3 +566,83 @@ class TestRetrieveMemoriesEmptyInput:
         assert len(result) == 0, (
             f"空输入应返回空列表，收到 {len(result)} 条"
         )
+
+
+# ===================================================================
+# 测试：注入上下文里不再有「聊了 N 轮」和「相关人物与地点」
+# -------------------------------------------------------------------
+# 这两块进过一次真实提示词（52 轮的那句 + 按类型罗列的实体清单），
+# 用户要求删掉。删的不只是文案，还有它背后的 _load_entities 查询链，
+# 所以这里锁住：上下文里不许再冒出来，long_term 里也不许再带 entities。
+# ===================================================================
+
+
+class _TurnedSessionRepository:
+    """只回答「这个会话聊了多少轮」的桩件。"""
+
+    def __init__(self, turns: int) -> None:
+        self._turns = turns
+
+    async def get(self, session_id: SessionId) -> Optional[Session]:
+        return Session(
+            session_id=session_id,
+            user_id=UserId("u1"),
+            turn_count=self._turns,
+            dangling_threads={},
+        )
+
+
+class TestInjectedContextSlimmed:
+    """校验被删掉的两段确实不再出现在注入文本里。"""
+
+    def _ctx_with_entities(self) -> str:
+        uc = _build_use_case()
+        # 换一个「已经聊了 52 轮」的会话桩件
+        uc._session_repo = _TurnedSessionRepository(52)
+        long_term = {
+            "identity_traits": ["考研冲刺期焦虑"],
+            "trait_details": [{"text": "考研冲刺期焦虑", "strength": 6, "count": 3}],
+            "preferences": {"likes": ["按月归档"], "dislikes": []},
+            "self_identity": [],
+            "boundaries": [],
+            # 即使上游硬塞实体，也不该被渲染出来
+            "entities": [
+                {"name": "2026-11.md", "type": "file", "relation": "包含", "fact": "x"},
+            ],
+        }
+        return _run_async(
+            uc.build_narrative_context(
+                memories=[("一条召回的记忆", "recent")],
+                long_term=long_term,
+                user_id="u1",
+                session_id="s1",
+            )
+        )
+
+    def test_no_turn_count_line(self) -> None:
+        """「聊了 52 轮」不该再出现。"""
+        ctx = self._ctx_with_entities()
+        assert "聊了" not in ctx
+        assert "52 轮" not in ctx
+
+    def test_no_entity_section(self) -> None:
+        """「相关人物与地点」整块不该再出现。"""
+        ctx = self._ctx_with_entities()
+        assert "相关人物与地点" not in ctx
+        assert "他提过的" not in ctx
+        assert "2026-11.md" not in ctx
+
+    def test_other_sections_still_render(self) -> None:
+        """删的是这两块，别把画像、记忆、页脚一起删了。"""
+        ctx = self._ctx_with_entities()
+        assert "一条召回的记忆" in ctx           # 三通道记忆还在
+        assert "考研冲刺期焦虑" in ctx           # 他是什么样的 还在
+        assert "按月归档" in ctx                 # 结构化画像 还在
+        assert "以上是你通过长期对话积累" in ctx  # 页脚还在
+
+    def test_long_term_drops_entities(self) -> None:
+        """long_term 不再带 entities —— _load_entities 整条查询链已删。"""
+        uc = _build_use_case()
+        lt = _run_async(uc.load_long_term_context("u1"))
+        assert "entities" not in lt
+        assert hasattr(uc, "_load_entities") is False

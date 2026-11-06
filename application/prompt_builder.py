@@ -399,71 +399,6 @@ class PromptBuilder:
             + "\n".join(f"  · {s}" for s in struct_lines)
         )
 
-    def _build_context_section(
-        self, long_term: dict, nc: dict
-    ) -> str:
-        """构建共同语境段落（梗 / 实体）
-
-        Args:
-            long_term: 长期语境字典
-            nc: narrative_context 模板段
-
-        Returns:
-            格式化后的共同语境段落
-        """
-        if not long_term:
-            return ""
-
-        context_title = nc.get("context_title", "相关人物与地点")
-        entity_label_tpl = nc.get(
-            "entity_label_template", "他提过的{type}"
-        )
-
-        ctx_lines: list[str] = []
-
-        entities = long_term.get("entities", [])
-        if entities:
-            grouped_ents: dict[str, list[str]] = {}
-            seen_names: set[str] = set()
-            for e in entities:
-                name = e.get("name", "")
-                if not name or name in seen_names:
-                    continue
-                seen_names.add(name)
-                etype = e.get("type", "auto")
-                if etype not in grouped_ents:
-                    grouped_ents[etype] = []
-                tag = (
-                    f" ({e.get('relation', '')})"
-                    if e.get("relation")
-                    else ""
-                )
-                grouped_ents[etype].append(f"{name}{tag}")
-
-            type_labels = {
-                "person": "人",
-                "place": "地方",
-                "concept": "概念",
-                "activity": "活动",
-                "auto": "相关",
-            }
-            for etype, items in grouped_ents.items():
-                label = type_labels.get(etype, etype)
-                ctx_lines.append(
-                _safe_format(entity_label_tpl, type=label)
-                    + ": "
-                    + "、".join(items[:4])
-                )
-
-        if not ctx_lines:
-            return ""
-
-        return (
-            context_title
-            + ":\n"
-            + "\n".join(f"  · {c}" for c in ctx_lines)
-        )
-
     def _build_dangling_section(
         self,
         dangling: Any,
@@ -565,15 +500,6 @@ class PromptBuilder:
                 + warmup_text
             )
 
-        # ── 轮数 ──
-        if turn_count:
-            parts.append(
-                _safe_format(
-                    nc.get("turn_count_template", "聊了 {count} 轮"),
-                    count=turn_count,
-                )
-            )
-
         # ── 用户画像: traits + quirks ──
         profile = self._build_profile_section(long_term, nc)
         if profile:
@@ -583,11 +509,6 @@ class PromptBuilder:
         struct = self._build_struct_section(long_term, nc)
         if struct:
             parts.append(struct)
-
-        # ── 共同语境 ──
-        ctx = self._build_context_section(long_term, nc)
-        if ctx:
-            parts.append(ctx)
 
         # ── 图谱关系链 ──
         graph_chain_title = nc.get("graph_chain_title", "【图谱关系链】")

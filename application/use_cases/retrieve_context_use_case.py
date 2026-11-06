@@ -486,7 +486,6 @@ class RetrieveContextUseCase:
               - preferences:     {"likes": [...], "dislikes": [...]}
               - self_identity:   [str, ...]           自我认知描述
               - boundaries:      [{"description": str}, ...]  边界/雷区
-              - entities:        [{"name", "type", "relation", "fact"}, ...]  图谱实体
         """
         # ── 身份特质（IIdentityRepository）──
         identity = await self._identity_repo.get(user_id)
@@ -513,17 +512,12 @@ class RetrieveContextUseCase:
             self_identity = []
             boundaries = []
 
-        # ── 图谱实体关系（IGraphRepository）──
-        entities = await self._load_entities(user_id)
-
-
         return {
             "identity_traits": identity_traits,
             "trait_details": trait_details,
             "preferences": preferences,
             "self_identity": self_identity,
             "boundaries": boundaries,
-            "entities": entities,
         }
 
     async def build_narrative_context(
@@ -593,11 +587,6 @@ class RetrieveContextUseCase:
         if warmup:
             warmup_title = tmpl.get("session_warmup_title", "[上次聊到]")
             parts.append(f"{warmup_title}\n{warmup}")
-
-        # ── 轮数 ──
-        if turn_count:
-            turn_template = tmpl.get("turn_count_template", "聊了 {count} 轮")
-            parts.append(turn_template.format(count=turn_count))
 
         # ── 用户画像：traits + quirks ──
         remaining_traits_tpl = tmpl.get(
@@ -672,45 +661,6 @@ class RetrieveContextUseCase:
             parts.append(
                 struct_title + ":\n"
                 + "\n".join(f"  · {s}" for s in struct_lines)
-            )
-
-        # ── 共同语境 ──
-        context_title = tmpl.get("context_title", "相关人物与地点")
-        entity_label_tpl = tmpl.get(
-            "entity_label_template", "他提过的{type}"
-        )
-        ctx_lines: list[str] = []
-
-        entities = long_term.get("entities", [])
-        if entities:
-            grouped_ents: dict[str, list[str]] = {}
-            seen_names: set[str] = set()
-            for e in entities:
-                name = e.get("name", "")
-                if not name or name in seen_names:
-                    continue
-                seen_names.add(name)
-                etype = e.get("type", "auto")
-                if etype not in grouped_ents:
-                    grouped_ents[etype] = []
-                tag = f" ({e.get('relation', '')})" if e.get("relation") else ""
-                grouped_ents[etype].append(f"{name}{tag}")
-            type_labels: dict[str, str] = {
-                "person": "人",
-                "place": "地方",
-                "concept": "概念",
-                "activity": "活动",
-                "auto": "相关",
-            }
-            for etype, items in grouped_ents.items():
-                label = type_labels.get(etype, etype)
-                ctx_lines.append(
-                    entity_label_tpl.format(type=label) + ": " + "、".join(items[:4])
-                )
-        if ctx_lines:
-            parts.append(
-                context_title + ":\n"
-                + "\n".join(f"  · {c}" for c in ctx_lines)
             )
 
         # ── 图谱关系链（已删除，保留【图谱关联】通道即可）──
@@ -928,7 +878,6 @@ class RetrieveContextUseCase:
                 trace["long_term"] = {
                     "identity_traits": lt.get("identity_traits", []),
                     "preferences": lt.get("preferences", {}),
-                    "entities": lt.get("entities", [])[:12],
                 }
                 await self._emit_trace(trace)
 
@@ -1487,56 +1436,3 @@ class RetrieveContextUseCase:
             if edge.to_node_id in wanted and edge.to_node_id != edge.from_node_id:
                 adj.setdefault(edge.to_node_id, []).append(edge)
         return adj
-
-    async def _load_entities(self, user_id: str) -> list[dict]:
-        """加载图谱实体关系。
-
-        对应 core.py _load_long_term_context（行 155-162）中
-        entities 部分的查询逻辑。
-
-        从 IGraphRepository 获取用户节点和边，
-        筛选带 relation 的边，构建实体条目。
-
-        Returns:
-            [{"name": str, "type": str, "relation": str, "fact": str}, ...]
-            按 weight 降序，最多 10 条
-        """
-        all_nodes = await self._graph_repo.get_nodes_by_user(user_id)
-        node_label_map: dict[int, str] = {n.node_id: n.label for n in all_nodes}
-        node_type_map: dict[int, str] = {n.node_id: n.entity_type for n in all_nodes}
-
-        collected: list[dict] = []
-        seen_relations: set[tuple[str, str, str]] = set()
-
-        adjacency = await self._edges_adjacency([n.node_id for n in all_nodes])
-        for node in all_nodes:
-            for edge in adjacency.get(node.node_id, ()):
-                if not edge.relation:
-                    continue
-
-                target_id = (
-                    edge.to_node_id
-                    if edge.from_node_id == node.node_id
-                    else edge.from_node_id
-                )
-                target_label = node_label_map.get(target_id)
-                if target_label is None:
-                    continue
-
-                rel_key = (node.label, edge.relation, target_label)
-                if rel_key in seen_relations:
-                    continue
-                seen_relations.add(rel_key)
-
-                collected.append({
-                    "name": node.label,
-                    "type": node_type_map.get(node.node_id, "auto"),
-                    "relation": edge.relation,
-                    "fact": target_label,
-                })
-                if len(collected) >= 10:
-                    break
-            if len(collected) >= 10:
-                break
-
-        return collected
