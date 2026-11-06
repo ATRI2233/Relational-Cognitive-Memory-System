@@ -6,431 +6,1070 @@
 <title>RCMS 观测站</title>
 <style>
   :root{
-    --bg:#0e1014; --panel:#151922; --panel-2:#1b212c; --line:#252c3a;
-    --txt:#e7ebf3; --dim:#8b94a7; --dim2:#5f6a7d;
-    --blue:#4f9cf9; --amber:#f5a524; --green:#2ecc8f; --red:#f2545b; --violet:#a78bfa;
+    --bg:#0b0d12; --surface:#11151d; --surface2:#161c26; --surface3:#1c2330;
+    --line:#242c3a; --line2:#2e3849;
+    --txt:#e9eef7; --dim:#98a3b6; --dim2:#68748a;
+    --blue:#5b9cf8; --green:#35d39a; --amber:#f2a93b; --red:#f2636b;
+    --violet:#a78bfa; --cyan:#4cd4e0;
+    --r:10px;
   }
   *{box-sizing:border-box}
   html,body{height:100%}
   body{
     margin:0;background:var(--bg);color:var(--txt);
-    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-    display:flex;flex-direction:column;
+    font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex;overflow:hidden;
+    -webkit-font-smoothing:antialiased;
   }
-  code,pre,.mono{font-family:"SF Mono",Consolas,"Cascadia Mono",monospace}
-  button{
-    font:inherit;color:var(--txt);background:var(--panel-2);border:1px solid var(--line);
-    border-radius:8px;padding:6px 12px;cursor:pointer;transition:.15s;
-  }
-  button:hover{background:#232b38;border-color:#33405a}
-  button.primary{background:var(--blue);border-color:var(--blue);color:#08111f;font-weight:600}
-  button.primary:hover{filter:brightness(1.08)}
-  button:disabled{opacity:.45;cursor:not-allowed}
+  code,.mono{font-family:"SF Mono","Cascadia Mono",Consolas,monospace;font-variant-ligatures:none}
+  button{font:inherit;color:var(--txt);background:var(--surface2);border:1px solid var(--line2);
+    border-radius:8px;padding:5px 11px;cursor:pointer;transition:.14s}
+  button:hover{background:var(--surface3);border-color:#3a475c}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#06101f;font-weight:600}
+  input,select{font:inherit;color:var(--txt);background:#0a0d13;border:1px solid var(--line2);
+    border-radius:8px;padding:5px 10px}
+  input:focus,select:focus{outline:none;border-color:var(--blue)}
+  a{color:var(--blue);text-decoration:none}
 
-  header{
-    display:flex;align-items:center;gap:14px;padding:12px 20px;
-    border-bottom:1px solid var(--line);background:linear-gradient(180deg,#141922,#11151d);
-    flex-wrap:wrap;
+  /* ── 侧栏 ─────────────────────────────────────────── */
+  nav{
+    width:216px;flex:0 0 216px;background:var(--surface);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:16px 12px;
   }
-  .brand{font-weight:700;letter-spacing:.4px;font-size:15px}
-  .brand span{color:var(--blue)}
-  .dbpath{color:var(--dim);font-size:12px;max-width:46vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .logo{display:flex;align-items:center;gap:9px;padding:0 6px 4px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px rgba(53,211,154,.14)}
+  .logo b{font-size:15px;letter-spacing:.3px}
+  .logo b i{color:var(--blue);font-style:normal}
+  .ver{font-size:11px;color:var(--dim2);padding:0 6px 14px}
+  .navgroup{font-size:10.5px;letter-spacing:1.2px;color:var(--dim2);text-transform:uppercase;
+    padding:12px 8px 6px}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;
+    color:var(--dim);cursor:pointer;font-size:13.5px;transition:.12s;user-select:none}
+  .nav-item:hover{background:var(--surface2);color:var(--txt)}
+  .nav-item.on{background:#1a2537;color:var(--txt);box-shadow:inset 2px 0 0 var(--blue)}
+  .nav-item .ico{width:16px;text-align:center;font-size:13px;opacity:.9}
+  .nav-item .cnt{margin-left:auto;font-size:11px;color:var(--dim2);font-variant-numeric:tabular-nums}
+  .nav-foot{margin-top:auto;padding:10px 6px 0;border-top:1px solid var(--line);font-size:11px;color:var(--dim2)}
+  .nav-foot .p{font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ── 主区 ─────────────────────────────────────────── */
+  main{flex:1;min-width:0;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:12px;padding:14px 26px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#12161f,#0d1117)}
+  header h1{margin:0;font-size:16px;font-weight:650;letter-spacing:.2px}
+  header .sub{color:var(--dim2);font-size:12px}
   .spacer{flex:1}
-  .tabs{display:flex;gap:6px}
-  .tab{padding:6px 14px;border-radius:8px;border:1px solid transparent;color:var(--dim);cursor:pointer;font-size:13px}
-  .tab.on{background:var(--panel-2);border-color:var(--line);color:var(--txt)}
+  .scroll{flex:1;overflow-y:auto;padding:20px 26px 60px}
+  .wrap{max-width:1120px;margin:0 auto}
 
-  main{flex:1;min-height:0;display:none;overflow:hidden}
-  main.on{display:grid}
-  #view-tables{grid-template-columns:250px 1fr}
-  #view-traces{grid-template-columns:330px 1fr}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+    padding:14px 16px;margin-bottom:14px}
+  .card h2{margin:0 0 3px;font-size:13px;font-weight:650;letter-spacing:.2px;display:flex;
+    align-items:center;gap:8px}
+  .card .hint{color:var(--dim2);font-size:12px;margin-bottom:12px}
 
-  aside{border-right:1px solid var(--line);overflow-y:auto;background:#11151d}
-  .aside-h{padding:10px 14px;font-size:11px;letter-spacing:1px;color:var(--dim2);text-transform:uppercase;border-bottom:1px solid var(--line);position:sticky;top:0;background:#11151d;z-index:2}
-  .item{padding:9px 14px;border-bottom:1px solid #1a1f29;cursor:pointer;transition:.12s}
-  .item:hover{background:#161c26}
-  .item.on{background:#1a2331;border-left:2px solid var(--blue);padding-left:12px}
-  .item .t{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
-  .item .n{font-size:13px;font-weight:600}
-  .item .c{font-size:11px;color:var(--dim2);font-variant-numeric:tabular-nums}
-  .item .d{font-size:11px;color:var(--dim2);margin-top:2px;line-height:1.45}
-  .item .q{font-size:12px;color:var(--dim);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  /* 指标卡 */
+  .metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px}
+  @media (max-width:1080px){.metrics{grid-template-columns:repeat(3,1fr)}}
+  .metric{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px}
+  .metric .k{font-size:11px;color:var(--dim2);letter-spacing:.4px}
+  .metric .v{font-size:23px;font-weight:660;line-height:1.25;font-variant-numeric:tabular-nums}
+  .metric .x{font-size:11px;color:var(--dim2);margin-top:2px}
+  .metric.hi .v{color:var(--blue)}
+  .metric.zero .v{color:var(--dim2)}
 
-  section.content{overflow:auto;padding:16px 20px 40px;min-width:0}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
-  .panel h3{margin:0 0 4px;font-size:13px;letter-spacing:.3px}
-  .panel .sub{color:var(--dim2);font-size:12px;margin-bottom:12px}
+  /* 状态条 */
+  .status{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:var(--r);
+    border:1px solid var(--line);background:var(--surface);margin-bottom:14px;font-size:13px}
+  .status .si{font-size:15px;line-height:1.4}
+  .status.warn{border-color:#4a3a18;background:#1d1710}
+  .status.bad{border-color:#4a2024;background:#1d1214}
+  .status.ok{border-color:#1d4436;background:#0f1d18}
+  .status b{font-weight:650}
+  .status .sec{color:var(--dim);font-size:12px;margin-top:3px;line-height:1.6}
 
-  .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-  input[type=search]{
-    background:#0c0f14;border:1px solid var(--line);border-radius:8px;
-    color:var(--txt);padding:6px 10px;font:inherit;min-width:220px;
-  }
-  input[type=search]:focus{outline:none;border-color:var(--blue)}
+  /* 进度条 */
+  .track{height:6px;border-radius:3px;background:#0a0d13;overflow:hidden;margin:8px 0 4px}
+  .track i{display:block;height:100%;border-radius:3px;background:var(--blue);transition:width .3s}
 
-  .chips{display:flex;gap:6px;flex-wrap:wrap}
-  .chip{font-size:11px;padding:2px 8px;border-radius:999px;background:#1d2431;border:1px solid var(--line);color:var(--dim)}
-  .chip.pk{color:var(--amber);border-color:#3a3222;background:#241f14}
-  .badge{font-size:11px;padding:1px 7px;border-radius:6px;font-weight:600}
-  .b-recent{background:#12314a;color:#6cb6ff}
+  /* 柱状图 */
+  .chart{display:flex;align-items:flex-end;gap:7px;height:120px;padding-top:6px}
+  .col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;
+    gap:4px;height:100%;min-width:0}
+  .bars{display:flex;gap:3px;align-items:flex-end;width:100%;height:94px}
+  .bars i{flex:1;border-radius:2px 2px 0 0;transition:.2s}
+  .bars i.m{background:var(--blue);opacity:.9}
+  .bars i.d{background:var(--violet);opacity:.75}
+  .bars i.z{min-height:1px;background:#242c3a;opacity:1}
+  .col .lbl{font-size:9.5px;color:var(--dim2);white-space:nowrap}
+  .legend{display:flex;gap:14px;font-size:11.5px;color:var(--dim2);margin-top:8px}
+  .legend span{display:flex;align-items:center;gap:5px}
+  .legend i{width:8px;height:8px;border-radius:2px}
+
+  /* 情绪分布 */
+  .moodrow{display:grid;grid-template-columns:96px 1fr 34px;gap:10px;align-items:center;
+    font-size:12.5px;margin-bottom:7px}
+  .moodrow .mn{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .moodrow .mb{height:7px;border-radius:4px;background:#0a0d13;overflow:hidden}
+  .moodrow .mb i{display:block;height:100%;border-radius:4px;background:var(--amber)}
+
+  /* 记忆卡片 */
+  .mcard{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--line2);
+    border-radius:var(--r);padding:13px 15px;margin-bottom:10px;transition:.14s}
+  .mcard:hover{border-color:var(--line2)}
+  .mcard .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;
+    color:var(--dim2);margin-bottom:7px}
+  .mcard .body{font-size:13.5px;color:#dde4f0;line-height:1.72;white-space:pre-wrap;
+    overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .mcard.open .body{-webkit-line-clamp:unset;display:block}
+  .mcard .foot{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:9px}
+  .more{font-size:11.5px;color:var(--blue);cursor:pointer;user-select:none;margin-top:6px;display:inline-block}
+  .tag{font-size:11px;padding:1.5px 7px;border-radius:6px;background:var(--surface3);
+    border:1px solid var(--line2);color:var(--dim)}
+  .tag.mood{background:#241c10;border-color:#4a3a18;color:var(--amber)}
+  .tag.sid{font-family:"SF Mono",Consolas,monospace;cursor:pointer}
+  .tag.sid:hover{color:var(--blue);border-color:#2f4a72}
+  .imppill{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid;font-variant-numeric:tabular-nums}
+  .id-badge{font-family:"SF Mono",Consolas,monospace;color:var(--dim2);font-size:11px}
+
+  /* 空态 */
+  .empty{padding:34px 16px;text-align:center;color:var(--dim2);font-size:13px;line-height:1.9}
+  .empty b{color:var(--dim);font-weight:600}
+
+  /* 对话 */
+  #view-dialogue{display:grid;grid-template-columns:262px 1fr;height:100%;min-height:0}
+  .slist{border-right:1px solid var(--line);overflow-y:auto;background:var(--surface)}
+  .sitem{padding:10px 14px;border-bottom:1px solid #1a2028;cursor:pointer;transition:.12s}
+  .sitem:hover{background:var(--surface2)}
+  .sitem.on{background:#1a2537;box-shadow:inset 2px 0 0 var(--blue)}
+  .sitem .t1{display:flex;justify-content:space-between;gap:8px;font-size:12.5px}
+  .sitem .t1 b{font-weight:600}
+  .sitem .t2{font-size:11px;color:var(--dim2);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap}
+  .msgs{padding:20px 24px 60px;overflow-y:auto}
+  .msg{display:flex;margin-bottom:16px}
+  .msg.user{flex-direction:row-reverse}
+  .bubble{max-width:min(72%,720px);padding:10px 14px;border-radius:12px;background:var(--surface2);
+    border:1px solid var(--line);font-size:13.5px;line-height:1.75;white-space:pre-wrap;
+    overflow-wrap:anywhere;color:#dde4f0}
+  .msg.user .bubble{background:#1b2b45;border-color:#28405f}
+  .msg.assistant .bubble{background:var(--surface2)}
+  .mmeta{font-size:10.5px;color:var(--dim2);margin-bottom:4px;display:flex;gap:7px}
+
+  /* 关系 */
+  .rel-grid{display:grid;grid-template-columns:1fr 1.2fr;gap:14px;align-items:start}
+  @media (max-width:980px){.rel-grid{grid-template-columns:1fr}}
+  .node{display:grid;grid-template-columns:minmax(84px,170px) 76px 1fr 32px;gap:9px;
+    align-items:center;padding:6px 0;border-bottom:1px solid #1a2028;font-size:13px}
+  .node:last-child{border-bottom:none}
+  .node .lb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .node .bar{height:5px;border-radius:3px;background:#0a0d13;overflow:hidden}
+  .node .bar i{display:block;height:100%;background:var(--cyan)}
+  .node .n{text-align:right;font-size:11px;color:var(--dim2);font-variant-numeric:tabular-nums}
+  .edge{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #1a2028;font-size:12.5px}
+  .edge:last-child{border-bottom:none}
+  .edge .pair{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .edge .pair b{color:var(--txt);font-weight:600}
+  .edge .arrow{color:var(--violet);margin:0 4px}
+  .edge .w{font-size:11px;color:var(--dim2);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .netwrap{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+  .netwrap svg{flex:0 0 auto}
+  .netwrap .side{flex:1;min-width:220px;max-width:340px}
+  .net text{font-size:10px;fill:var(--dim);font-family:inherit;
+    paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
+  .net circle{transition:.15s}
+  .net g:hover circle{r:11}
+
+  /* 召回 */
+  .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .chan-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:start}
+  @media (max-width:1180px){.chan-grid{grid-template-columns:1fr}}
+  .chan{background:var(--surface2);border:1px solid var(--line);border-radius:9px;padding:11px 12px;
+    max-height:430px;overflow-y:auto}
+  .chan h4{margin:0 0 2px;font-size:12.5px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .chan .meta{color:var(--dim2);font-size:11px;margin-bottom:9px}
+  .cand{border-top:1px dashed #2a3240;padding:8px 0 6px}
+  .cand:first-of-type{border-top:none;padding-top:2px}
+  .cand .r1{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--dim2);margin-bottom:4px}
+  .cand .txt{font-size:12.5px;color:#d6dceb;white-space:pre-wrap;overflow-wrap:anywhere;
+    display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+  .cand.open .txt{-webkit-line-clamp:unset;display:block}
+  .bar3{height:3px;border-radius:2px;background:#0a0d13;overflow:hidden;margin-bottom:6px}
+  .bar3 i{display:block;height:100%;border-radius:2px}
+  .cand .det{margin-top:5px;display:flex;gap:4px;flex-wrap:wrap}
+  .cand .det span{font-size:10.5px;color:var(--dim2);background:#0d1219;border:1px solid #212a38;
+    border-radius:5px;padding:1px 6px}
+  pre.injected{margin:0;padding:13px 15px;background:#080b10;border:1px solid var(--line);
+    border-radius:8px;font-size:12.5px;line-height:1.8;color:#c9d4e6;white-space:pre-wrap;
+    overflow-wrap:anywhere;max-height:440px;overflow:auto}
+  .badge{font-size:11px;padding:1.5px 8px;border-radius:6px;font-weight:600}
+  .b-recent{background:#122a45;color:#7cc0ff}
   .b-resonance{background:#3a2418;color:var(--amber)}
-  .b-skeleton{background:#14322a;color:var(--green)}
-  .b-floor{background:#1d2431;color:var(--dim)}
+  .b-skeleton{background:#10312a;color:var(--green)}
+  .b-floor{background:#1c2330;color:var(--dim)}
   .b-fill{background:#2a2340;color:var(--violet)}
 
-  table{width:100%;border-collapse:collapse;font-size:12.5px}
-  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #1b2129;vertical-align:top}
-  th{position:sticky;top:0;background:#151a23;color:var(--dim);font-weight:600;font-size:11px;letter-spacing:.5px;text-transform:uppercase;z-index:1}
-  tbody tr:hover{background:#161c26}
-  td{color:#cfd6e4;max-width:520px;overflow-wrap:anywhere}
+  /* 原始表 */
+  .tablebox{overflow:auto;max-height:calc(100vh - 262px)}
+  table{border-collapse:collapse;font-size:12.5px;width:auto;min-width:100%}
+  th,td{text-align:left;padding:7px 11px;border-bottom:1px solid #1a2028;vertical-align:top;
+    white-space:nowrap}
+  th{background:var(--surface2);color:var(--dim);font-weight:600;font-size:11px;letter-spacing:.4px;
+    text-transform:uppercase;position:sticky;top:0;z-index:2}
+  tbody tr:hover{background:#161c26;cursor:pointer}
+  td{color:#cfd6e4;max-width:420px}
+  .tablebox td{white-space:nowrap}
+  .tablebox td.wide{min-width:280px;white-space:pre-wrap;overflow-wrap:anywhere}
+  .tablebox td.tight{max-width:172px}
+  .tablebox td.tight .clip{display:block;max-width:172px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .grid-table td:last-child{min-width:260px;white-space:pre-wrap}
   td .clip{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .pager{display:flex;gap:8px;align-items:center;margin-top:12px;color:var(--dim);font-size:12px}
 
-  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:start}
-  @media (max-width:1200px){.grid3{grid-template-columns:1fr}}
-  .chan{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:12px;max-height:520px;overflow-y:auto}
-  .chan h4{margin:0 0 2px;font-size:12.5px;display:flex;justify-content:space-between;align-items:center}
-  .chan .meta{color:var(--dim2);font-size:11px;margin-bottom:10px}
-  .cand{border-top:1px dashed #2a3240;padding:9px 0 7px}
-  .cand:first-of-type{border-top:none}
-  .cand .row1{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:11px;color:var(--dim);margin-bottom:4px}
-  .bar{height:3px;border-radius:2px;background:#0d1116;overflow:hidden;margin-bottom:6px}
-  .bar i{display:block;height:100%;border-radius:2px}
-  .cand .txt{font-size:12.5px;color:#d6dceb;white-space:pre-wrap;overflow-wrap:anywhere}
-  .cand .det{margin-top:5px;display:flex;gap:5px;flex-wrap:wrap}
-  .cand .det span{font-size:10.5px;color:var(--dim2);background:#11161e;border:1px solid #212836;border-radius:5px;padding:1px 6px}
-  .empty{color:var(--dim2);font-size:12px;padding:16px 0;text-align:center}
+  /* 抽屉 */
+  .drawer-mask{position:fixed;inset:0;background:rgba(4,6,10,.62);display:none;z-index:50}
+  .drawer-mask.on{display:block}
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:min(620px,92vw);background:var(--surface);
+    border-left:1px solid var(--line2);box-shadow:-24px 0 60px rgba(0,0,0,.5);z-index:51;
+    transform:translateX(100%);transition:transform .18s ease;display:flex;flex-direction:column}
+  .drawer.on{transform:none}
+  .drawer .dh{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .drawer .dh b{font-size:13.5px}
+  .drawer .db{overflow-y:auto;padding:16px 18px 40px}
+  .field{margin-bottom:13px}
+  .field .fk{font-size:11px;color:var(--dim2);letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px}
+  .field .fv{font-size:12.5px;color:#d5dcea;white-space:pre-wrap;overflow-wrap:anywhere}
+  .field .fv.null{color:var(--dim2);font-style:italic}
+  .field .fv.num{font-family:"SF Mono",Consolas,monospace;color:var(--cyan)}
 
-  pre.injected{
-    margin:0;padding:12px;background:#0b0e13;border:1px solid var(--line);border-radius:8px;
-    font-size:12px;line-height:1.7;color:#c9d3e4;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;
-  }
-  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12.5px}
-  .kv dt{color:var(--dim2)}
-  .kv dd{margin:0;color:#d3daea;overflow-wrap:anywhere}
-  .note{font-size:12px;color:var(--dim2);line-height:1.7}
   .err{color:var(--red)}
+  .lnk{color:var(--blue);cursor:pointer}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#2a3342;border-radius:6px;border:2px solid var(--bg)}
+  ::-webkit-scrollbar-thumb:hover{background:#3a4658}
+  ::-webkit-scrollbar-track{background:transparent}
 </style>
 </head>
 <body>
-<header>
-  <div class="brand">RCMS <span>观测站</span></div>
-  <div class="dbpath mono" id="dbpath">加载中…</div>
-  <div class="spacer"></div>
-  <div class="tabs">
-    <div class="tab on" data-view="tables">数据表</div>
-    <div class="tab" data-view="traces">三路召回</div>
+
+<nav>
+  <div class="logo"><span class="dot" id="dot"></span><b>RCMS <i>观测站</i></b></div>
+  <div class="ver" id="ver">连接中…</div>
+
+  <div class="navgroup">记忆</div>
+  <div class="nav-item" data-nav="overview"><span class="ico">◎</span>总览</div>
+  <div class="nav-item" data-nav="memories"><span class="ico">◈</span>记忆条目<span class="cnt" id="c-mem">–</span></div>
+  <div class="nav-item" data-nav="dialogue"><span class="ico">◌</span>对话流<span class="cnt" id="c-msg">–</span></div>
+  <div class="nav-item" data-nav="graph"><span class="ico">⌗</span>实体关系<span class="cnt" id="c-ent">–</span></div>
+
+  <div class="navgroup">过程</div>
+  <div class="nav-item" data-nav="traces"><span class="ico">⇄</span>三路召回<span class="cnt" id="c-tr">–</span></div>
+
+  <div class="navgroup">调试</div>
+  <div class="nav-item" data-nav="raw"><span class="ico">▤</span>原始数据表</div>
+
+  <div class="nav-foot">
+    <div class="p mono" id="dbpath" title="">—</div>
+    <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
+      <span id="dbsize">—</span>
+      <span class="spacer" style="flex:1"></span>
+      <button id="refresh" title="重新读取" style="padding:2px 8px;font-size:11px">刷新</button>
+    </div>
   </div>
-  <button id="refresh">刷新</button>
-</header>
+</nav>
 
-<main id="view-tables" class="on">
-  <aside>
-    <div class="aside-h">表 · <span id="table-count">0</span></div>
-    <div id="table-list"></div>
-  </aside>
-  <section class="content">
-    <div class="panel" id="table-head">
-      <h3>选择左边的表</h3>
-      <div class="note">这里展示记忆库里每张表实际存储的内容。</div>
-    </div>
-    <div id="table-body"></div>
-  </section>
+<main>
+  <header>
+    <h1 id="vtitle">总览</h1>
+    <span class="sub" id="vsub"></span>
+    <span class="spacer"></span>
+    <span class="sub" id="vtools"></span>
+  </header>
+  <div class="scroll" id="scroll"><div class="wrap" id="wrap"></div></div>
 </main>
 
-<main id="view-traces">
-  <aside>
-    <div class="aside-h">召回记录 · 最近 <span id="trace-count">0</span> 条</div>
-    <div id="trace-list"></div>
-  </aside>
-  <section class="content">
-    <div class="panel">
-      <h3>三路召回是怎么合成的</h3>
-      <div class="note">
-        每条记录对应一次「构建历史提示词」：从左到右分别是时间锚点、语义共振、图谱骨架三条召回通道，
-        然后把候选按配置的权重融合、去重、截断，最终拼进发给 LLM 的 system prompt。
-        点左侧任意一条查看当次细节。
-      </div>
-    </div>
-    <div id="trace-body"></div>
-  </section>
-</main>
+<div class="drawer-mask" id="mask"></div>
+<div class="drawer" id="drawer">
+  <div class="dh"><b id="dt">详情</b><span class="spacer" style="flex:1"></span>
+    <button id="dclose">关闭</button></div>
+  <div class="db" id="dbody"></div>
+</div>
 
 <script>
-const CH = {
-  recent:    {name:"① 时间锚点", color:"#6cb6ff", desc:"按时间衰减 × 重要性排序"},
-  resonance: {name:"② 语义共振", color:"#f5a524", desc:"向量余弦 + 关键词命中"},
-  skeleton:  {name:"③ 图谱骨架", color:"#2ecc8f", desc:"实体关系边扩散"},
-};
-const state = {tables:[], table:null, limit:50, offset:0, q:"", traces:[], trace:null};
+/* ══════════════════════════════════════════════════════════
+   基础设施
+   ══════════════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const bytes = n => !n ? "0 B" : n > 1048576 ? (n/1048576).toFixed(1)+" MB"
+  : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B";
+const clamp = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n)+"…" : s; };
+// 侧栏很窄，路径从尾部保留（一眼看到文件名比看到盘符有用）
+const shortenPath = p => { p = String(p || ""); return p.length > 26 ? "…" + p.slice(-25) : p; };
+
+function fmtTime(s){
+  if(!s) return "—";
+  const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if(!m) return String(s);
+  const now = new Date();
+  const sameYear = Number(m[1]) === now.getFullYear();
+  const mmdd = `${m[2]}-${m[3]}`;
+  return (sameYear ? mmdd : `${m[1]}-${mmdd}`) + ` ${m[4]}:${m[5]}`;
+}
+function relTime(s){
+  if(!s) return "—";
+  const t = Date.parse(String(s).replace(" ", "T") + (String(s).includes("T") ? "" : "Z"));
+  if(isNaN(t)) return fmtTime(s);
+  const d = (Date.now() - t) / 1000;
+  if(d < 60) return "刚刚";
+  if(d < 3600) return Math.floor(d/60) + " 分钟前";
+  if(d < 86400) return Math.floor(d/3600) + " 小时前";
+  if(d < 86400*30) return Math.floor(d/86400) + " 天前";
+  return fmtTime(s);
+}
+const MOOD_COLOR = {焦虑:"#f2636b", 开心:"#35d39a", 平静:"#5b9cf8", 悲伤:"#7c8cf8",
+  愤怒:"#f2636b", 温柔:"#f2a93b", 疲惫:"#8d93a8", 期待:"#4cd4e0"};
+// 图谱节点按类型上色，hover 时靠 title 补充细节
+const TYPE_COLOR = {keyword:"#4cd4e0", entity:"#f2a93b", event:"#5b9cf8",
+  emotion:"#f2636b", concept:"#a78bfa", person:"#35d39a", place:"#7c8cf8"};
+const typeColor = t => TYPE_COLOR[t] || "#8d93a8";
 
 async function api(path){
   const r = await fetch(path, {headers:{"Accept":"application/json"}});
-  const j = await r.json().catch(()=>({ok:false,error:"响应不是 JSON"}));
-  if(!j.ok) throw new Error(j.error || "请求失败");
+  const j = await r.json().catch(() => ({ok:false, error:"响应不是 JSON"}));
+  if(!j.ok) throw new Error(j.error || ("HTTP " + r.status));
   return j.data;
 }
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const bytes = n => n > 1048576 ? (n/1048576).toFixed(1)+" MB" : n > 1024 ? (n/1024).toFixed(1)+" KB" : n+" B";
 
-/* ── 视图切换（用 hash 记录位置，刷新/分享都能回到原处）─────── */
+/* ══════════════════════════════════════════════════════════
+   路由
+   ══════════════════════════════════════════════════════════ */
+const ROUTES = ["overview","memories","dialogue","graph","traces","raw"];
+const TITLES = {overview:"总览", memories:"记忆条目", dialogue:"对话流",
+  graph:"实体关系", traces:"三路召回", raw:"原始数据表"};
+
 function parseHash(){
-  const raw = decodeURIComponent((location.hash || "").replace(/^#\/?/, ""));
-  const seg = raw.split("/").filter(Boolean);
-  return {view: seg[0] === "traces" ? "traces" : "tables", arg: seg[1] || ""};
+  const seg = decodeURIComponent((location.hash||"").replace(/^#\/?/,"")).split("/").filter(Boolean);
+  const view = ROUTES.includes(seg[0]) ? seg[0] : "overview";
+  return {view, arg: seg.slice(1).join("/")};
 }
-function setHash(view, arg){
+function go(view, arg){
   const h = "#/" + view + (arg ? "/" + encodeURIComponent(arg) : "");
-  if(location.hash !== h) history.replaceState(null, "", h);
+  if(location.hash === h) render(); else location.hash = h;
 }
 
-async function applyFromHash(){
-  const {view, arg} = parseHash();
-  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x.dataset.view === view));
-  document.getElementById("view-tables").classList.toggle("on", view === "tables");
-  document.getElementById("view-traces").classList.toggle("on", view === "traces");
+document.querySelectorAll(".nav-item").forEach(el =>
+  el.onclick = () => go(el.dataset.nav));
+
+let STATS = null;
+function setActive(view){
+  document.querySelectorAll(".nav-item").forEach(el =>
+    el.classList.toggle("on", el.dataset.nav === view));
+  $("vtitle").textContent = TITLES[view] || view;
+}
+
+async function boot(){
   try{
-    // 顶部的库路径/体积在两张视图里都要显示
-    if(!state.tables.length) await loadOverview();
-    if(view === "tables"){
-      const target = arg || (state.tables[0] && state.tables[0].name);
-      if(target) await openTable(target);
-    }else{
-      await loadTraces(arg ? Number(arg) : undefined);
-    }
+    STATS = await api("/api/stats");
+    const c = STATS.counts || {};
+    $("c-mem").textContent = c.memories ?? "–";
+    $("c-msg").textContent = c.messages ?? "–";
+    $("c-ent").textContent = c.entities ?? "–";
+    $("c-tr").textContent  = c.traces ?? "–";
+    $("dbpath").textContent = shortenPath(STATS.db_path || "—");
+    $("dbpath").title = STATS.db_path || "";
+    $("dbsize").textContent = STATS.available ? bytes(STATS.size_bytes) : "库未创建";
+    $("dot").style.background = STATS.available ? "var(--green)" : "var(--amber)";
+    $("ver").textContent = STATS.available ? "只读 · 本机" : "只读 · 等待首次对话建库";
   }catch(e){
-    const box = view === "tables" ? document.getElementById("table-body") : document.getElementById("trace-body");
-    box.innerHTML = `<div class="panel"><div class="err">${esc(e.message)}</div></div>`;
+    $("ver").textContent = "连接失败";
+    $("dot").style.background = "var(--red)";
   }
 }
 
-document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
-  if(location.hash === "#/" + t.dataset.view) applyFromHash();
-  else location.hash = "#/" + t.dataset.view;
-});
-window.addEventListener("hashchange", applyFromHash);
+/* ══════════════════════════════════════════════════════════
+   总览
+   ══════════════════════════════════════════════════════════ */
+function renderOverview(){
+  const c = STATS.counts || {}, h = STATS.hints || {}, d = STATS.distill || {};
+  const maxT = h.distill_max_turns || d.max_turns;
+  const gap = d.gap || 0;
+  const pct = maxT ? Math.min(100, Math.round(100*gap/maxT)) : 0;
 
-/* ── 概览 / 表列表 ──────────────────────────────────── */
-async function loadOverview(){
-  const d = await api("/api/overview");
-  document.getElementById("dbpath").textContent = d.db_path + (d.available ? " · " + bytes(d.size_bytes) : " · 尚未创建");
-  state.tables = d.tables || [];
-  document.getElementById("table-count").textContent = state.tables.length;
-  const list = document.getElementById("table-list");
-  list.innerHTML = state.tables.map(t => `
-    <div class="item" data-table="${esc(t.name)}">
-      <div class="t"><span class="n">${esc(t.title || t.name)}</span><span class="c">${t.rows}</span></div>
-      <div class="d mono">${esc(t.name)}</div>
-    </div>`).join("") || `<div class="empty">还没有任何表</div>`;
-  list.querySelectorAll(".item").forEach(el => el.onclick = () => openTable(el.dataset.table));
-}
-
-async function openTable(name){
-  state.table = name; state.offset = 0; state.q = "";
-  setHash("tables", name);
-  document.querySelectorAll("#table-list .item").forEach(el =>
-    el.classList.toggle("on", el.dataset.table === name));
-  await renderTable();
-}
-
-async function renderTable(){
-  const meta = state.tables.find(t => t.name === state.table);
-  const head = document.getElementById("table-head");
-  head.innerHTML = `
-    <h3>${esc(meta?.title || state.table)} <span class="chip mono">${esc(state.table)}</span></h3>
-    <div class="sub">${esc(meta?.desc || "")}</div>
-    <div class="chips">${(meta?.columns||[]).map(c=>`<span class="chip">${esc(c)}</span>`).join("")}</div>`;
-
-  const body = document.getElementById("table-body");
-  body.innerHTML = `<div class="panel"><div class="empty">加载中…</div></div>`;
-  try{
-    const qs = new URLSearchParams({limit:state.limit, offset:state.offset, q:state.q});
-    const d = await api(`/api/tables/${encodeURIComponent(state.table)}?${qs}`);
-    const cols = d.columns.filter(c => c.name !== "extra");
-    body.innerHTML = `
-      <div class="panel">
-        <div class="toolbar">
-          <input type="search" id="qbox" placeholder="在文本列里搜索…" value="${esc(state.q)}">
-          <button id="qbtn">搜索</button>
-          <span class="note">共 ${d.total} 行 · 第 ${Math.floor(d.offset/d.limit)+1} / ${Math.max(1,Math.ceil(d.total/d.limit))} 页</span>
-        </div>
-        ${d.rows.length ? `<div style="overflow:auto"><table>
-          <thead><tr>${cols.map(c=>`<th>${esc(c.name)}<div style="font-weight:400;color:#4d5768;text-transform:none">${esc(c.type||"")}</div></th>`).join("")}</tr></thead>
-          <tbody>${d.rows.map(r=>`<tr>${cols.map(c=>{
-            const v = r[c.name];
-            const s = v === null || v === undefined ? `<span style="color:#4d5768">NULL</span>` : esc(v);
-            return `<td><div class="clip">${s}</div></td>`;
-          }).join("")}</tr>`).join("")}</tbody>
-        </table></div>` : `<div class="empty">没有数据</div>`}
-        <div class="pager">
-          <button id="prev" ${d.offset<=0?"disabled":""}>上一页</button>
-          <button id="next" ${d.offset+d.limit>=d.total?"disabled":""}>下一页</button>
-        </div>
-      </div>`;
-    const qbox = document.getElementById("qbox");
-    const doSearch = () => { state.q = qbox.value.trim(); state.offset = 0; renderTable(); };
-    document.getElementById("qbtn").onclick = doSearch;
-    qbox.onkeydown = e => { if(e.key === "Enter") doSearch(); };
-    document.getElementById("prev").onclick = () => { state.offset = Math.max(0, state.offset-state.limit); renderTable(); };
-    document.getElementById("next").onclick = () => { state.offset += state.limit; renderTable(); };
-  }catch(e){
-    body.innerHTML = `<div class="panel"><div class="err">${esc(e.message)}</div></div>`;
+  let status;
+  if(!STATS.available){
+    status = `<div class="status warn"><span class="si">◔</span><div>
+      <b>记忆库还没创建</b>
+      <div class="sec">插件要等到第一轮对话才会建库。先在 AstrBot 里和机器人聊一句，然后点左下角刷新。</div></div></div>`;
+  }else if((c.memories||0) > 0){
+    const lastD = STATS.last.distill_at
+      ? `最近一次蒸馏：${esc(relTime(STATS.last.distill_at))}` : "还没有记录过蒸馏时间";
+    status = `<div class="status ok"><span class="si">✓</span><div>
+      <b>记忆链路已跑通</b>
+      <div class="sec">${lastD} · 最近一条记忆：${esc(relTime(STATS.last.memory_at))}</div></div></div>`;
+  }else{
+    status = `<div class="status warn"><span class="si">!</span><div>
+      <b>还没有任何记忆条目</b>
+      <div class="sec">${
+        maxT
+          ? `蒸馏门槛是 ${maxT} 轮或 ${d.max_minutes||"?"} 分钟；当前会话已攒 <b>${gap}</b> 轮，还差 <b>${Math.max(0, maxT-gap)}</b> 轮。在此之前召回只会命中已有记忆，库是空的。`
+          : "蒸馏门槛未传入，去「原始数据表 → session_state」看 last_distill_turn。"
+      }${(c.messages||0) ? "" : " 另外目前连对话消息都没有，先聊几句。"}</div></div></div>`;
   }
+
+  const metrics = [
+    ["记忆条目", c.memories, "蒸馏产物", c.memories ? "hi" : "zero"],
+    ["对话消息", c.messages, `${STATS.sessions||0} 个会话`, "hi"],
+    ["实体节点", c.entities, `${c.edges||0} 条关系边`, c.entities ? "" : "zero"],
+    ["召回记录", c.traces, "每次拼提示词留一条", ""],
+    ["身份画像", c.identities, "特质 / 边界", ""],
+    ["库体积", bytes(STATS.size_bytes), STATS.available ? "SQLite" : "未创建", ""],
+  ].map(([k,v,x,cls]) => `
+    <div class="metric ${cls}"><div class="k">${k}</div>
+      <div class="v">${esc(v ?? 0)}</div><div class="x">${esc(x)}</div></div>`).join("");
+
+  const daily = STATS.daily || [];
+  const maxN = Math.max(1, ...daily.map(x => Math.max(x.messages, x.memories)));
+  const bar = (v, cls) => v
+    ? `<i class="${cls}" style="height:${Math.max(4, Math.round(88*v/maxN))}px"></i>`
+    : `<i class="z" style="height:1px"></i>`;
+  const cols = daily.map((x, i) => `
+    <div class="col" title="${x.d} · 消息 ${x.messages} · 记忆 ${x.memories}">
+      <div class="bars">${bar(x.messages, "m")}${bar(x.memories, "d")}</div>
+      <span class="lbl">${x.d.slice(5)}</span>
+    </div>`).join("");
+
+  const moodMax = Math.max(1, ...(STATS.moods||[]).map(m => m.n));
+  const moodRows = (STATS.moods||[]).length ? STATS.moods.map(m => `
+    <div class="moodrow"><span class="mn">${esc(m.mood)}</span>
+      <span class="mb"><i style="width:${Math.round(100*m.n/moodMax)}%;background:${MOOD_COLOR[m.mood]||"var(--violet)"}"></i></span>
+      <span class="n">${m.n}</span></div>`).join("")
+    : `<div class="empty" style="padding:16px">还没有带情绪的记忆</div>`;
+
+  $("wrap").innerHTML = `
+    ${status}
+    <div class="metrics">${metrics}</div>
+
+    <div class="card">
+      <h2>蒸馏进度</h2>
+      <div class="hint">记忆不是每轮都写，攒够 ${maxT || "?"} 轮（或 ${d.max_minutes || "?"} 分钟）才蒸馏一次。</div>
+      <div class="track"><i style="width:${pct}%"></i></div>
+      <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim2)">
+        <span>已攒 ${gap} / ${maxT || "?"} 轮</span>
+        <span>${d.ever_distilled ? "上次蒸馏 " + esc(relTime(STATS.last.distill_at)) : "从未蒸馏过"}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>近 14 天活动</h2>
+      <div class="hint">蓝柱是当天对话消息数，紫柱是当天新增记忆数。</div>
+      <div class="chart">${cols}</div>
+      <div class="legend">
+        <span><i style="background:var(--blue)"></i>对话消息</span>
+        <span><i style="background:var(--violet)"></i>新增记忆</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>记忆里的情绪分布</h2>
+      <div class="hint">来自 cognitive_distill.mood，能看出这段时间谈得最多的情绪基调。</div>
+      ${moodRows}
+    </div>`;
 }
 
-/* ── 三路召回 ───────────────────────────────────────── */
-async function loadTraces(pick){
-  const list = document.getElementById("trace-list");
-  list.innerHTML = `<div class="empty">加载中…</div>`;
+/* ══════════════════════════════════════════════════════════
+   记忆条目
+   ══════════════════════════════════════════════════════════ */
+const MS = {q:"", order:"recent", mood:"", days:0, limit:20, offset:0, total:0};
+
+function renderMemories(){
+  const h = STATS.hints || {}, d = STATS.distill || {};
+  const moodOpts = (STATS.moods||[]).map(m =>
+    `<option value="${esc(m.mood)}"${MS.mood===m.mood?" selected":""}>${esc(m.mood)} (${m.n})</option>`).join("");
+
+  $("wrap").innerHTML = `
+    <div class="card" style="padding:11px 14px">
+      <div class="chips">
+        <input type="search" id="mq" placeholder="搜内容 / 标签 / 情绪…" value="${esc(MS.q)}"
+          style="min-width:260px;flex:1">
+        <select id="morder">
+          <option value="recent"${MS.order==="recent"?" selected":""}>按时间（新→旧）</option>
+          <option value="importance"${MS.order==="importance"?" selected":""}>按重要性</option>
+          <option value="oldest"${MS.order==="oldest"?" selected":""}>按时间（旧→新）</option>
+        </select>
+        <select id="mdays">
+          <option value="0"${MS.days===0?" selected":""}>全部时间</option>
+          <option value="7"${MS.days===7?" selected":""}>近 7 天</option>
+          <option value="30"${MS.days===30?" selected":""}>近 30 天</option>
+        </select>
+        ${moodOpts ? `<select id="mmood"><option value="">全部情绪</option>${moodOpts}</select>` : ""}
+        <span class="spacer" style="flex:1"></span>
+        <span class="hint" style="margin:0" id="mtotal"></span>
+      </div>
+    </div>
+    <div id="mlist"></div>`;
+
+  const search = () => { MS.q = $("mq").value.trim(); MS.offset = 0; loadMemories(); };
+  $("mq").onkeydown = e => { if(e.key === "Enter") search(); };
+  $("morder").onchange = () => { MS.order = $("morder").value; MS.offset = 0; loadMemories(); };
+  $("mdays").onchange = () => { MS.days = Number($("mdays").value); MS.offset = 0; loadMemories(); };
+  if($("mmood")) $("mmood").onchange = () => { MS.mood = $("mmood").value; MS.offset = 0; loadMemories(); };
+  loadMemories();
+}
+
+async function loadMemories(){
+  const box = $("mlist");
+  box.innerHTML = `<div class="empty">读取中…</div>`;
   try{
-    const d = await api("/api/traces?limit=100");
-    state.traces = d;
-    document.getElementById("trace-count").textContent = d.length;
-    if(!d.length){
-      list.innerHTML = `<div class="empty">还没有召回记录<br><span style="color:#4d5768">先和机器人聊几句</span></div>`;
+    const qs = new URLSearchParams({limit:MS.limit, offset:MS.offset, order:MS.order,
+      q:MS.q, mood:MS.mood, days:MS.days});
+    const d = await api("/api/memories?" + qs);
+    MS.total = d.total;
+    $("mtotal").textContent = `共 ${d.total} 条`;
+    if(!d.items.length){
+      const h = STATS.hints || {}, ds = STATS.distill || {};
+      box.innerHTML = `<div class="card"><div class="empty">
+        <b>这里还是空的</b><br>
+        ${MS.q || MS.mood || MS.days ? "当前筛选条件下没有条目，换个条件试试。"
+          : `记忆要攒够 ${h.distill_max_turns || "?"} 轮对话才会蒸馏出来（当前 ${ds.gap||0} 轮）。`}
+      </div></div>`;
       return;
     }
-    list.innerHTML = d.map(t => `
-      <div class="item" data-id="${t.id}">
-        <div class="t"><span class="n">${esc(t.user_input || "").slice(0,26) || "(空输入)"}</span>
-          <span class="c">#${t.id}</span></div>
-        <div class="q">${esc(t.display_name || t.user_id || "")} · 命中 ${t.hit_count} 条 · ${t.elapsed_ms}ms</div>
-        <div class="d mono">${esc(t.created_at || "")}</div>
-      </div>`).join("");
-    list.querySelectorAll(".item").forEach(el => el.onclick = () => openTrace(Number(el.dataset.id)));
-    if(pick) await openTrace(pick);
-    else if(!state.trace) await openTrace(d[0].id);
+    box.innerHTML = d.items.map(m => {
+      const long = (m.content||"").length > 190;
+      const stripe = MOOD_COLOR[m.mood] || "var(--line2)";
+      const mood = m.mood ? `<span class="tag mood">${esc(m.mood)}${
+        m.mood_intensity ? " " + Number(m.mood_intensity).toFixed(1) : ""}</span>` : "";
+      const ents = (m.entities||[]).slice(0, 8).map(e =>
+        `<span class="tag">${esc(typeof e === "string" ? e : (e.label || e.name || JSON.stringify(e)))}</span>`).join("");
+      const imp = Math.round(100 * (m.importance || 0));
+      const ic = imp >= 75 ? "var(--green)" : imp >= 45 ? "var(--amber)" : "var(--dim)";
+      return `<div class="mcard" data-id="${m.id}" style="border-left-color:${stripe}">
+        <div class="top">
+          <span class="id-badge">#${m.id}</span>
+          ${mood}
+          ${m.keylabel ? `<span class="tag">${esc(m.keylabel)}</span>` : ""}
+          <span class="imppill" style="color:${ic};border-color:${ic}" title="重要性">重要性 ${imp}%</span>
+          <span class="spacer" style="flex:1"></span>
+          <span>${esc(fmtTime(m.created_at))}</span>
+        </div>
+        <div class="body">${esc(m.content)}</div>
+        ${long ? `<span class="more">展开全文</span>` : ""}
+        <div class="foot">
+          ${ents}
+          ${m.session_id ? `<span class="tag sid" data-sid="${esc(m.session_id)}">会话 ${esc(clamp(m.session_id, 10))}</span>` : ""}
+          ${m.has_vector ? `<span class="tag">向量 ${m.embedding_dim || "?"} 维</span>`
+            : `<span class="tag" style="color:var(--amber);border-color:#4a3a18">无向量</span>`}
+        </div>
+      </div>`;
+    }).join("") + pager(MS, loadMemories);
+    bindPager(MS, loadMemories);
+
+    box.querySelectorAll(".more").forEach(el => el.onclick = () => {
+      el.parentElement.classList.toggle("open");
+      el.textContent = el.parentElement.classList.contains("open") ? "收起" : "展开全文";
+    });
+    box.querySelectorAll(".sid").forEach(el => el.onclick = e => {
+      e.stopPropagation(); go("dialogue", el.dataset.sid);
+    });
   }catch(e){
-    list.innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
+    box.innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div></div>`;
   }
 }
 
-async function openTrace(id){
-  setHash("traces", id);
-  document.querySelectorAll("#trace-list .item").forEach(el =>
-    el.classList.toggle("on", Number(el.dataset.id) === id));
-  const body = document.getElementById("trace-body");
-  body.innerHTML = `<div class="panel"><div class="empty">加载中…</div></div>`;
+function pager(st, fn){
+  const pages = Math.max(1, Math.ceil(st.total / st.limit));
+  const cur = Math.floor(st.offset / st.limit) + 1;
+  return `<div class="pager">
+    <button id="pg-prev" ${st.offset<=0?"disabled":""}>上一页</button>
+    <span>第 ${cur} / ${pages} 页 · 共 ${st.total} 条</span>
+    <button id="pg-next" ${st.offset+st.limit>=st.total?"disabled":""}>下一页</button>
+  </div>`;
+}
+function bindPager(st, fn){
+  const p = $("pg-prev"), n = $("pg-next");
+  if(p) p.onclick = () => { st.offset = Math.max(0, st.offset - st.limit); fn(); };
+  if(n) n.onclick = () => { st.offset += st.limit; fn(); };
+}
+
+/* ══════════════════════════════════════════════════════════
+   对话流
+   ══════════════════════════════════════════════════════════ */
+async function renderDialogue(sid){
+  $("scroll").style.padding = "0";
+  $("wrap").style.maxWidth = "none";
+  $("wrap").innerHTML = `<div id="view-dialogue">
+    <div class="slist" id="slist"><div class="empty">读取中…</div></div>
+    <div class="msgs" id="msgs"></div></div>`;
   try{
-    const t = await api(`/api/traces/${id}`);
-    state.trace = t;
-    body.innerHTML = renderTrace(t);
+    const list = await api("/api/sessions");
+    const box = $("slist");
+    if(!list.length){
+      box.innerHTML = `<div class="empty" style="padding:26px 16px">还没有对话记录</div>`;
+      $("msgs").innerHTML = `<div class="empty">和机器人聊几句，这里就会出现完整对话流。</div>`;
+      return;
+    }
+    const active = sid || list[0].session_id;
+    const sidName = s => {
+      if(s.display_name && !/^[0-9a-f]{16,}$/i.test(s.display_name)) return s.display_name;
+      // session_id 常常是 platform:type:id 形式的 umo，取最后一段才有辨识度
+      const segs = String(s.session_id || "").split(":").filter(Boolean);
+      return "会话 " + (segs.pop() || "?").slice(0, 8);
+    };
+    box.innerHTML = list.map(s => `
+      <div class="sitem ${s.session_id===active?"on":""}" data-sid="${esc(s.session_id)}">
+        <div class="t1"><b>${esc(clamp(sidName(s), 16))}</b>
+          <span style="color:var(--dim2);font-size:11px">${s.messages} 条</span></div>
+        <div class="t2"><span class="mono">${esc(clamp(s.session_id, 8))}</span>
+          <span>${esc(relTime(s.last_at))}</span>
+          <span>${s.last_distill_at ? "已蒸馏" : "未蒸馏"}</span></div>
+      </div>`).join("");
+    box.querySelectorAll(".sitem").forEach(el =>
+      el.onclick = () => go("dialogue", el.dataset.sid));
+    await loadDialogue(active);
   }catch(e){
-    body.innerHTML = `<div class="panel"><div class="err">${esc(e.message)}</div></div>`;
+    $("slist").innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadDialogue(sid){
+  const box = $("msgs");
+  box.innerHTML = `<div class="empty">读取中…</div>`;
+  try{
+    const d = await api(`/api/dialogue?session=${encodeURIComponent(sid)}&limit=300`);
+    if(!d.items.length){ box.innerHTML = `<div class="empty">这个会话没有消息</div>`; return; }
+    box.innerHTML = `<div class="hint" style="color:var(--dim2);font-size:12px;margin-bottom:18px">
+        会话 <span class="mono" title="${esc(d.session_id)}">${esc(clamp(d.session_id, 14))}</span> · 共 ${d.total} 条消息</div>` +
+      d.items.map(m => {
+        const user = m.role === "user";
+        // sender_name 在没有昵称时会回落成 user_id/会话哈希，展示这串没有意义
+        const sender = m.sender_name && m.sender_name !== m.user_id
+          && !/^[0-9a-f]{16,}$/i.test(m.sender_name) ? m.sender_name : "";
+        const meta = [relTime(m.created_at), sender, m.mood].filter(Boolean).map(esc).join(" · ");
+        return `<div class="msg ${user?"user":"assistant"}">
+          <div style="max-width:100%">
+            <div class="mmeta">${user ? "用户" : "助手"} · ${meta}</div>
+            <div class="bubble">${esc(m.content)}</div>
+          </div></div>`;
+      }).join("");
+  }catch(e){
+    box.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   实体关系
+   ══════════════════════════════════════════════════════════ */
+async function renderGraph(){
+  $("wrap").innerHTML = `<div class="empty">读取中…</div>`;
+  try{
+    const g = await api("/api/graph?limit=300");
+    if(!g.nodes.length){
+      $("wrap").innerHTML = `<div class="card"><div class="empty">
+        <b>图谱还是空的</b><br>
+        实体和关系是在蒸馏时从记忆里抽出来的，先有记忆条目，这里才会有东西。
+      </div></div>`;
+      return;
+    }
+    const maxF = Math.max(...g.nodes.map(n => n.freq || 0), 1);
+    const nodes = g.nodes.map(n => `
+      <div class="node">
+        <span class="lb" title="${esc(n.label)}">${esc(n.label)}</span>
+        ${n.node_type ? `<span class="tag">${esc(n.node_type)}</span>` : "<span></span>"}
+        <span class="bar"><i style="width:${Math.round(100*(n.freq||0)/maxF)}%"></i></span>
+        <span class="n">${n.freq||0}</span>
+      </div>`).join("");
+    const edges = g.edges.length ? g.edges.map(e => `
+      <div class="edge">
+        <span class="pair"><b>${esc(e.from_label)}</b><span class="arrow">→</span><b>${esc(e.to_label)}</b>
+          ${e.relation ? `<span class="tag" style="margin-left:6px">${esc(e.relation)}</span>` : ""}</span>
+        <span class="w">${Number(e.weight||0).toFixed(2)} · ${e.encounter_count||1} 次</span>
+      </div>`).join("") : `<div class="empty">没有关系边</div>`;
+    const types = g.types.map(t => `<span class="tag">${esc(t.type)} ${t.n}</span>`).join(" ");
+
+    $("wrap").innerHTML = `
+      <div class="card">
+        <h2>关系网 <span class="tag">${g.nodes.length} 实体 / ${g.edges.length} 关系</span></h2>
+        <div class="hint">点越大出现越多，线越粗关联越强。只画前 12 个实体，完整清单在下面。</div>
+        <div class="netwrap">
+          ${netSvg(g)}
+          <div class="side">
+            <div class="hint" style="margin-bottom:8px">实体类型分布</div>
+            <div class="chips" style="margin-bottom:14px">${types || "—"}</div>
+            <div class="hint" style="margin-bottom:8px">出现最多的实体</div>
+            ${g.nodes.slice(0, 6).map(n => `
+              <div class="node"><span class="lb">${esc(n.label)}</span><span></span>
+                <span class="bar"><i style="width:${Math.round(100*(n.freq||0)/maxF)}%"></i></span>
+                <span class="n">${n.freq||0}</span></div>`).join("")}
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>实体 <span class="tag">${g.nodes.length}</span></h2>
+        <div class="hint">按出现频次排序。</div>
+        ${nodes}
+      </div>
+      <div class="card">
+        <h2>关系 <span class="tag">${g.edges.length}</span></h2>
+        <div class="hint">权重越高，说明这两件事在记忆里被反复一起提到。</div>
+        ${edges}
+      </div>`;
+  }catch(e){
+    $("wrap").innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div></div>`;
+  }
+}
+
+function netSvg(g){
+  const picked = g.nodes.slice(0, 12);
+  const maxF = Math.max(...picked.map(n => n.freq || 0), 1);
+  const W = 404, C = W / 2, R = 104;
+  const pos = {};
+  picked.forEach((n, i) => {
+    const a = -Math.PI/2 + 2*Math.PI*i/picked.length;
+    pos[n.id] = {x: C + R*Math.cos(a), y: C + R*Math.sin(a), a};
+  });
+  const ids = new Set(picked.map(n => n.id));
+  const maxW = Math.max(...g.edges.map(e => e.weight || 0), 1);
+  const lines = g.edges.filter(e => ids.has(e.from) && ids.has(e.to)).map(e => {
+    const p1 = pos[e.from], p2 = pos[e.to];
+    const w = 0.8 + 2.4 * (e.weight || 0) / maxW;
+    return `<line x1="${p1.x.toFixed(1)}" y1="${p1.y.toFixed(1)}"
+      x2="${p2.x.toFixed(1)}" y2="${p2.y.toFixed(1)}"
+      stroke="#a78bfa" stroke-opacity=".38" stroke-width="${w.toFixed(1)}"/>`;
+  }).join("");
+  const dots = picked.map(n => {
+    const p = pos[n.id];
+    const r = 5 + 7 * Math.sqrt((n.freq || 1) / maxF);
+    const cosv = Math.cos(p.a), sinv = Math.sin(p.a);
+    const polar = Math.abs(cosv) < 0.3;
+    const right = cosv >= 0;
+    const lx = polar ? p.x : (right ? p.x + r + 7 : p.x - r - 7);
+    const ly = polar ? (sinv < 0 ? p.y - r - 7 : p.y + r + 13) : p.y + 3.5;
+    const anchor = polar ? "middle" : (right ? "start" : "end");
+    return `<g><title>${esc(n.label)} · 出现 ${n.freq||0} 次${
+      n.node_type ? " · " + esc(n.node_type) : ""}</title>
+      <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r.toFixed(1)}"
+        fill="${typeColor(n.node_type)}" fill-opacity=".26"
+        stroke="${typeColor(n.node_type)}" stroke-width="1.5"/>
+      <text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}"
+        text-anchor="${anchor}">${esc(clamp(n.label, 7))}</text></g>`;
+  }).join("");
+  return `<svg class="net" width="${W}" height="${W}" viewBox="0 0 ${W} ${W}">
+    <circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="#1e2634" stroke-dasharray="3 5"/>
+    ${lines}${dots}</svg>`;
+}
+
+/* ══════════════════════════════════════════════════════════
+   三路召回
+   ══════════════════════════════════════════════════════════ */
+const CH = {
+  recent:    {name:"① 时间锚点", color:"#7cc0ff", desc:"时间衰减 × 重要性"},
+  resonance: {name:"② 语义共振", color:"#f2a93b", desc:"向量余弦 + 关键词"},
+  skeleton:  {name:"③ 图谱骨架", color:"#35d39a", desc:"实体关系扩散"},
+};
+async function renderTraces(tid){
+  $("scroll").style.padding = "20px 26px 60px";
+  $("wrap").style.maxWidth = "1120px";
+  $("wrap").innerHTML = `<div class="empty">读取中…</div>`;
+  try{
+    const list = await api("/api/traces?limit=100");
+    if(!list.length){
+      $("wrap").innerHTML = `<div class="card"><div class="empty">
+        <b>还没有召回记录</b><br>召回追踪在每次构建历史提示词时写入，先和机器人聊一句。</div></div>`;
+      return;
+    }
+    const cur = tid && list.some(t => String(t.id) === String(tid)) ? tid : list[0].id;
+    const side = list.map(t => `
+      <div class="sitem ${String(t.id)===String(cur)?"on":""}" data-id="${t.id}">
+        <div class="t1"><b>${esc(clamp(t.user_input || "(空输入)", 20))}</b>
+          <span style="color:var(--dim2);font-size:11px">#${t.id}</span></div>
+        <div class="t2"><span>命中 ${t.hit_count}</span><span>${t.elapsed_ms} ms</span>
+          <span>${esc(relTime(t.created_at))}</span></div>
+      </div>`).join("");
+    $("wrap").innerHTML = `<div class="split" style="display:grid;
+        grid-template-columns:246px 1fr;gap:0;margin:-20px -26px -60px;">
+        <div class="slist" style="max-height:calc(100vh - 62px)">${side}</div>
+        <div style="padding:20px 24px 60px;overflow-y:auto;max-height:calc(100vh - 62px)" id="tbody"></div>
+      </div>`;
+    const wrap2 = $("wrap");
+    wrap2.querySelectorAll(".sitem").forEach(el =>
+      el.onclick = () => go("traces", el.dataset.id));
+    const t = await api(`/api/traces/${cur}`);
+    $("tbody").innerHTML = renderTrace(t);
+    document.querySelectorAll("#tbody .cand").forEach(el =>
+      el.onclick = () => el.classList.toggle("open"));
+    const jump = $("jump-inj");
+    if(jump) jump.onclick = () => {
+      const inj = $("inj");
+      if(inj) inj.scrollIntoView({behavior:"smooth", block:"start"});
+    };
+  }catch(e){
+    $("wrap").innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div></div>`;
   }
 }
 
 function renderTrace(t){
-  const fusion = t.fusion || {};
-  const chans = t.channels || {};
-  const extra = t.extra || {};
-  const finalById = new Map((fusion.final||[]).map(f => [f.content, f]));
+  const fusion = t.fusion || {}, chans = t.channels || {}, extra = t.extra || {};
+  const final = fusion.final || [], dropped = fusion.dedup_dropped || [];
+  const paths = t.graph_paths || [];
+  const injected = t.injected || "";
 
-  const chanCards = ["recent","resonance","skeleton"].map(tag => {
-    const meta = CH[tag];
-    const items = chans[tag] || [];
-    const max = Math.max(...items.map(i=>i.score), 0.0001);
-    const min = fusion.channel_min ? fusion.channel_min[["recent","resonance","skeleton"].indexOf(tag)] : "-";
-    const w = fusion.channel_weights ? fusion.channel_weights[["recent","resonance","skeleton"].indexOf(tag)] : "-";
+  const chanCards = ["recent","resonance","skeleton"].map((tag, idx) => {    const meta = CH[tag], items = chans[tag] || [];
+    const max = Math.max(...items.map(i => i.score), 0.0001);
+    const min = fusion.channel_min ? fusion.channel_min[idx] : "–";
+    const w = fusion.channel_weights ? fusion.channel_weights[idx] : "–";
     return `<div class="chan">
       <h4><span class="badge b-${tag}">${meta.name}</span>
-        <span style="color:#5f6a7d;font-weight:400">${items.length} 条</span></h4>
-      <div class="meta">${meta.desc} · 保底 ${min} 条 · 权重 ${w}</div>
+        <span style="color:var(--dim2);font-weight:400">${items.length} 条</span></h4>
+      <div class="meta">${meta.desc} · 保底 ${min} · 权重 ${w}</div>
       ${items.length ? items.map(i => `
-        <div class="cand">
-          <div class="row1">
-            <span>${i.memory_id ? "记忆 #"+i.memory_id : "关系边"}</span>
-            <span class="mono">score ${i.score}</span>
-          </div>
-          <div class="bar"><i style="width:${Math.max(4, 100*i.score/max)}%;background:${meta.color}"></i></div>
+        <div class="cand" title="点击展开/收起">
+          <div class="r1"><span>${i.memory_id ? "记忆 #"+i.memory_id : "关系边"}</span>
+            <span class="mono">${i.score}</span></div>
+          <div class="bar3"><i style="width:${Math.max(4, 100*i.score/max)}%;background:${meta.color}"></i></div>
           <div class="txt">${esc(i.text)}</div>
           ${renderDetail(i.detail)}
-        </div>`).join("") : `<div class="empty">本通道无候选</div>`}
+        </div>`).join("") : `<div class="empty" style="padding:18px">本通道无候选</div>`}
     </div>`;
   }).join("");
 
-  const finalRows = (fusion.final||[]).map((f, idx) => `
-    <tr>
-      <td>${idx+1}</td>
+  const allEmpty = ["recent","resonance","skeleton"].every(k => !(chans[k] || []).length);
+
+  const finalRows = final.map((f, i) => `<tr>
+      <td>${i+1}</td>
       <td><span class="badge b-${f.tag}">${CH[f.tag]?.name || f.tag}</span></td>
       <td><span class="badge ${f.stage==="floor"?"b-floor":"b-fill"}">${f.stage==="floor"?"保底":"补位"}</span></td>
       <td class="mono">${f.weighted}</td>
-      <td>${f.memory_id ? "记忆 #"+f.memory_id : (f.tag === "skeleton" ? "图谱边" : "—")}</td>
-      <td><div class="clip">${esc(f.content)}</div></td>
-    </tr>`).join("");
-
-  const dropped = (fusion.dedup_dropped||[]);
-  const paths = t.graph_paths || [];
+      <td>${f.memory_id ? "#"+f.memory_id : (f.tag === "skeleton" ? "图谱边" : "—")}</td>
+      <td><div class="clip">${esc(f.content)}</div></td></tr>`).join("");
 
   return `
-    <div class="panel">
-      <h3>当次请求 <span class="chip mono">#${t.id}</span></h3>
-      <div class="sub">${esc(t.created_at || "")}</div>
-      <dl class="kv">
-        <dt>用户输入</dt><dd>${esc(t.user_input)}</dd>
-        <dt>归属</dt><dd>${esc(t.display_name||"")} <span class="mono" style="color:#5f6a7d">${esc(t.user_id||"")}</span> · ${esc(t.role||"")} · 会话 ${esc(t.session_id||"")}</dd>
-        <dt>提取关键词</dt><dd>${(t.keywords||[]).map(k=>`<span class="chip">${esc(k)}</span>`).join(" ") || "<span style='color:#5f6a7d'>无</span>"}</dd>
-        <dt>图扩散</dt><dd>${(extra.diffused_keywords||[]).map(k=>`<span class="chip">${esc(k.label)} · ${k.weight}</span>`).join(" ") || "<span style='color:#5f6a7d'>无</span>"}</dd>
-        <dt>Embedding</dt><dd>${t.embedding_ok
-          ? `<span style="color:var(--green)">正常</span> · ${t.embedding_dim} 维`
-          : `<span style="color:var(--amber)">本轮未取得向量</span>（语义通道退化为关键词）`}</dd>
-        <dt>查询文本</dt><dd class="mono" style="font-size:11.5px">${esc(extra.query_text || t.user_input)}</dd>
-        <dt>耗时</dt><dd>${t.elapsed_ms} ms</dd>
-        <dt>融合参数</dt><dd>总上限 ${fusion.total_cap ?? "-"} · 保底 ${JSON.stringify(fusion.channel_min||[])} · 权重 ${JSON.stringify(fusion.channel_weights||[])}</dd>
-      </dl>
+    <div class="card" style="padding:11px 14px">
+      <div class="chips" style="font-size:12px;color:var(--dim)">
+        <span class="tag">#${t.id}</span>
+        <span class="tag">${esc(fmtTime(t.created_at))}</span>
+        <span class="tag">${final.length} 条进入提示词</span>
+        <span class="tag">${t.elapsed_ms} ms</span>
+        <span class="tag" style="${t.embedding_ok?"":"color:var(--amber);border-color:#4a3a18"}">
+          ${t.embedding_ok ? "向量 " + t.embedding_dim + " 维" : "本轮无向量"}</span>
+        <span class="tag mono">${esc(clamp(t.display_name || t.user_id || "", 10))}</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="lnk" id="jump-inj">跳到注入文本 ↓</span>
+      </div>
+      <div style="margin-top:10px;font-size:13.5px;color:#dde4f0">${esc(t.user_input)}</div>
+      ${(t.keywords||[]).length ? `<div class="chips" style="margin-top:8px">
+        <span style="font-size:11px;color:var(--dim2)">关键词</span>
+        ${t.keywords.map(k => `<span class="tag">${esc(k)}</span>`).join("")}</div>` : ""}
     </div>
 
-    <div class="panel">
-      <h3>三条通道各自召回了什么</h3>
-      <div class="sub">分数是通道内部原始分，融合时会再乘通道权重。</div>
-      <div class="grid3">${chanCards}</div>
+    <div class="card">
+      <h2>三条通道各自召回了什么</h2>
+      ${allEmpty
+        ? `<div class="empty" style="padding:22px">
+            本次三条通道都没有召回候选。<br>
+            <span style="font-size:12px">${
+              STATS && (STATS.counts||{}).memories
+                ? (t.embedding_ok ? "库里已有记忆但本轮没命中，可能是关键词与向量都没撞上。"
+                                  : "本轮没取到向量（语义通道退化），只看关键词命中。")
+                : "记忆库还是空的 —— 没有可召回的内容，先攒够轮次让蒸馏产出记忆。"
+            }</span></div>`
+        : `<div class="hint">分数是通道内部原始分，融合时会再乘通道权重。</div>
+           <div class="chan-grid">${chanCards}</div>`}
     </div>
 
-    <div class="panel">
-      <h3>融合结果 <span class="chip">${(fusion.final||[]).length} 条进入提示词</span></h3>
-      <div class="sub">先按「保底」保证每路至少 ${JSON.stringify(fusion.channel_min||[])} 条，再用剩余名额按加权分补位，最后去重截断。</div>
-      ${finalRows ? `<div style="overflow:auto"><table>
-        <thead><tr><th>#</th><th>来源通道</th><th>阶段</th><th>加权分</th><th>记忆ID</th><th>内容</th></tr></thead>
-        <tbody>${finalRows}</tbody></table></div>` : `<div class="empty">本次没有条目进入提示词</div>`}
-      ${dropped.length ? `<div class="note" style="margin-top:10px">被丢弃 ${dropped.length} 条：${dropped.slice(0,8).map(d=>`<span class="chip">${esc(CH[d.tag]?.name||d.tag)} · ${esc(d.stage)}</span>`).join(" ")}${dropped.length>8?" …":""}</div>` : ""}
+    <div class="card">
+      <h2>融合结果 <span class="tag">${final.length} 条</span></h2>
+      ${finalRows ? `<div class="hint">先按保底 ${JSON.stringify(fusion.channel_min||[])} 保证每路都有，
+        再用剩余名额按加权分补位，最后去重截断到 ${fusion.total_cap ?? "–"} 条。</div>
+        <div style="overflow:auto"><table class="grid-table">
+        <thead><tr><th>#</th><th>通道</th><th>阶段</th><th>加权分</th><th>记忆</th><th>内容</th></tr></thead>
+        <tbody>${finalRows}</tbody></table></div>`
+        : `<div class="hint" style="margin:0">没有条目进入提示词（三条通道都空）。</div>`}
+      ${dropped.length ? `<div class="hint" style="margin:10px 0 0">
+        去重丢弃 ${dropped.length} 条：${dropped.slice(0,10).map(d =>
+          `<span class="tag">${esc(CH[d.tag]?.name || d.tag)} · ${esc(d.stage)}</span>`).join(" ")}
+        ${dropped.length>10 ? "…" : ""}</div>` : ""}
     </div>
 
-    ${paths.length ? `<div class="panel">
-      <h3>图谱关系链 <span class="chip">${paths.length}</span></h3>
-      <div class="sub">从命中节点出发的连通路径，会作为「骨架事实」一并注入。</div>
-      ${paths.map(p=>`<div class="cand"><div class="txt mono" style="font-size:12px">${esc(p)}</div></div>`).join("")}
+    ${paths.length ? `<div class="card">
+      <h2>图谱关系链 <span class="tag">${paths.length}</span></h2>
+      <div class="hint">从命中节点出发的连通路径，会作为「骨架事实」一并注入。</div>
+      ${paths.map(p => `<div class="cand"><div class="txt" style="font-size:12px"
+        >${esc(typeof p === "string" ? p : JSON.stringify(p))}</div></div>`).join("")}
     </div>` : ""}
 
-    <div class="panel">
-      <h3>最终注入给 LLM 的文本</h3>
-      <div class="sub">${esc(t.header || "")}</div>
-      <pre class="injected">${esc(t.injected || "（本轮没有注入内容）")}</pre>
+    <div class="card" id="inj">
+      <h2>最终注入给 LLM 的文本 <span class="tag">${injected.length} 字</span></h2>
+      <div class="hint">${esc(t.header || "")}</div>
+      <pre class="injected">${esc(injected || "（本轮没有注入内容）")}</pre>
     </div>`;
 }
 
 function renderDetail(d){
   if(!d || !Object.keys(d).length) return "";
   const parts = [];
-  if(d.cosine !== undefined) parts.push("余弦 "+d.cosine);
-  if(d.importance !== undefined) parts.push("重要性 "+d.importance);
-  if(d.time_decay !== undefined) parts.push("时间衰减 "+d.time_decay);
-  if(d.importance_decay !== undefined) parts.push("重要性×衰减 "+d.importance_decay);
-  if(d.session_boost) parts.push("同会话 +"+d.session_boost);
-  if(d.mood_match) parts.push("情绪共振 +bonus");
-  if(d.mood) parts.push("情绪 "+d.mood);
+  if(d.cosine !== undefined) parts.push("余弦 " + d.cosine);
+  if(d.importance !== undefined) parts.push("重要性 " + d.importance);
+  if(d.time_decay !== undefined) parts.push("时间衰减 " + d.time_decay);
+  if(d.importance_decay !== undefined) parts.push("重要性×衰减 " + d.importance_decay);
+  if(d.session_boost) parts.push("同会话 +" + d.session_boost);
+  if(d.mood_match) parts.push("情绪共振");
+  if(d.mood) parts.push("情绪 " + d.mood);
+  if(d.relation) parts.push("关系 " + d.relation);
+  if(d.edge_weight !== undefined) parts.push("边权 " + d.edge_weight);
+  if(d.decayed_weight !== undefined) parts.push("衰减后 " + d.decayed_weight);
+  if(d.days_since_seen !== undefined && d.days_since_seen !== null) parts.push(d.days_since_seen + " 天前");
   if(d.source) parts.push(d.source);
-  if(d.relation) parts.push("关系 "+d.relation);
-  if(d.edge_weight !== undefined) parts.push("边权 "+d.edge_weight);
-  if(d.decayed_weight !== undefined) parts.push("衰减后 "+d.decayed_weight);
-  if(d.days_since_seen !== undefined && d.days_since_seen !== null) parts.push(d.days_since_seen+" 天前");
-  if(d.from && d.to) parts.push(d.from+" → "+d.to);
-  if(d.created_at) parts.push(d.created_at);
-  return parts.length ? `<div class="det">${parts.map(p=>`<span>${esc(p)}</span>`).join("")}</div>` : "";
+  return parts.length ? `<div class="det">${parts.map(p => `<span>${esc(p)}</span>`).join("")}</div>` : "";
 }
 
-/* ── 启动 ───────────────────────────────────────────── */
-document.getElementById("refresh").onclick = () => applyFromHash();
-applyFromHash();
+/* ══════════════════════════════════════════════════════════
+   原始数据表（调试）
+   ══════════════════════════════════════════════════════════ */
+const RS = {table:null, limit:30, offset:0, q:"", columns:[], rows:[]};
+
+async function renderRaw(table){
+  $("scroll").style.padding = "20px 26px 60px";
+  $("wrap").style.maxWidth = "none";
+  const ov = await api("/api/overview");
+  RS.ov = ov;
+  const tabs = ov.tables.map(t => `
+    <div class="sitem ${t.name===table?"on":""}" data-t="${esc(t.name)}">
+      <div class="t1"><b>${esc(t.title)}</b><span style="color:var(--dim2);font-size:11px">${t.rows}</span></div>
+      <div class="t2 mono">${esc(t.name)}</div>
+    </div>`).join("");
+  const pick = table || (ov.tables[0] && ov.tables[0].name);
+  if(!pick){ $("wrap").innerHTML = `<div class="empty">库里还没有表</div>`; return; }
+  if(RS.table !== pick){ RS.table = pick; RS.offset = 0; RS.q = ""; }
+
+  $("wrap").innerHTML = `<div class="split" style="display:grid;
+      grid-template-columns:212px 1fr;margin:-20px -26px -60px">
+      <div class="slist" style="max-height:calc(100vh - 62px)">${tabs}</div>
+      <div style="padding:18px 22px 60px;overflow:auto;max-height:calc(100vh - 62px)" id="rbody"></div>
+    </div>`;
+  $("wrap").querySelectorAll(".sitem").forEach(el =>
+    el.onclick = () => go("raw", el.dataset.t));
+  await loadRaw();
+}
+
+async function loadRaw(){
+  const ov = RS.ov || await api("/api/overview");
+  RS.ov = ov;
+  const meta = ov.tables.find(t => t.name === RS.table);
+  const body = $("rbody");
+  body.innerHTML = `<div class="empty">读取中…</div>`;
+  try{
+    const qs = new URLSearchParams({limit:RS.limit, offset:RS.offset, q:RS.q});
+    const d = await api(`/api/tables/${encodeURIComponent(RS.table)}?${qs}`);
+    // BLOB 列（embedding）在表格里没有可读价值，直接跳过；维度看 embedding_dim
+    const all = d.columns.filter(c => c.name !== "extra");
+    RS.columns = all.filter(c => !/BLOB/i.test(c.type || ""));
+    RS.rows = d.rows;
+    const cols = RS.columns;
+    const hidden = all.length - cols.length;
+    const WIDE = /content|injected|summary|user_input|channels|fusion|traits|preferences|dangling/i;
+    const TIGHT = /^(id|.*_id|.*_at|created_at|updated_at|last_seen)$/i;
+
+    body.innerHTML = `
+      <div class="card" style="padding:12px 14px">
+        <h2 style="margin-bottom:2px">${esc(meta?.title || RS.table)}
+          <span class="tag mono">${esc(RS.table)}</span></h2>
+        <div class="hint" style="margin-bottom:10px">${esc(meta?.desc || "")}${
+          hidden ? ` · 已隐藏 ${hidden} 个二进制列` : ""}</div>
+        <div class="chips">
+          <input type="search" id="rq" placeholder="在所有文本列里搜…" value="${esc(RS.q)}" style="min-width:240px">
+          <button id="rqbtn">搜索</button>
+          <span class="spacer" style="flex:1"></span>
+          <button id="rexp">导出本页 CSV</button>
+        </div>
+      </div>
+      ${d.rows.length ? `<div class="card" style="padding:0">
+        <div class="tablebox"><table><thead><tr>${cols.map(c => `<th>${esc(c.name)}
+          <div style="font-weight:400;color:#4d5768;text-transform:none;font-size:10px">${esc(c.type||"")}</div>
+          </th>`).join("")}</tr></thead>
+        <tbody>${d.rows.map((r, i) => `<tr data-i="${i}">${cols.map(c => {
+          const v = r[c.name];
+          const s = (v === null || v === undefined) ? `<span style="color:#4d5768">NULL</span>` : esc(v);
+          const cls = WIDE.test(c.name) ? "wide" : (TIGHT.test(c.name) ? "tight" : "");
+          return `<td class="${cls}"><div class="clip" style="white-space:${
+            WIDE.test(c.name) ? "pre-wrap" : "nowrap"}">${s}</div></td>`;
+        }).join("")}</tr>`).join("")}</tbody></table></div>
+      </div>` : `<div class="card"><div class="empty">没有数据</div></div>`}
+      ${pager({limit:RS.limit, offset:RS.offset, total:d.total}, loadRaw)}`;
+
+    const run = () => { RS.q = $("rq").value.trim(); RS.offset = 0; loadRaw(); };
+    $("rqbtn").onclick = run;
+    $("rq").onkeydown = e => { if(e.key === "Enter") run(); };
+    $("rexp").onclick = () => exportCsv(cols, RS.rows, RS.table);
+    bindPager({limit:RS.limit, offset:RS.offset, total:d.total}, loadRaw);
+    body.querySelectorAll("tbody tr").forEach(tr => tr.onclick = () =>
+      openRow(cols, RS.rows[Number(tr.dataset.i)], RS.table));
+  }catch(e){
+    body.innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div></div>`;
+  }
+}
+
+function openRow(cols, row, table){
+  $("dt").textContent = table + " · 单行详情";
+  $("dbody").innerHTML = cols.map(c => {
+    const v = row[c.name];
+    const isNull = v === null || v === undefined;
+    const num = typeof v === "number";
+    return `<div class="field"><div class="fk">${esc(c.name)}${
+      c.type ? " · " + esc(c.type) : ""}</div>
+      <div class="fv ${isNull?"null":num?"num":""}">${isNull ? "NULL" : esc(v)}</div></div>`;
+  }).join("");
+  $("mask").classList.add("on"); $("drawer").classList.add("on");
+}
+$("mask").onclick = $("dclose").onclick = () => {
+  $("mask").classList.remove("on"); $("drawer").classList.remove("on");
+};
+document.addEventListener("keydown", e => { if(e.key === "Escape") $("mask").onclick(); });
+
+function exportCsv(cols, rows, name){
+  const cell = v => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const csv = [cols.map(c => c.name).join(",")]
+    .concat(rows.map(r => cols.map(c => cell(r[c.name])).join(","))).join("\n");
+  const blob = new Blob(["\ufeff" + csv], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name}-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+}
+
+/* ══════════════════════════════════════════════════════════
+   渲染调度
+   ══════════════════════════════════════════════════════════ */
+async function render(){
+  const {view, arg} = parseHash();
+  setActive(view);
+  $("scroll").style.padding = "20px 26px 60px";
+  $("wrap").style.maxWidth = "1120px";
+  $("vtools").textContent = "";
+  if(!STATS) await boot();
+  try{
+    if(view === "overview") renderOverview();
+    else if(view === "memories") renderMemories();
+    else if(view === "dialogue") await renderDialogue(arg);
+    else if(view === "graph") await renderGraph();
+    else if(view === "traces") await renderTraces(arg);
+    else if(view === "raw") await renderRaw(arg);
+  }catch(e){
+    $("wrap").innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div></div>`;
+  }
+}
+
+$("refresh").onclick = async () => {
+  STATS = null; await boot(); render();
+};
+window.addEventListener("hashchange", render);
+render();
 </script>
 </body>
 </html>

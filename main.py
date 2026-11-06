@@ -82,7 +82,7 @@ def _resolve_data_dir(config: dict) -> str:
     "astrbot_plugin_rcms",
     "RCMS",
     "Relational Cognitive Memory System v2",
-    "2.2.0",
+    "2.3.0",
     "https://github.com/ATRI2233/Relational-Cognitive-Memory-System",
 )
 class RcmsPlugin(star.Star):
@@ -164,18 +164,31 @@ class RcmsPlugin(star.Star):
         try:
             from observatory.server import RcmsWebServer
 
-            db_path = os.path.join(
-                _resolve_data_dir(self._config), "rcms_memory.db"
-            )
+            data_dir = _resolve_data_dir(self._config)
+            db_path = os.path.join(data_dir, "rcms_memory.db")
+            # 面板本身读不到运行期参数，把这些门槛传进去，
+            # 它才能在总览里解释「为什么记忆还是空的」。
+            hints: dict = {}
+            try:
+                settings = self._build_settings(data_dir)
+                hints = {
+                    "distill_max_turns": settings.analysis.max_turns,
+                    "distill_max_minutes": settings.analysis.max_minutes,
+                    "total_cap": settings.retrieval.total_cap,
+                    "embedding_enabled": settings.retrieval.embedding_enabled,
+                }
+            except Exception as exc:  # noqa: BLE001 - 提示信息缺失不影响面板
+                logger.debug("RCMS: 观测站参数读取失败: %s", exc)
             server = RcmsWebServer(
                 db_path=db_path,
                 host=str(cfg.get("host") or "127.0.0.1"),
                 port=int(cfg.get("port") or 8765),
+                hints=hints,
             )
             if server.start():
                 self._webui = server
                 logger.info(
-                    "RCMS 观测站已就绪，浏览器打开 %s 可查看表数据与三路召回",
+                    "RCMS 观测站已就绪，浏览器打开 %s 可查看记忆、对话与三路召回",
                     server.url,
                 )
         except Exception as exc:  # noqa: BLE001 - 观测站不能拖垮插件
