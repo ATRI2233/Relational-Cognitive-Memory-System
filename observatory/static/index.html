@@ -383,9 +383,11 @@ async function boot(){
     $("dot").style.background = STATS.available ? "var(--green)" : "var(--amber)";
     $("ver").textContent = STATS.available ? "只读 · 本机" : "只读 · 等待首次对话建库";
   }catch(e){
-    $("ver").textContent = "连接失败";
+    $("ver").textContent = "面板与插件版本不一致";
     $("dot").style.background = "var(--red)";
+    return false;
   }
+  return true;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1052,7 +1054,17 @@ async function render(){
   $("scroll").style.padding = "20px 26px 60px";
   $("wrap").style.maxWidth = "1120px";
   $("vtools").textContent = "";
-  if(!STATS) await boot();
+  if(!STATS){
+    const ok = await boot();
+    if(!ok){
+      $("wrap").innerHTML = `<div class="card"><div class="err">
+        <b>页面已经更新，但正在运行的插件还是旧版本。</b><br><br>
+        静态文件是每次请求现读磁盘的，所以刷新就能看到新界面；但接口路由是插件加载时常驻内存的，
+        需要先重启 AstrBot（或在插件页重载插件）才能对上。
+      </div></div>`;
+      return;
+    }
+  }
   try{
     if(view === "overview") renderOverview();
     else if(view === "memories") renderMemories();
