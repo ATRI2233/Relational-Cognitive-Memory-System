@@ -21,7 +21,7 @@ import json
 import sqlite3
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -598,5 +598,156 @@ class TestLLMErrorHandling:
             )
             assert result.memory_id == 0
             assert result.keylabel == ""
+        finally:
+            conn.close()
+
+
+# ===================================================================
+# 测试 5：时间型蒸馏条件（回归）
+#
+# 旧实现写的是 `last_at is not None` 才计时，而新会话的 last_distill_at
+# 一直是 NULL —— 结果「攒够 60 分钟也蒸一次」这条规则在第一次蒸馏之前
+# 永远不成立，短会话永远产不出记忆。这里的用例锁住修复后的行为。
+# ===================================================================
+
+
+class MutableClock:
+    """可推进的测试时钟（FrozenClock 冻结后无法前进）。"""
+
+    def __init__(self, dt: datetime) -> None:
+        self._dt = dt
+
+    def now(self) -> datetime:
+        return self._dt
+
+    def strftime(self, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+        return self._dt.strftime(fmt)
+
+    def advance(self, minutes: float) -> None:
+        self._dt += timedelta(minutes=minutes)
+
+
+class TestTimeBasedDistillGate:
+    """校验「距上次蒸馏超过 max_minutes」这条条件。"""
+
+    NOW = datetime(2026, 6, 15, 12, 0, 0)
+
+    @classmethod
+    def _build(
+        cls,
+        tmp_path: Path,
+        first_seen_minutes_ago: float,
+        turn_count: int = 6,
+        last_distill_minutes_ago: float | None = None,
+        llm: MockLLM | None = None,
+    ):
+        clock = MutableClock(cls.NOW)
+        conn = _init_db(str(tmp_path / "gate.db"))
+        session_repo = SQLiteSessionRepository(conn, clock)
+        memory_repo = SQLiteMemoryRepository(conn, clock)
+        identity_repo = SQLiteIdentityRepository(conn, clock)
+        graph_repo = SQLiteGraphRepository(conn, clock)
+
+        settings = MockAnalysisSettings()
+        settings.max_turns = 30          # 让轮次条件不参与
+        settings.max_minutes = 60
+
+        session = Session(
+            session_id=SessionId("s1"),
+            user_id=UserId("u1"),
+            turn_count=turn_count,
+            last_active=clock.now(),
+            first_seen_at=clock.now() - timedelta(minutes=first_seen_minutes_ago),
+            last_distill_at=(
+                clock.now() - timedelta(minutes=last_distill_minutes_ago)
+                if last_distill_minutes_ago is not None else None
+            ),
+        )
+        _run_async(session_repo.save(session))
+
+        async def chat_history_provider(
+            sid: SessionId, last_turn: int, turn_count: int,
+        ) -> list[TurnRecord]:
+            return [
+                TurnRecord(
+                    session_id=SessionId("s1"), role="user" if i % 2 else "assistant",
+                    content=f"第 {i} 条", turn_num=i, user_id="u1", sender_name="小明",
+                )
+                for i in range(1, 9)
+            ]
+
+        uc = DistillUseCase(
+            session_repo=session_repo,
+            memory_repo=memory_repo,
+            identity_repo=identity_repo,
+            graph_repo=graph_repo,
+            llm=llm or MockLLM(response=""),
+            embedding=MockEmbedding(),
+            clock=clock,
+            event_bus=EventBus(),
+            settings=settings,
+            prompt_builder=DefaultDistillPromptBuilder(),
+            chat_history_provider=chat_history_provider,
+        )
+        return conn, uc, clock, session_repo
+
+    def test_never_distilled_session_uses_first_seen(self, tmp_path: Path) -> None:
+        """从没蒸过、但会话已经开了 3 小时 → 时间条件成立。"""
+        conn, uc, _clock, _repo = self._build(tmp_path, first_seen_minutes_ago=180)
+        try:
+            needed = _run_async(uc._check_distill_needed("s1"))
+            assert needed is not None, "从未蒸馏过的会话应能按 first_seen_at 触发"
+            last_turn, turn_count, snapshot, _senders = needed
+            assert last_turn == 0 and turn_count == 6
+            assert snapshot
+        finally:
+            conn.close()
+
+    def test_fresh_session_does_not_trigger(self, tmp_path: Path) -> None:
+        """刚开 10 分钟的会话两条条件都不满足 → 不触发。"""
+        conn, uc, _clock, _repo = self._build(tmp_path, first_seen_minutes_ago=10)
+        try:
+            assert _run_async(uc._check_distill_needed("s1")) is None
+        finally:
+            conn.close()
+
+    def test_last_distill_at_takes_precedence(self, tmp_path: Path) -> None:
+        """蒸过一次之后，起点换成 last_distill_at，而不是会话起点。"""
+        conn, uc, _clock, _repo = self._build(
+            tmp_path, first_seen_minutes_ago=600, last_distill_minutes_ago=5,
+        )
+        try:
+            assert _run_async(uc._check_distill_needed("s1")) is None, (
+                "5 分钟前刚蒸过，不该因为会话开得久而重复蒸馏"
+            )
+        finally:
+            conn.close()
+
+    def test_failed_attempt_backs_off(self, tmp_path: Path) -> None:
+        """蒸馏失败不写 last_distill_at，但不能每条消息都重试 LLM。"""
+        conn, uc, clock, _repo = self._build(
+            tmp_path, first_seen_minutes_ago=180, llm=MockLLM(response=""),
+        )
+        try:
+            first = _run_async(uc.check_and_run(user_id="u1", session_id="s1"))
+            assert first.triggered is False          # LLM 空响应 → 未产出
+            assert _run_async(uc._check_distill_needed("s1")) is None
+
+            clock.advance(61)                        # 冷却结束
+            assert _run_async(uc._check_distill_needed("s1")) is not None
+        finally:
+            conn.close()
+
+    def test_first_seen_at_roundtrips(self, tmp_path: Path) -> None:
+        """仓储必须原样存取 first_seen_at，否则起点会每次落库丢一次。"""
+        conn, _uc, _clock, repo = self._build(tmp_path, first_seen_minutes_ago=120)
+        try:
+            session = _run_async(repo.get(SessionId("s1")))
+            assert session is not None
+            assert session.first_seen_at is not None
+            assert abs(
+                (session.first_seen_at - (self.NOW - timedelta(minutes=120)))
+                .total_seconds()
+            ) < 2
         finally:
             conn.close()

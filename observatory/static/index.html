@@ -90,8 +90,12 @@
   .status .sec{color:var(--dim);font-size:12px;margin-top:3px;line-height:1.6}
 
   /* 进度条 */
-  .track{height:6px;border-radius:3px;background:#0a0d13;overflow:hidden;margin:8px 0 4px}
-  .track i{display:block;height:100%;border-radius:3px;background:var(--blue);transition:width .3s}
+  .track{height:6px;border-radius:3px;background:#0a0d13;overflow:hidden;margin:6px 0 3px}
+  .track i{display:block;height:100%;min-width:3px;border-radius:3px;background:var(--blue);transition:width .3s}
+  .gauge{margin-bottom:12px}
+  .gauge-l{display:flex;justify-content:space-between;font-size:12px;color:var(--dim)}
+  .gauge-l .mono{font-variant-numeric:tabular-nums}
+  .gauge-n{font-size:11px;color:var(--dim2)}
 
   /* 柱状图 */
   .chart{display:flex;align-items:flex-end;gap:7px;height:120px;padding-top:6px}
@@ -398,6 +402,8 @@ function renderOverview(){
   const maxT = h.distill_max_turns || d.max_turns;
   const gap = d.gap || 0;
   const pct = maxT ? Math.min(100, Math.round(100*gap/maxT)) : 0;
+  const tPct = (d.max_minutes && d.elapsed_minutes != null)
+    ? Math.min(100, Math.max(0, Math.round(100*d.elapsed_minutes/d.max_minutes))) : 0;
 
   let status;
   if(!STATS.available){
@@ -411,13 +417,28 @@ function renderOverview(){
       <b>记忆链路已跑通</b>
       <div class="sec">${lastD} · 最近一条记忆：${esc(relTime(STATS.last.memory_at))}</div></div></div>`;
   }else{
+    const turnNeed = d.remaining ?? null;
+    const timeNeed = d.wait_minutes ?? null;
+    const turnReady = turnNeed !== null && turnNeed === 0;
+    const timeReady = timeNeed !== null && timeNeed === 0;
+    let why;
+    if(turnReady || timeReady){
+      why = d.ever_distilled
+        ? `门槛已经满足（${gap} 轮 / ${d.elapsed_minutes ?? "?"} 分钟），但库里还是空的 ——
+           <b>说明蒸馏尝试过却没产出</b>，去「原始数据表 → analysis_raw」看 LLM 返回了什么。`
+        : `门槛已经满足（${gap} 轮 / ${d.elapsed_minutes ?? "?"} 分钟），
+           下一条消息就会触发第一次蒸馏。`;
+    }else if(!(c.messages||0)){
+      why = "连对话消息都还没有，先和机器人聊几句。";
+    }else{
+      const parts = [];
+      if(turnNeed !== null) parts.push(`再攒 <b>${turnNeed}</b> 轮`);
+      if(timeNeed !== null) parts.push(`再等 <b>${timeNeed}</b> 分钟`);
+      why = `两条门槛满足任意一条就会蒸馏：${parts.join(" 或 ")}。在此之前召回只会命中已有记忆，库是空的。`;
+    }
     status = `<div class="status warn"><span class="si">!</span><div>
       <b>还没有任何记忆条目</b>
-      <div class="sec">${
-        maxT
-          ? `蒸馏门槛是 ${maxT} 轮或 ${d.max_minutes||"?"} 分钟；当前会话已攒 <b>${gap}</b> 轮，还差 <b>${Math.max(0, maxT-gap)}</b> 轮。在此之前召回只会命中已有记忆，库是空的。`
-          : "蒸馏门槛未传入，去「原始数据表 → session_state」看 last_distill_turn。"
-      }${(c.messages||0) ? "" : " 另外目前连对话消息都没有，先聊几句。"}</div></div></div>`;
+      <div class="sec">${why}</div></div></div>`;
   }
 
   const metrics = [
@@ -455,11 +476,28 @@ function renderOverview(){
 
     <div class="card">
       <h2>蒸馏进度</h2>
-      <div class="hint">记忆不是每轮都写，攒够 ${maxT || "?"} 轮（或 ${d.max_minutes || "?"} 分钟）才蒸馏一次。</div>
-      <div class="track"><i style="width:${pct}%"></i></div>
-      <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim2)">
-        <span>已攒 ${gap} / ${maxT || "?"} 轮</span>
-        <span>${d.ever_distilled ? "上次蒸馏 " + esc(relTime(STATS.last.distill_at)) : "从未蒸馏过"}</span>
+      <div class="hint">记忆不是每轮都写。<b>轮次</b>与<b>时间</b>两条门槛任意一条到了就蒸一次。</div>
+      <div class="gauge">
+        <div class="gauge-l">
+          <span>轮次</span>
+          <span class="mono">${gap} / ${maxT || "?"}</span>
+        </div>
+        <div class="track"><i style="width:${pct}%"></i></div>
+        <div class="gauge-n">${d.remaining === 0 ? "已满足" : d.remaining == null ? "未配置" : `还差 ${d.remaining} 轮`}</div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-l">
+          <span>时间</span>
+          <span class="mono">${d.elapsed_minutes ?? "?"} / ${d.max_minutes || "?"} 分钟</span>
+        </div>
+        <div class="track"><i style="width:${tPct}%;background:var(--amber)"></i></div>
+        <div class="gauge-n">${d.wait_minutes === 0 ? "已满足"
+          : d.wait_minutes == null ? "未配置" : `再等 ${d.wait_minutes} 分钟`}</div>
+      </div>
+      <div style="font-size:11.5px;color:var(--dim2);margin-top:6px">
+        ${d.ever_distilled
+          ? "上次蒸馏 " + esc(relTime(STATS.last.distill_at))
+          : "从未蒸馏过 · 计时起点 " + esc(d.first_seen_at ? fmtTime(d.first_seen_at) : "会话首条消息")}
       </div>
     </div>
 

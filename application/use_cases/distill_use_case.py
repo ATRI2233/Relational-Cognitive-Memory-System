@@ -465,6 +465,8 @@ class DistillUseCase:
         # 可选回调（当 Repository Protocol 尚缺对应方法时注入）
         self._chat_history_provider = chat_history_provider
         self._trim_low_importance_fn = trim_low_importance_fn
+        # 每个会话最近一次蒸馏尝试时间（不落库，仅用于失败退避）
+        self._attempt_at: dict[str, datetime] = {}
 
         # AnalysisWriter 和 raw analysis 审计（Task 2 & 3）
         self._analysis_writer = analysis_writer
@@ -506,6 +508,10 @@ class DistillUseCase:
 
         last_turn, turn_count, snapshot_text, senders = needed
         now = self._clock.now()
+        # 先记尝试时间：即便后面 LLM 失败，也要走 max_minutes 冷却
+        if len(self._attempt_at) > 1000:
+            self._attempt_at.clear()
+        self._attempt_at[session_id] = now
 
         # Step 3: 加载长期记忆 — 对应 _run_distill_analysis 行 327-331
         long_term = await self._load_long_term(user_id)
@@ -572,6 +578,18 @@ class DistillUseCase:
     # 内部方法：条件检查 + 快照构建
     # ────────────────────────────────────────────────────────────
 
+    def _may_retry(self, session_id: str, now: datetime) -> bool:
+        """时间条件触发前的退避。
+
+        蒸馏失败不会写 last_distill_at，如果不记尝试时间，一次失败就会让
+        之后每条消息都重试一遍 LLM。这里用内存里的尝试时间做冷却：
+        失败后同样要等 max_minutes 才会再试一次。
+        """
+        last = self._attempt_at.get(session_id)
+        if last is None:
+            return True
+        return (now - last).total_seconds() / 60.0 >= self._settings.max_minutes
+
     async def _check_distill_needed(
         self, session_id: str,
     ) -> tuple[int, int, str, list[str]] | None:
@@ -580,7 +598,7 @@ class DistillUseCase:
         对应 analysis.py check_distill_needed（行 491-529）。
         条件（满足任一即可）：
           - 从上次蒸馏起新增轮次 >= max_turns（默认 30）
-          - 从上次蒸馏起经过的分钟数 >= max_minutes（默认 60）
+          - 距离上次蒸馏（没蒸过就是会话首次出现）的分钟数 >= max_minutes（默认 60）
         附加条件：快照至少 6 条消息。
 
         Args:
@@ -608,9 +626,14 @@ class DistillUseCase:
         triggered = False
         if turn_count - last_turn >= self._settings.max_turns:
             triggered = True
-        if not triggered and last_at is not None:
-            elapsed = (now - last_at).total_seconds() / 60.0
-            if elapsed >= self._settings.max_minutes:
+        # 时间锚点：上次蒸馏时间；从未蒸馏过就用会话首次出现时间。
+        # 之前这里写的是 `last_at is not None` 才计时，结果新会话的
+        # last_distill_at 一直是 NULL——「60 分钟也蒸一次」这条规则
+        # 在第一次蒸馏之前永远不成立，短会话就永远产不出记忆。
+        anchor = last_at or session.first_seen_at
+        if not triggered and anchor is not None:
+            elapsed = (now - anchor).total_seconds() / 60.0
+            if elapsed >= self._settings.max_minutes and self._may_retry(session_id, now):
                 triggered = True
 
         if not triggered:

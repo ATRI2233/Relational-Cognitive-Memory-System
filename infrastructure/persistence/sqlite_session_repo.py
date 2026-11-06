@@ -31,7 +31,8 @@ logger = logging.getLogger("rcms")
 _SESSION_COLUMNS = (
     "session_id, user_id, stance, mood, turn_count, stance_turns, "
     "engagement_level, momentum_depth, momentum_energy, last_active, "
-    "dangling_threads, embedding_updated, last_distill_turn, last_distill_at"
+    "dangling_threads, embedding_updated, last_distill_turn, last_distill_at, "
+    "first_seen_at"
 )
 
 _TIMESTAMP_FMT = "%Y-%m-%d %H:%M:%S"
@@ -149,6 +150,7 @@ class SQLiteSessionRepository(ISessionRepository):
             embedding_updated=row[11] if row[11] is not None else 0,
             last_distill_turn=row[12] if row[12] is not None else 0,
             last_distill_at=cls._parse_dt(row[13]),
+            first_seen_at=cls._parse_dt(row[14]),
         )
 
     # ── ISessionRepository 接口实现 ─────────────────────────────
@@ -186,7 +188,7 @@ class SQLiteSessionRepository(ISessionRepository):
         try:
             self._conn.execute(
                 f"INSERT OR REPLACE INTO session_state ({_SESSION_COLUMNS}) "
-                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session.session_id.value,
                     session.user_id.value if session.user_id else None,
@@ -202,6 +204,9 @@ class SQLiteSessionRepository(ISessionRepository):
                     session.embedding_updated,
                     session.last_distill_turn,
                     self._format_dt(session.last_distill_at),
+                    # 缺省时用当前时间：新会话第一次落库就是它的起点
+                    self._format_dt(session.first_seen_at)
+                    or self._now_str(),
                 ),
             )
             self._conn.commit()

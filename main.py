@@ -82,7 +82,7 @@ def _resolve_data_dir(config: dict) -> str:
     "astrbot_plugin_rcms",
     "RCMS",
     "Relational Cognitive Memory System v2",
-    "2.3.0",
+    "2.3.1",
     "https://github.com/ATRI2233/Relational-Cognitive-Memory-System",
 )
 class RcmsPlugin(star.Star):

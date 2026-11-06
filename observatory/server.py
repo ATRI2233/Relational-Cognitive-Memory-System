@@ -446,8 +446,9 @@ class _Store:
     def _distill_progress(self, conn: sqlite3.Connection) -> dict:
         """最近活跃会话离下一次蒸馏还差多远。
 
-        这是「记忆库为什么是空的」唯一能自证的入口：门槛是
-        max_turns 轮或 max_minutes 分钟，两者都没到就不会蒸馏。
+        蒸馏有两条并列条件：攒够 max_turns 轮，或距离上次蒸馏
+        max_minutes 分钟（从没蒸过就算会话首次出现的时间）。
+        两条都没到就不会蒸馏，所以这里两个都算出来。
         """
         info = {
             "max_turns": self.hints.get("distill_max_turns"),
@@ -458,12 +459,21 @@ class _Store:
             "gap": 0,
             "remaining": None,
             "ever_distilled": False,
+            "first_seen_at": None,
+            "elapsed_minutes": None,
+            "wait_minutes": None,
         }
         if not self._has(conn, "session_state"):
             return info
         try:
             row = conn.execute(
-                "SELECT session_id, turn_count, last_distill_turn, last_distill_at "
+                # 库里所有时间戳都是本地时间（应用侧用 datetime.now() 写），
+                # 所以这里必须用 'now','localtime'，否则相差一个时区会算出负数。
+                "SELECT session_id, turn_count, last_distill_turn, last_distill_at, "
+                "       first_seen_at, "
+                "       CAST((julianday('now', 'localtime') - julianday("
+                "         coalesce(last_distill_at, first_seen_at, last_active))) "
+                "         * 24 * 60 AS INTEGER) AS elapsed "
                 "FROM session_state ORDER BY last_active DESC LIMIT 1"
             ).fetchone()
         except sqlite3.Error:
@@ -477,9 +487,13 @@ class _Store:
             last_distill_turn=row["last_distill_turn"] or 0,
             gap=gap,
             ever_distilled=row["last_distill_at"] is not None,
+            first_seen_at=row["first_seen_at"],
+            elapsed_minutes=max(0, int(row["elapsed"] or 0)),
         )
         if info["max_turns"]:
             info["remaining"] = max(0, int(info["max_turns"]) - gap)
+        if info["max_minutes"] and info["elapsed_minutes"] is not None:
+            info["wait_minutes"] = max(0, int(info["max_minutes"]) - info["elapsed_minutes"])
         return info
 
     def memories(

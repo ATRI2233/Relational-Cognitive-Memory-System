@@ -58,6 +58,9 @@ class Session:
 
     # ── 时序 ──
     last_active: datetime | None = None
+    # 会话首次出现时间。蒸馏的时间条件（"距上次蒸馏超过 N 分钟"）
+    # 在从未蒸馏过的会话上要靠它作起点，否则这条规则永远不成立。
+    first_seen_at: datetime | None = None
 
     # ── 未完成话题与蒸馏 ──
     dangling_threads: dict[str, Any] = field(default_factory=dict)

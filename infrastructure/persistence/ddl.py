@@ -125,7 +125,8 @@ CREATE TABLE IF NOT EXISTS session_state (
     dangling_threads TEXT DEFAULT '[]',
     embedding_updated INTEGER DEFAULT 0,
     last_distill_turn INTEGER DEFAULT 0,
-    last_distill_at TIMESTAMP
+    last_distill_at TIMESTAMP,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS user_mappings (
@@ -233,6 +234,11 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         "ADD COLUMN dangling_threads TEXT DEFAULT ''",
         "ADD COLUMN last_distill_turn INTEGER DEFAULT 0",
         "ADD COLUMN last_distill_at TIMESTAMP",
+        # 会话首次出现的时间。时间型蒸馏条件要有起点，否则「60 分钟没蒸馏
+        # 就蒸一次」在从未蒸馏过的会话上永远不成立（last_distill_at 是 NULL）。
+        # 这里不能带 DEFAULT CURRENT_TIMESTAMP：SQLite 不允许 ADD COLUMN 用
+        # 非常量默认值，改为下面 _backfill_first_seen 从 chat_history 回填。
+        "ADD COLUMN first_seen_at TIMESTAMP",
     ]:
         try:
             conn.execute(f"ALTER TABLE session_state {col}")
@@ -306,6 +312,29 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             conn.execute(idx)
         except sqlite3.OperationalError:
             pass
+
+
+def _backfill_first_seen(conn: sqlite3.Connection) -> None:
+    """给缺少 first_seen_at 的会话补上起点。
+
+    老库里的 session_state 行没有这一列（ADD COLUMN 只能加 NULL），
+    而蒸馏的时间条件需要「这个会话从什么时候开始」。以该会话第一条
+    对话的时间为准，退回到 last_active，再退回到当前时间。
+
+    幂等：只处理 first_seen_at 为 NULL 的行。
+    """
+    try:
+        cur = conn.execute(
+            "UPDATE session_state SET first_seen_at = coalesce("
+            "  (SELECT min(h.created_at) FROM chat_history h "
+            "   WHERE h.session_id = session_state.session_id),"
+            "  last_active, CURRENT_TIMESTAMP)"
+            " WHERE first_seen_at IS NULL"
+        )
+        if cur.rowcount and cur.rowcount > 0:
+            logger.info("已为 %d 个会话回填 first_seen_at", cur.rowcount)
+    except sqlite3.Error as e:
+        logger.warning("回填 first_seen_at 失败（不影响使用）: %s", e)
 
 
 # ============================================================
@@ -577,6 +606,9 @@ def ensure_schema(conn: sqlite3.Connection, config: StorageSettings) -> None:
 
         # 2. 增量 Schema 迁移（ALTER TABLE ADD COLUMN 等）
         _run_migrations(conn)
+
+        # 2b. 补齐会话起点（蒸馏的时间条件依赖它）
+        _backfill_first_seen(conn)
 
         # 3. 旧表迁移（long_term_memory / event_memory -> cognitive_distill）
         _migrate_to_cognitive_distill(conn)
