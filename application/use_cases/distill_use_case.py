@@ -30,6 +30,7 @@ DistillUseCase — 蒸馏分析编排 Use Case。
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -50,6 +51,8 @@ from domain.ports.graph_repo import IGraphRepository
 from domain.ports.identity_repo import IIdentityRepository
 from domain.ports.repositories import IMemoryRepository, ISessionRepository
 from application.analysis_writer import AnalysisWriter
+
+logger = logging.getLogger(__name__)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -894,8 +897,15 @@ class DistillUseCase:
         await self._graph_repo.maintain(user_id)
 
         # 行 575-577: 蒸馏摘要向量化
+        # Embedding 属于可降级能力（可关闭 / 上游不可用），失败时只跳过向量，
+        # 蒸馏结果本身照常落库。
         new_entries: list[tuple[int, str]] = []
-        vec = await self._embedding.embed(keylabel[:512])
+        vec: list[float] = []
+        if self._embedding is not None:
+            try:
+                vec = await self._embedding.embed(keylabel[:512])
+            except Exception as exc:
+                logger.warning("蒸馏摘要向量化失败，跳过: %s", exc)
         if vec:
             await self._memory_repo.store_embedding(
                 memory_id, vec,
@@ -1303,8 +1313,14 @@ class DistillUseCase:
             user_id: 用户标识（保留参数, 供未来日志使用）
             entries: [(record_id, text), ...]
         """
+        if self._embedding is None:
+            return
         for eid, text in entries:
-            vec = await self._embedding.embed(text[:512])
+            try:
+                vec = await self._embedding.embed(text[:512])
+            except Exception as exc:
+                logger.warning("条目向量化失败（id=%s），跳过: %s", eid, exc)
+                continue
             if vec:
                 await self._memory_repo.store_embedding(MemoryId(eid), vec)
 

@@ -589,6 +589,46 @@ class Settings(BaseSettings):
     }
 
     @classmethod
+    def load_from_dict(cls, raw: dict[str, Any]) -> "Settings":
+        """从已解析的配置字典加载。
+
+        插件场景下配置来自 AstrBot 的面板（内存里的 dict），磁盘上并没有
+        config.json，因此单独提供这条入口；映射规则与 config.json 完全一致。
+
+        Args:
+            raw: 配置字典，结构与仓库内 config.json 相同。
+
+        Returns:
+            Settings 实例；无法解析的字段保持内置默认值。
+        """
+        defaults: Settings = cls.model_construct()
+        settings: Settings = cls()
+
+        count: int = 0
+        for json_path, settings_path in _config_json_mapping:
+            json_val: Any = _deep_get(raw, json_path)
+            if json_val is None:
+                continue
+            current_val: Any = _deep_get(settings, settings_path)
+            default_val: Any = _deep_get(defaults, settings_path)
+            if current_val != default_val:
+                continue
+            try:
+                _deep_set(settings, settings_path, json_val)
+                count += 1
+            except (AttributeError, TypeError) as exc:
+                _config_logger.warning(
+                    "插件配置字段 %s 应用失败，保持默认值: %s",
+                    ".".join(settings_path),
+                    exc,
+                )
+
+        _config_logger.info(
+            "插件配置加载完成: 覆盖 %d/%d 个字段", count, len(_config_json_mapping)
+        )
+        return settings
+
+    @classmethod
     def load_from_config_json(cls, config_path: str = "config.json") -> "Settings":
         """从 config.json 加载配置，环境变量仍优先于 JSON 值。
 
@@ -600,9 +640,6 @@ class Settings(BaseSettings):
         Returns:
             Settings 实例，已合并 config.json 和 RCMS_ 环境变量。
         """
-        # 纯默认值（无环境变量，无 config.json）
-        defaults: Settings = cls.model_construct()
-
         # 带环境变量覆盖的 Settings
         settings: Settings = cls()
 
@@ -628,26 +665,9 @@ class Settings(BaseSettings):
             return settings
 
         # 根据映射表覆盖字段（仅当未被环境变量覆盖时）
-        count: int = 0
-        for json_path, settings_path in _config_json_mapping:
-            json_val: Any = _deep_get(raw, json_path)
-            if json_val is None:
-                continue
-
-            current_val: Any = _deep_get(settings, settings_path)
-            default_val: Any = _deep_get(defaults, settings_path)
-
-            if current_val == default_val:
-                _deep_set(settings, settings_path, json_val)
-                count += 1
-
-        _config_logger.info(
-            "config.json('%s') 加载完成: 覆盖 %d/%d 个字段",
-            config_path,
-            count,
-            len(_config_json_mapping),
-        )
-        return settings
+        merged = cls.load_from_dict(raw)
+        _config_logger.info("config.json('%s') 加载完成", config_path)
+        return merged
 
 
 # ==============================================================

@@ -952,11 +952,19 @@ class RetrieveContextUseCase:
         all_keywords = list(set(kws + [label for label, _ in diffused[:3]]))
 
         # 3. 向量检索（用原查询 + 扩散词）
+        #    Embedding 是可降级能力：关闭向量检索、上游模型不可用、或返回空向量时，
+        #    语义通道直接跳过，时间/图谱/关键词通道仍然产出结果。
         query_text = user_input
         if all_keywords:
             query_text = user_input + " " + " ".join(all_keywords)
 
-        query_vec = await self._embed_service.embed(query_text[:512])
+        query_vec: list[float] = []
+        if self._embed_service is not None:
+            try:
+                query_vec = await self._embed_service.embed(query_text[:512])
+            except Exception as exc:
+                logger.warning("语义通道向量化失败，本轮跳过: %s", exc)
+                query_vec = []
         vec_results: dict[int, tuple[float, Memory]] = {}
         if query_vec:
             embedding_results = await self._memory_repo.search_by_embedding(

@@ -55,6 +55,8 @@ class SQLiteMemoryRepository(IMemoryRepository):
         self._clock = clock
         # 嵌入向量缓存：user_id -> {"vectors": list[list[float]], "meta": [(id, content)]}
         self._emb_cache: dict[str, dict] = {}
+        # 首次写入向量时做一次维度校验，避免换 Embedding 模型后旧向量维度不一致
+        self._dim_checked = False
 
     # ── 内部辅助方法 ──────────────────────────────────────────────
 
@@ -579,6 +581,47 @@ class SQLiteMemoryRepository(IMemoryRepository):
 
         return [self._row_to_memory(r) for r in rows]
 
+    def _guard_embedding_dim(self, dim: int) -> None:
+        """检测向量维度是否与库中存量向量一致。
+
+        插件默认跟随 AstrBot 当前 Embedding 模型，用户换模型后维度可能从 1536
+        变成 1024 之类。维度不一致时余弦相似度恒为 0，语义通道会静默失效，
+        因此这里在首次写入时比对一次：维度变了就清空旧向量，等后续重新向量化。
+
+        Args:
+            dim: 本次待写入向量的维度。
+        """
+        if self._dim_checked or not dim:
+            return
+        self._dim_checked = True
+        try:
+            row = self._conn.execute(
+                "SELECT embedding_dim FROM cognitive_distill "
+                "WHERE embedding_dim IS NOT NULL AND embedding_dim > 0 LIMIT 1"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            logger.debug("读取存量向量维度失败: %s", exc)
+            return
+        if not row:
+            return
+        old_dim = int(row[0])
+        if old_dim == dim:
+            return
+        try:
+            self._conn.execute(
+                "UPDATE cognitive_distill SET embedding = NULL, embedding_dim = NULL "
+                "WHERE embedding IS NOT NULL"
+            )
+            self._conn.commit()
+            self._emb_cache.clear()
+            logger.warning(
+                "Embedding 维度由 %d 变为 %d（模型已更换），旧向量已清空，将按新模型重新向量化",
+                old_dim,
+                dim,
+            )
+        except sqlite3.Error as exc:
+            logger.error("清空旧维度向量失败: %s", exc)
+
     async def store_embedding(
         self,
         record_id: MemoryId,
@@ -596,6 +639,7 @@ class SQLiteMemoryRepository(IMemoryRepository):
         """
         blob = self._embed_to_blob(embedding)
         dim = len(embedding)
+        self._guard_embedding_dim(dim)
         try:
             cur = self._conn.execute(
                 "UPDATE cognitive_distill SET embedding = ?, embedding_dim = ? "

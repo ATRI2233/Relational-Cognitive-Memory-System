@@ -44,35 +44,35 @@
           },
           "source": {
             "description": "API 来源",
-            "hint": "astrbot：从 AstrBot 配置读取；custom：手动输入",
+            "hint": "astrbot：自动跟随 AstrBot 面板里当前生效的 Embedding 提供商（推荐，无需填 Key）；custom：使用下面手填的 Key 与模型。",
             "type": "string",
-            "default": "astrbot",
             "options": [
               "astrbot",
               "custom"
-            ]
+            ],
+            "default": "astrbot"
           },
           "astrbot_source_id": {
             "description": "AstrBot 提供商 ID",
-            "hint": "AstrBot cmd_config.json 中 provider_sources 的 id，留空自动匹配",
+            "hint": "留空则自动使用当前生效的提供商；也可填提供商 ID 固定绑定。",
             "type": "string",
             "default": ""
           },
           "custom_api_key": {
             "description": "API Key（source=custom）",
-            "hint": "仅在 source=custom 时生效",
+            "hint": "仅 source=custom 时生效。",
             "type": "string",
             "default": ""
           },
           "custom_base_url": {
             "description": "API 地址（source=custom）",
-            "hint": "仅在 source=custom 时生效",
+            "hint": "仅 source=custom 时生效。",
             "type": "string",
             "default": "https://api.openai.com/v1"
           },
           "custom_model": {
             "description": "Embedding 模型名",
-            "hint": "默认 text-embedding-3-small",
+            "hint": "仅 source=custom 时生效；留空则沿用当前提供商。",
             "type": "string",
             "default": "text-embedding-3-small"
           },
@@ -123,35 +123,35 @@
         "items": {
           "source": {
             "description": "API 来源",
-            "hint": "astrbot：从 AstrBot 配置读取；custom：手动输入",
+            "hint": "astrbot：自动跟随 AstrBot 面板里当前生效的对话模型（推荐，无需填 Key）；custom：使用下面手填的 Key 与模型。",
             "type": "string",
-            "default": "astrbot",
             "options": [
               "astrbot",
               "custom"
-            ]
+            ],
+            "default": "astrbot"
           },
           "astrbot_source_id": {
             "description": "AstrBot 提供商 ID",
-            "hint": "留空自动匹配当前启用的提供商",
+            "hint": "留空则自动使用当前生效的提供商；也可填提供商 ID 固定绑定。",
             "type": "string",
             "default": ""
           },
           "custom_api_key": {
             "description": "API Key（source=custom）",
-            "hint": "仅在 source=custom 时生效",
+            "hint": "仅 source=custom 时生效。",
             "type": "string",
             "default": ""
           },
           "custom_base_url": {
             "description": "API 地址（source=custom）",
-            "hint": "仅在 source=custom 时生效",
+            "hint": "仅 source=custom 时生效。",
             "type": "string",
             "default": "https://api.openai.com/v1"
           },
           "custom_model": {
             "description": "蒸馏模型名",
-            "hint": "推荐 gpt-4o-mini 成本低效果够",
+            "hint": "仅 source=custom 时生效；留空则沿用当前提供商。",
             "type": "string",
             "default": "gpt-4o-mini"
           },

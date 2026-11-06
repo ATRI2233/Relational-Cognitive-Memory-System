@@ -14,9 +14,11 @@ infrastructure/ 里。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
+import time
 
 _self = os.path.dirname(os.path.abspath(__file__))
 if _self not in sys.path:
@@ -33,6 +35,16 @@ from astrbot.core import logger
 from adapter.rcms_factory import create_core, CoreContext
 
 DEFAULT_DATA_DIRNAME = "astrbot_plugin_rcms"
+
+# Embedding provider 连续失败后的冷却时间（秒）。
+# 语义通道是可降级的：上游模型不可用时，时间/图谱通道仍然完整工作，
+# 但不能每轮对话都去等一次超时，否则会明显拖慢回复。
+_EMBED_FAIL_COOLDOWN_SECONDS = 300
+
+# 单次调用超时。provider 自带 timeout 往往很宽松（默认 20s），
+# 上游异常时会把 on_llm_request 卡住，直接体现为用户等首字。
+_EMBED_TIMEOUT_SECONDS = 4
+_LLM_TIMEOUT_SECONDS = 120
 
 
 def _resolve_data_dir(config: dict) -> str:
@@ -70,7 +82,7 @@ def _resolve_data_dir(config: dict) -> str:
     "astrbot_plugin_rcms",
     "RCMS",
     "Relational Cognitive Memory System v2",
-    "2.0.1",
+    "2.0.2",
     "https://github.com/ATRI2233/Relational-Cognitive-Memory-System",
 )
 class RcmsPlugin(star.Star):
@@ -84,6 +96,12 @@ class RcmsPlugin(star.Star):
         self.user_id = general.get("user_id", config.get("user_id", "default_user"))
         self._core: CoreContext | None = None
         self._config = config
+        # 模型解析是运行期惰性的：这里只维护状态，不在这里抓 provider
+        self._current_umo: str | None = None
+        self._noticed: set[str] = set()
+        self._embed_fail_until = 0.0
+        # 后台落库任务，terminate 时统一收敛
+        self._bg_tasks: set[asyncio.Task] = set()
 
         # 仓库内附带的 config.json 作为默认值，AstrBot 面板配置优先覆盖
         _cfg_path = os.path.join(_self, "config.json")
@@ -104,16 +122,52 @@ class RcmsPlugin(star.Star):
             llm_callable, embed_callable = self._build_callbacks()
             self._core = create_core(
                 db_path=db_path,
+                settings=self._build_settings(data_dir),
                 llm_call=llm_callable,
                 embed_call=embed_callable,
             )
         return self._core
+
+    def _build_settings(self, data_dir: str):
+        """把 AstrBot 面板里的插件配置映射成 RCMS 的 Settings。
+
+        不这样做的话 create_core 会走 get_settings() 单例：它读不到面板配置
+        （面板配置是内存里的 dict，磁盘上没有 config.json），于是 max_turns、
+        召回上限、权重等全部退回内置默认值 —— 用户在面板改什么都不生效。
+
+        Args:
+            data_dir: 已解析出的记忆库目录。
+
+        Returns:
+            与面板配置一致的 Settings；解析失败时退回内置默认值。
+        """
+        from infrastructure.config.settings import Settings
+
+        try:
+            settings = Settings.load_from_dict(self._config)
+        except Exception as exc:
+            logger.warning("RCMS: 插件配置解析失败，使用内置默认值: %s", exc)
+            return Settings()
+        # 记忆库目录以 _resolve_data_dir 为准（面板里可能留空或写了相对路径）
+        try:
+            settings.storage.data_dir = data_dir
+        except Exception:
+            pass
+        return settings
 
     async def terminate(self) -> None:
         """关闭 RCMS 核心，执行 WAL TRUNCATE 后释放资源。
 
         AstrBot 在卸载/重载插件时会 await 本方法，因此必须是协程。
         """
+        # 先收敛后台任务，否则它们会继续使用马上要被关闭的数据库连接
+        if self._bg_tasks:
+            pending = list(self._bg_tasks)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            self._bg_tasks.clear()
+
         if self._core is not None:
             db_path = getattr(self, "_db_path", None)
             if db_path:
@@ -138,55 +192,279 @@ class RcmsPlugin(star.Star):
             logger.info("RCMS 核心已关闭")
 
     def _build_callbacks(self):
-        analysis_cfg = self._config.get("analysis", {})
-        if not analysis_cfg:
-            return None, None
-        llm_cfg = analysis_cfg.get("post_analysis", {})
-        llm_callable = None
-        if llm_cfg.get("api_key") or llm_cfg.get("custom_api_key"):
+        """构造 LLM / Embedding 回调。
+
+        设计前提是零配置：默认 ``analysis.*.source = "astrbot"``，运行时向 AstrBot
+        要「当前生效的 provider」，用户在面板里换模型插件就跟着换，不需要在插件
+        里再填一遍 API Key。只有显式设置 ``source = "custom"`` 且填了 Key 时，才
+        走插件内自建的 OpenAI 客户端。
+
+        Returns:
+            (llm_callable, embed_callable)，两者都是 async 回调；
+            嵌入被关闭或不可用时 embed_callable 为 None。
+        """
+        analysis_cfg = self._config.get("analysis")
+        analysis_cfg = analysis_cfg if isinstance(analysis_cfg, dict) else {}
+        llm_cfg = analysis_cfg.get("post_analysis")
+        llm_cfg = llm_cfg if isinstance(llm_cfg, dict) else {}
+        emb_cfg = analysis_cfg.get("retrieval")
+        emb_cfg = emb_cfg if isinstance(emb_cfg, dict) else {}
+
+        # source=custom 但没填 Key 时静默回退即可，但要让用户知道为什么没生效
+        for label, cfg in (("蒸馏 LLM", llm_cfg), ("Embedding", emb_cfg)):
+            if str(cfg.get("source") or "").strip().lower() != "custom":
+                continue
+            if not str(
+                cfg.get("api_key") or cfg.get("custom_api_key") or ""
+            ).strip():
+                logger.warning(
+                    "RCMS: %s 的 source 设为 custom 但未填 API Key，"
+                    "已自动回退到 AstrBot 当前模型",
+                    label,
+                )
+
+        return self._make_llm_callable(llm_cfg), self._make_embed_callable(emb_cfg)
+
+    # ── 模型自动解析 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _clean(value: object) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def _should_use_custom(cfg: dict) -> bool:
+        """是否走「插件内自定义 API」分支。
+
+        兼容老配置：source 缺省但填了 Key 时，仍按 custom 处理，避免升级后
+        原本能用的配置突然失效。
+        """
+        has_key = bool(
+            str(cfg.get("api_key") or cfg.get("custom_api_key") or "").strip()
+        )
+        if not has_key:
+            return False
+        source = str(cfg.get("source") or "").strip().lower()
+        return source == "custom" or not source
+
+    @staticmethod
+    def _provider_label(provider: object) -> str:
+        """拼一个可读的 provider 标识，用于日志。"""
+        cfg = getattr(provider, "provider_config", None)
+        cfg = cfg if isinstance(cfg, dict) else {}
+        provider_id = str(cfg.get("id") or "").strip()
+        model = ""
+        get_model = getattr(provider, "get_model", None)
+        if callable(get_model):
+            try:
+                model = str(get_model() or "").strip()
+            except Exception:
+                model = ""
+        if not model:
+            model = str(
+                cfg.get("embedding_model") or cfg.get("model") or ""
+            ).strip()
+        if provider_id and model:
+            return f"{provider_id} / {model}"
+        return provider_id or model or type(provider).__name__
+
+    def _notice_once(self, key: str, message: str, *args: object) -> None:
+        """同一条模型信息只提示一次，避免每轮对话刷屏。"""
+        if key in self._noticed:
+            return
+        self._noticed.add(key)
+        logger.info(message, *args)
+
+    async def _resolve_chat_provider(self, provider_id: str = ""):
+        """取当前用于对话生成的 provider。
+
+        优先使用配置指定的 provider_id；没指定或找不到时，回退到 AstrBot 的
+        「当前会话生效 provider」——也就是面板里显示正在用的那个模型。
+        """
+        ctx = getattr(self, "context", None)
+        if ctx is None:
+            return None
+        pid = self._clean(provider_id)
+        if pid:
+            provider = ctx.get_provider_by_id(pid)
+            if provider is not None:
+                return provider
+            logger.warning(
+                "RCMS: 配置的对话提供商「%s」不存在，回退到 AstrBot 当前默认提供商", pid
+            )
+        try:
+            return await ctx.get_using_provider_async(self._current_umo)
+        except Exception as exc:
+            logger.warning("RCMS: 获取 AstrBot 当前对话提供商失败: %s", exc)
+            return None
+
+    def _resolve_embedding_provider(self, provider_id: str = ""):
+        """取一个可用的 Embedding provider。
+
+        顺序：配置指定 → AstrBot 已加载的 Embedding 提供商列表。
+        AstrBot 没有独立的 Embedding 提供商时会返回 None，调用方降级处理。
+        """
+        ctx = getattr(self, "context", None)
+        if ctx is None:
+            return None
+        pid = self._clean(provider_id)
+        if pid:
+            provider = ctx.get_provider_by_id(pid)
+            if provider is not None and hasattr(provider, "get_embedding"):
+                return provider
+            logger.warning(
+                "RCMS: 配置的 Embedding 提供商「%s」不存在或不是 Embedding 类型", pid
+            )
+        try:
+            providers = ctx.get_all_embedding_providers() or []
+        except Exception as exc:
+            logger.warning("RCMS: 读取 AstrBot Embedding 提供商列表失败: %s", exc)
+            return None
+        return providers[0] if providers else None
+
+    # ── 回调构造 ────────────────────────────────────────────────────
+
+    def _make_llm_callable(self, cfg: dict):
+        if self._should_use_custom(cfg):
             from openai import AsyncOpenAI
 
             client = AsyncOpenAI(
-                api_key=llm_cfg.get("api_key") or llm_cfg["custom_api_key"],
-                base_url=llm_cfg.get("base_url")
-                or llm_cfg.get("custom_base_url", "https://api.openai.com/v1"),
+                api_key=cfg.get("api_key") or cfg.get("custom_api_key"),
+                base_url=self._clean(cfg.get("base_url"))
+                or self._clean(cfg.get("custom_base_url"))
+                or "https://api.openai.com/v1",
+            )
+            model_name = (
+                self._clean(cfg.get("model"))
+                or self._clean(cfg.get("custom_model"))
+                or "gpt-4o-mini"
             )
 
-            async def _llm(prompt: str) -> str:
+            async def _llm_custom(prompt: str) -> str:
                 resp = await client.chat.completions.create(
-                    model=llm_cfg.get("model")
-                    or llm_cfg.get("custom_model", "gpt-4o-mini"),
+                    model=model_name,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 return resp.choices[0].message.content or ""
 
-            llm_callable = _llm
-        emb_cfg = analysis_cfg.get("retrieval", {})
-        embed_callable = None
-        if emb_cfg.get("api_key") or emb_cfg.get("custom_api_key"):
+            logger.info("RCMS: 蒸馏模型使用插件内自定义配置（%s）", model_name)
+            return _llm_custom
+
+        async def _llm_from_astrbot(prompt: str) -> str:
+            provider = await self._resolve_chat_provider(
+                cfg.get("astrbot_source_id")
+            )
+            if provider is None:
+                raise RuntimeError(
+                    "AstrBot 当前没有可用的对话模型，请先在面板的「服务提供商」里添加"
+                )
+            self._notice_once(
+                "llm",
+                "RCMS: 自动使用 AstrBot 当前对话模型 %s",
+                self._provider_label(provider),
+            )
+            resp = await asyncio.wait_for(
+                provider.text_chat(prompt=prompt), timeout=_LLM_TIMEOUT_SECONDS
+            )
+            return (resp.completion_text or "") if resp is not None else ""
+
+        return _llm_from_astrbot
+
+    def _make_embed_callable(self, cfg: dict):
+        if not cfg.get("embedding_enabled", True):
+            logger.info("RCMS: 已关闭向量检索，语义通道停用（时间/图谱通道正常）")
+            return None
+
+        if self._should_use_custom(cfg):
             from openai import AsyncOpenAI
 
-            ecl = AsyncOpenAI(
-                api_key=emb_cfg.get("api_key") or emb_cfg["custom_api_key"],
-                base_url=emb_cfg.get("base_url")
-                or emb_cfg.get("custom_base_url", "https://api.openai.com/v1"),
+            client = AsyncOpenAI(
+                api_key=cfg.get("api_key") or cfg.get("custom_api_key"),
+                base_url=self._clean(cfg.get("base_url"))
+                or self._clean(cfg.get("custom_base_url"))
+                or "https://api.openai.com/v1",
+            )
+            model_name = (
+                self._clean(cfg.get("model"))
+                or self._clean(cfg.get("custom_model"))
+                or "text-embedding-3-small"
             )
 
-            async def _embed(text: str) -> list[float]:
-                resp = await ecl.embeddings.create(
-                    model=emb_cfg.get("model")
-                    or emb_cfg.get("custom_model", "text-embedding-3-small"),
+            async def _embed_custom(text: str) -> list[float]:
+                resp = await client.embeddings.create(
+                    model=model_name,
                     input=text.replace("\n", " "),
                 )
                 return resp.data[0].embedding
 
-            embed_callable = _embed
-        return llm_callable, embed_callable
+            logger.info("RCMS: Embedding 使用插件内自定义配置（%s）", model_name)
+            return _embed_custom
+
+        async def _embed_from_astrbot(text: str) -> list[float]:
+            # 冷却期内直接返回空向量：语义通道跳过，其余通道照常工作，
+            # 避免上游模型不可用时每轮都白等一次超时。
+            if time.monotonic() < self._embed_fail_until:
+                return []
+            provider = self._resolve_embedding_provider(
+                cfg.get("astrbot_source_id")
+            )
+            if provider is None:
+                self._embed_fail_until = (
+                    time.monotonic() + _EMBED_FAIL_COOLDOWN_SECONDS
+                )
+                self._notice_once(
+                    "embed_missing",
+                    "RCMS: AstrBot 未配置 Embedding 提供商，语义通道停用"
+                    "（时间/图谱通道正常工作）。需要向量检索时请到面板添加 "
+                    "Embedding 提供商。",
+                )
+                return []
+            try:
+                vec = await asyncio.wait_for(
+                    provider.get_embedding(text.replace("\n", " ")),
+                    timeout=_EMBED_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                self._embed_fail_until = (
+                    time.monotonic() + _EMBED_FAIL_COOLDOWN_SECONDS
+                )
+                logger.warning(
+                    "RCMS: Embedding 提供商 %s 超过 %ss 未返回，%d 秒内只走时间/图谱通道",
+                    self._provider_label(provider),
+                    _EMBED_TIMEOUT_SECONDS,
+                    _EMBED_FAIL_COOLDOWN_SECONDS,
+                )
+                return []
+            except Exception as exc:
+                self._embed_fail_until = (
+                    time.monotonic() + _EMBED_FAIL_COOLDOWN_SECONDS
+                )
+                logger.warning(
+                    "RCMS: Embedding 提供商 %s 调用失败，%d 秒内只走时间/图谱通道: %s",
+                    self._provider_label(provider),
+                    _EMBED_FAIL_COOLDOWN_SECONDS,
+                    exc,
+                )
+                return []
+            self._embed_fail_until = 0.0
+            self._notice_once(
+                "embed",
+                "RCMS: 自动使用 AstrBot 当前 Embedding 模型 %s（dim=%d）",
+                self._provider_label(provider),
+                len(vec),
+            )
+            return vec
+
+        return _embed_from_astrbot
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         if not self.enabled:
             return
+        # 记录当前会话来源：模型解析用它去取「本会话生效」的 provider，
+        # 这样面板里开启会话级模型隔离时也能自动跟随。
+        self._current_umo = (
+            getattr(event, "unified_msg_origin", None) or self._current_umo
+        )
         user_input = event.message_str or req.prompt or ""
         if not user_input.strip():
             return
@@ -214,21 +492,45 @@ class RcmsPlugin(star.Star):
         reply = resp.completion_text or ""
         if not user_input or not reply:
             return
-        core = self._get_core()
         uid = event.get_sender_id() or self.user_id
         sid = uid
-        from application.use_cases.chat_use_case import ChatRequest
+        sender_name = event.get_sender_name() or uid
 
-        request = ChatRequest(
-            user_id=uid,
-            session_id=sid,
-            user_input=user_input,
-            sender_name=event.get_sender_name() or uid,
+        # 落库与蒸馏放到后台执行。TurnSaved 事件会串起「后处理 + 蒸馏」，
+        # 而蒸馏本身要调一次 LLM（秒级）；同步 await 会把每轮回复硬生生拖慢
+        # 好几秒，用户感知就是「插件装了以后机器人变卡」。
+        task = asyncio.create_task(
+            self._persist_turn(sid, uid, sender_name, user_input, reply)
         )
-        await core.chat_use_case.save_turn_only(request, reply=reply)
-        logger.info(f"RCMS: [{sid}] saved turn")
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
-        self._write_output_log(sid, uid, user_input, reply)
+    async def _persist_turn(
+        self,
+        sid: str,
+        uid: str,
+        sender_name: str,
+        user_input: str,
+        reply: str,
+    ) -> None:
+        """后台任务：写入本轮对话并触发蒸馏链路。"""
+        try:
+            core = self._get_core()
+            from application.use_cases.chat_use_case import ChatRequest
+
+            request = ChatRequest(
+                user_id=uid,
+                session_id=sid,
+                user_input=user_input,
+                sender_name=sender_name,
+            )
+            await core.chat_use_case.save_turn_only(request, reply=reply)
+            logger.info(f"RCMS: [{sid}] saved turn")
+            self._write_output_log(sid, uid, user_input, reply)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("RCMS: 保存本轮对话失败: %s", exc, exc_info=True)
 
     def _write_output_log(
         self, session_id: str, user_id: str, user_input: str, reply: str

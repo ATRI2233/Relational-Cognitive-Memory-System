@@ -41,7 +41,7 @@ RCMS 不是简单的对话历史存储。它在每次对话后对 LLM 回复做 
 
 1. 打开 AstrBot 面板 → 「插件管理」→「安装插件」
 2. 仓库地址填 `https://github.com/ATRI2233/Relational-Cognitive-Memory-System`
-3. 安装后进入插件设置，配置 Embedding / LLM 的 API 地址、Key 与模型名
+3. 装完即生效：插件默认跟随 AstrBot 面板里**当前生效的对话模型与 Embedding 提供商**，不需要在插件里再填任何 Key
 4. 之后在插件管理里点「检查更新」→「更新」即可升级，配置与记忆库都会保留
 
 > 插件依赖：`jieba`、`pydantic`、`pydantic-settings`、`openai`（见 `requirements.txt`，AstrBot 可一键安装）。
@@ -70,15 +70,27 @@ ctx = await core.retrieve_context_use_case.build_multi_user_context(
 
 | 段 | 作用 |
 | --- | --- |
-| `analysis.retrieval` | 语义检索：Embedding 凭证、召回条数、通道保底、时间衰减、情绪加成 |
-| `analysis.post_analysis` | 蒸馏分析：LLM 凭证、触发轮数/分钟、悬案过期轮数 |
-| `output_log` | JSONL 对话摘要日志（默认 `<插件目录>/rcms_output.jsonl`，超限自动裁剪） |
+| `analysis.retrieval` | 语义检索：模型来源、召回条数、通道保底、时间衰减、情绪加成 |
+| `analysis.post_analysis` | 蒸馏分析：模型来源、触发轮数/分钟、悬案过期轮数 |
+| `output_log` | JSONL 对话摘要日志（相对路径落在记忆库目录，超限自动裁剪） |
 | `storage.data_dir` | 记忆库目录，留空则用 AstrBot 数据区的 `plugin_data/astrbot_plugin_rcms` |
 
-`source` 支持两种取值：
+`analysis.retrieval.source` 与 `analysis.post_analysis.source` 各有两种取值：
 
-- `astrbot` — 由宿主注入的提供商（当前适配器只读取下面的 custom 字段，如需自动取用请在面板里填 custom）
-- `custom` — 手动填 `custom_base_url` / `custom_api_key` / `custom_model`
+- **`astrbot`（默认，推荐）** — 自动使用 AstrBot 面板里当前生效的模型：
+  对话模型走 `get_using_provider_async()`，Embedding 走已加载的 Embedding 提供商。
+  在面板换模型，插件立刻跟着换，插件里不需要出现任何 Key。
+  `astrbot_source_id` 留空即自动匹配，填了则固定绑定某个提供商 ID。
+- **`custom`** — 完全自定义，使用 `custom_base_url` / `custom_api_key` / `custom_model`，
+  适合想让记忆系统单独走另一个模型/额度的情况。
+
+> Embedding 是可降级能力：宿主没有配置 Embedding 提供商、或上游模型报错时，
+> 插件会暂停语义通道（默认冷却 300 秒）并在日志里说明，
+> 时间通道与图谱通道照常工作，不会拖慢对话或中断蒸馏。
+> 换 Embedding 模型导致向量维度变化时，旧向量会自动清空并按新模型重建。
+
+> 对话落库与蒸馏在**后台任务**里执行：每轮回复不会被蒸馏的 LLM 调用拖慢，
+> 插件重载时后台任务会被取消并等待收敛，不会留下半截事务。
 
 ## 数据与升级
 
