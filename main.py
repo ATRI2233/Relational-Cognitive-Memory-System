@@ -125,6 +125,15 @@ class RcmsPlugin(star.Star):
                     tmp.close()
                 except Exception as e:
                     logger.debug("terminate WAL checkpoint 跳过: %s", e)
+            # 必须显式关闭核心连接：仓储 / 事件总线之间存在引用环，
+            # 只把 self._core 置空并不会立刻触发回收，句柄会一直留在
+            # 进程里，导致卸载或更新插件时数据库文件被占用（WinError 32）。
+            conn = getattr(self._core, "conn", None)
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception as e:
+                    logger.debug("terminate 关闭数据库连接失败: %s", e)
             self._core = None
             logger.info("RCMS 核心已关闭")
 
