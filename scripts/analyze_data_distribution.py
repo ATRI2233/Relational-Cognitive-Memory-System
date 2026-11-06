@@ -28,10 +28,8 @@ TABLE_CN = {
     "identity_memory": "身份记忆 (identity_memory)",
     "memory_graph_nodes": "图节点 (memory_graph_nodes)",
     "memory_graph_edges": "图边 (memory_graph_edges)",
-    "shared_context": "共享上下文 (shared_context)",
     "user_mappings": "用户映射 (user_mappings)",
     "analysis_raw": "原始分析 (analysis_raw)",
-    "embedding_rebuild_queue": "嵌入重建队列 (embedding_rebuild_queue)",
 }
 
 # 中文列名映射

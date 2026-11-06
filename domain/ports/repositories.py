@@ -197,25 +197,6 @@ class IMemoryRepository(Protocol):
         """
         ...
 
-    async def mark_rebuild(
-        self,
-        user_id: UserId,
-        record_id: MemoryId,
-        reason: str = "",
-    ) -> None:
-        """标记一条记录需要重新生成向量嵌入。
-
-        将 record_id 加入 embedding_rebuild_queue，
-        供后台重建任务消费。
-
-        Args:
-            user_id: 用户标识
-            record_id: 需要重建的记忆记录 ID
-            reason: 重建原因（如 'dim_mismatch'）
-        """
-        ...
-
-
 @runtime_checkable
 class ISessionRepository(Protocol):
     """会话状态仓储接口。

@@ -1,8 +1,7 @@
 {
   "general": {
     "enabled": true,
-    "user_id": "default_user",
-    "injection_method": "system_prompt"
+    "user_id": "default_user"
   },
   "analysis": {
     "retrieval": {
@@ -42,9 +41,6 @@
     "enabled": true,
     "max_size_mb": 5,
     "path": "rcms_output.jsonl"
-  },
-  "debug": {
-    "log_level": "info"
   },
   "storage": {
     "data_dir": ""

@@ -5,7 +5,6 @@
   - TurnSaved:      一轮对话写入后触发 → PostUpdateHandler / DelayedEmbedHandler
   - MemoryDistilled: LLM 蒸馏分析完成后触发 → GraphMaintenanceHandler
   - EmbeddingDone:  向量化完成后触发 → 缓存刷新
-  - EmbeddingRebuildNeeded: 维度不匹配时触发 → 重建队列
   - MemoryExpired:  过期记忆清理后触发 → 可选通知
   - GraphUpdated:   图谱节点/边更新后触发 → 可选旁路
 """
@@ -64,18 +63,6 @@ class EmbeddingDone:
     embedding_dim: int
     occurred_at: datetime
     source: str = ""
-
-
-@dataclass(frozen=True)
-class EmbeddingRebuildNeeded:
-    """向量需要重建 — 模型变更导致维度不匹配
-
-    触发 RebuildQueueHandler 将记录加入 embedding_rebuild_queue。
-    """
-    user_id: str
-    record_id: int
-    occurred_at: datetime
-    reason: str = "dim_mismatch"
 
 
 @dataclass(frozen=True)

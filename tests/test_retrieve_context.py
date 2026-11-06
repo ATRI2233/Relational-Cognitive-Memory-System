@@ -43,7 +43,6 @@ from infrastructure.config.settings import Settings
 from application.use_cases.retrieve_context_use_case import (
     RetrieveContextUseCase,
     IEmbeddingService,
-    ISharedContextRepository,
     IUserMappingRepository,
     ITextTemplateProvider,
     IRetrievalConfig,
@@ -256,15 +255,6 @@ class MockSessionRepository:
         pass
 
 
-class MockSharedContextRepository:
-    """实现 ISharedContextRepository protocol。"""
-
-    async def get_recent(
-        self, user_id: str, limit: int = 4
-    ) -> list[str]:
-        return []
-
-
 class MockUserMappingRepository:
     """实现 IUserMappingRepository protocol。"""
 
@@ -367,7 +357,10 @@ class MockGraphRepository:
         return []
 
     async def get_edges_by_node(self, node_id: int) -> list[GraphEdge]:
-        if self.return_data:
+        return await self.get_edges_by_nodes([node_id])
+
+    async def get_edges_by_nodes(self, node_ids) -> list[GraphEdge]:
+        if self.return_data and set(node_ids) & {1, 2}:
             return [
                 GraphEdge(
                     from_node_id=1,
@@ -432,7 +425,6 @@ def _build_use_case(
     memory_repo = MockMemoryRepository()
     identity_repo = MockIdentityRepository()
     session_repo = MockSessionRepository()
-    shared_context_repo = MockSharedContextRepository()
     user_mapping_repo = MockUserMappingRepository()
     session_query_repo = MockSessionQueryRepository()
     template_provider = MockTemplateProvider()
@@ -451,7 +443,6 @@ def _build_use_case(
         identity_repo=identity_repo,
         graph_repo=graph_repo,
         session_repo=session_repo,
-        shared_context_repo=shared_context_repo,
         user_mapping_repo=user_mapping_repo,
         fusion_service=fusion_service,
         time_service=time_service,

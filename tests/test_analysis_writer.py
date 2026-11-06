@@ -85,9 +85,6 @@ _VALID_ANALYSIS: dict[str, Any] = {
         {"description": "不要催我"},
         {"description": "不要问工资"},
     ],
-    "shared_jokes": [
-        {"trigger": "哲学", "context": "用户喜欢讨论哲学话题"},
-    ],
     "dangling_threads": [
         "关于工作的深层次讨论",
         "哲学话题需要继续探讨",
@@ -160,12 +157,6 @@ class TestAnalysisWriter:
         self.graph_repo = SQLiteGraphRepository(self.conn, self.clock)
         self.settings = Settings()
 
-        # shared_context upsert 调用记录
-        self.upserted_shared: list[tuple[str, str, str]] = []
-
-        async def _mock_upsert_shared(user_id: str, trigger: str, context: str) -> None:
-            self.upserted_shared.append((user_id, trigger, context))
-
         self.writer = AnalysisWriter(
             memory_repo=self.memory_repo,
             session_repo=self.session_repo,
@@ -173,7 +164,6 @@ class TestAnalysisWriter:
             graph_repo=self.graph_repo,
             clock=self.clock,
             settings=self.settings,
-            upsert_shared_context=_mock_upsert_shared,
         )
 
     def teardown_method(self) -> None:
@@ -258,20 +248,6 @@ class TestAnalysisWriter:
         assert node_count >= 2, (
             f"图谱节点应 >= 2 (小明 + 哲学)，实际 {node_count}"
         )
-
-        # 验证 shared_context 调用了 callback
-        assert len(self.upserted_shared) >= 1, (
-            "shared_jokes 应触发 upsert 回调"
-        )
-        # 验证回调内容正确性：_VALID_ANALYSIS.shared_jokes[0]
-        if self.upserted_shared:
-            _, trigger, context = self.upserted_shared[0]
-            assert trigger == "哲学", (
-                f"trigger 应为 '哲学'，收到 {trigger!r}"
-            )
-            assert "哲学" in context, (
-                f"context 应包含哲学，收到 {context!r}"
-            )
 
         # 验证 session_state 的 dangling_threads 已更新
         session_row = self.conn.execute(

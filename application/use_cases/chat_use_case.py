@@ -122,7 +122,7 @@ class IPromptBuilder(Protocol):
             user_input: 用户输入文本
             memories: 三通道召回的记忆列表 [(content, tag), ...]
             long_term: 长期语境字典，含 identity_traits / preferences /
-                       self_identity / boundaries / shared_contexts 等
+                       self_identity / boundaries / entities 等
             graph_paths: 图谱关系链描述列表
 
         Returns:
@@ -140,7 +140,7 @@ class IDistillRunner(Protocol):
       - _run_distill_analysis（行 317-423）：执行 LLM 蒸馏分析并写库
 
     封装了读取 chat_history 构建快照、调用 LLM、解析 JSON 响应、
-    写入 cognitive_distill / identity_memory / emotional_trace 的完整流程。
+    写入 cognitive_distill / identity_memory / session_state 的完整流程。
     """
 
     async def check_and_run(
@@ -159,7 +159,7 @@ class IDistillRunner(Protocol):
           1. 从 chat_history 读取快照文本
           2. 构建蒸馏 prompt 并调用 LLM
           3. 解析 JSON（摘要 + 9 维分析）
-          4. 写入 cognitive_distill + identity_memory + emotional_trace
+          4. 写入 cognitive_distill + identity_memory + session_state
           5. 更新 session_state 中的 last_distill_turn/last_distill_at
           6. 触发记忆过期清理和图维护
 
@@ -192,27 +192,6 @@ class ISettings(Protocol):
     """
 
     emotional_words: IEmotionalWordsSettings
-
-
-@runtime_checkable
-class ISharedContextRepository(Protocol):
-    """共享语境仓储协议。
-
-    对应 shared_context 表的读写操作。
-    记录用户与 AI 之间积累的共同背景知识。
-    """
-
-    async def get_recent(self, user_id: str, limit: int = 4) -> list[str]:
-        """获取最近的共享语境列表。
-
-        Args:
-            user_id: 用户标识
-            limit: 最大返回条数
-
-        Returns:
-            context_body 字符串列表，按时间降序
-        """
-        ...
 
 
 # ==============================================================
@@ -311,7 +290,6 @@ class ChatUseCase:
         retrieval_strategy: IRetrievalStrategy,
         prompt_builder: IPromptBuilder,
         distill_runner: IDistillRunner,
-        shared_context_repo: Optional[ISharedContextRepository] = None,
         user_mapping_repo: Optional[IUserMappingRepository] = None,
     ) -> None:
         """初始化 ChatUseCase。
@@ -328,8 +306,6 @@ class ChatUseCase:
             retrieval_strategy: 三通道召回策略
             prompt_builder: Prompt 构建器
             distill_runner: 蒸馏检查与执行器
-            shared_context_repo: 共享语境仓储（可选，提供后可在
-                                 long_term_context 中填入 shared_contexts）
             user_mapping_repo: 用户映射仓储（可选，提供后自动注册 sender_name
                                到 user_mappings 表）
         """
@@ -344,7 +320,6 @@ class ChatUseCase:
         self._retrieval_strategy = retrieval_strategy
         self._prompt_builder = prompt_builder
         self._distill_runner = distill_runner
-        self._shared_context_repo = shared_context_repo
         self._user_mapping_repo = user_mapping_repo
 
     # ── 公有入口 ──────────────────────────────────────────────
@@ -546,7 +521,7 @@ class ChatUseCase:
     async def _build_long_term_context(self, user_id: str) -> dict[str, Any]:
         """加载长期语境 — 对应 core.py _load_long_term_context（行 150-190）。
 
-        从 identity_repo、graph_repo 和 shared_context_repo 构建长期语境字典，
+        从 identity_repo 与 graph_repo 构建长期语境字典，
         供 prompt_builder 和 distill_runner 使用。
 
         Returns:
@@ -557,7 +532,6 @@ class ChatUseCase:
                 'self_identity':    [str, ...],        # 自我认知描述
                 'boundaries':       [{"description": str}, ...],  # 边界/雷区描述
                 'entities':         [dict, ...],       # 图谱实体（label / entity_type / freq）
-                'shared_contexts':  [str, ...],        # 共享语境文本列表
             }
         """
         # ── 图谱实体 —— 从 graph_repo 加载所有节点 ──
@@ -566,12 +540,6 @@ class ChatUseCase:
             {"label": n.label, "entity_type": n.entity_type, "freq": n.freq}
             for n in nodes
         ]
-
-        # ── 共享语境 —— 从 shared_context_repo 加载最新条目 ──
-        if self._shared_context_repo is not None:
-            shared_contexts = await self._shared_context_repo.get_recent(user_id, limit=4)
-        else:
-            shared_contexts = []
 
         # ── 身份信息 —— 从 identity_repo 加载 ──
         identity = await self._identity_repo.get(user_id)
@@ -583,7 +551,6 @@ class ChatUseCase:
                 "self_identity": [],
                 "boundaries": [],
                 "entities": entities,
-                "shared_contexts": shared_contexts,
             }
 
         trait_details = [
@@ -602,7 +569,6 @@ class ChatUseCase:
             "self_identity": identity.self_identity[:],
             "boundaries": [{"description": b.description} for b in identity.boundaries],
             "entities": entities,
-            "shared_contexts": shared_contexts,
         }
 
     def _calc_importance(self, user_input: str) -> float:

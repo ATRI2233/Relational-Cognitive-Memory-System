@@ -2,7 +2,7 @@
 ddl.py — 数据库 DDL 定义与 Schema 迁移
 
 集中管理所有 CREATE TABLE / CREATE INDEX / ALTER TABLE 语句。
-对应旧代码 DBMixin._init_db() + ensure_memory_links 的全部逻辑。
+对应旧代码 DBMixin._init_db() 的全部逻辑，外加废弃表清理。
 
 用法:
     from infrastructure.persistence.ddl import ensure_schema
@@ -74,14 +74,6 @@ CREATE INDEX IF NOT EXISTS idx_cd_embed ON cognitive_distill(user_id) WHERE embe
 CREATE INDEX IF NOT EXISTS idx_cd_user_imp ON cognitive_distill(user_id, importance DESC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cd_mood ON cognitive_distill(user_id, mood) WHERE mood IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS embedding_rebuild_queue (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    record_id INTEGER NOT NULL,
-    reason TEXT DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS identity_memory (
     user_id TEXT PRIMARY KEY,
     traits TEXT DEFAULT '[]',
@@ -119,17 +111,6 @@ CREATE TABLE IF NOT EXISTS memory_graph_nodes (
 
 CREATE INDEX IF NOT EXISTS idx_mgn_user_label ON memory_graph_nodes(user_id, label);
 
-CREATE TABLE IF NOT EXISTS memory_links (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    from_memory_id INTEGER NOT NULL,
-    to_memory_id INTEGER NOT NULL,
-    link_type TEXT DEFAULT 'related',
-    reason TEXT DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(from_memory_id, to_memory_id)
-);
-
 CREATE TABLE IF NOT EXISTS session_state (
     session_id TEXT PRIMARY KEY,
     user_id TEXT,
@@ -146,17 +127,6 @@ CREATE TABLE IF NOT EXISTS session_state (
     last_distill_turn INTEGER DEFAULT 0,
     last_distill_at TIMESTAMP
 );
-
-CREATE TABLE IF NOT EXISTS shared_context (
-    context_id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    context_body TEXT,
-    omission_count INTEGER DEFAULT 0,
-    confirmed INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_sc_user ON shared_context(user_id);
 
 CREATE TABLE IF NOT EXISTS user_mappings (
     id INTEGER PRIMARY KEY,
@@ -195,6 +165,29 @@ CREATE TABLE IF NOT EXISTS retrieval_trace (
 CREATE INDEX IF NOT EXISTS idx_rt_created ON retrieval_trace(created_at);
 CREATE INDEX IF NOT EXISTS idx_rt_user ON retrieval_trace(user_id);
 """
+
+
+# ============================================================
+# v2 已废弃的表
+#
+# 这些表在 v1 承担过职责，v2 里既没有写入方也没有读取方，
+# 留着只会让人误以为数据在那里（面板/观测站都会列出来）。
+# - shared_context：梗库，蒸馏从未产出 shared_jokes
+# - memory_links：记忆间关联，v2 用图谱边取代
+# - entity_relations：v1 三元组关系，v2 用 memory_graph_edges 取代
+# - emotional_trace：情绪轨迹，v2 情绪写在 cognitive_distill.mood
+# - relationship_arc：关系弧，v2 关系写在 session_state.stance
+# - embedding_rebuild_queue：重建队列只进不出（无消费者）
+# ============================================================
+
+_OBSOLETE_TABLES = (
+    "shared_context",
+    "memory_links",
+    "entity_relations",
+    "emotional_trace",
+    "relationship_arc",
+    "embedding_rebuild_queue",
+)
 
 
 # ============================================================
@@ -465,6 +458,101 @@ def wal_checkpoint(
 
 
 # ============================================================
+# 废弃表清理
+# ============================================================
+
+
+def _resolve_db_dir(conn: sqlite3.Connection) -> str:
+    """从连接本身取数据库所在目录（避免依赖调用方传参）。"""
+    try:
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            if row[1] == "main" and row[2]:
+                return os.path.dirname(os.path.abspath(row[2]))
+    except sqlite3.Error:
+        pass
+    return ""
+
+
+def _dump_table(conn: sqlite3.Connection, table: str) -> list[dict]:
+    """把一张表读成可 JSON 序列化的记录列表。"""
+    cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
+    rows = conn.execute(f'SELECT * FROM "{table}"').fetchall()
+    out: list[dict] = []
+    for row in rows:
+        record: dict = {}
+        for name, value in zip(cols, row):
+            if isinstance(value, bytes):
+                record[name] = f"<BLOB {len(value)} bytes>"
+            else:
+                record[name] = value
+        out.append(record)
+    return out
+
+
+def _drop_obsolete_tables(conn: sqlite3.Connection, data_dir: str = "") -> None:
+    """删除 v2 已废弃的表。
+
+    有数据先落到 ``obsolete_tables_<时间戳>.json`` 再删 —— 记忆库可以重建，
+    但用户的历史数据不该被一个升级动作静默带走。空表直接删，不产生噪音文件。
+
+    Args:
+        conn: SQLite 连接。
+        data_dir: 备份落盘目录；为空时用数据库文件所在目录。
+    """
+    try:
+        existing = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        targets = [t for t in _OBSOLETE_TABLES if t in existing]
+        if not targets:
+            return
+
+        backup: dict[str, list[dict]] = {}
+        for table in targets:
+            try:
+                rows = _dump_table(conn, table)
+            except sqlite3.Error as e:
+                logger.warning("废弃表 %s 读取失败，跳过删除: %s", table, e)
+                continue
+            if rows:
+                backup[table] = rows
+
+        if backup:
+            target_dir = data_dir or _resolve_db_dir(conn)
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+                stamp = conn.execute(
+                    "SELECT strftime('%Y%m%d-%H%M%S','now')"
+                ).fetchone()[0]
+                path = os.path.join(
+                    target_dir, f"obsolete_tables_{stamp}.json"
+                )
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(backup, f, ensure_ascii=False, indent=2)
+                logger.info(
+                    "废弃表数据已备份到 %s（%s）",
+                    path,
+                    ", ".join(f"{k}:{len(v)}" for k, v in backup.items()),
+                )
+            except (OSError, sqlite3.Error) as e:
+                logger.warning("废弃表备份失败，本次不删除非空表: %s", e)
+                targets = [t for t in targets if t not in backup]
+
+        for table in targets:
+            try:
+                conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+                logger.info("已删除废弃表 %s", table)
+            except sqlite3.Error as e:
+                logger.warning("删除废弃表 %s 失败: %s", table, e)
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.warning("废弃表清理跳过: %s", e)
+
+
+# ============================================================
 # 主入口 — 确保 Schema 完整
 # ============================================================
 
@@ -496,7 +584,10 @@ def ensure_schema(conn: sqlite3.Connection, config: StorageSettings) -> None:
         # 4. 从 chat_history 回填 user_mappings
         _migrate_user_mappings(conn)
 
-        # 5. 设置 WAL autocheckpoint（从配置中读取，默认 50 页约 200KB）
+        # 5. 删除 v2 已废弃的表（有数据先备份成 JSON）
+        _drop_obsolete_tables(conn, getattr(config, "data_dir", "") or "")
+
+        # 6. 设置 WAL autocheckpoint（从配置中读取，默认 50 页约 200KB）
         conn.execute(f"PRAGMA wal_autocheckpoint={config.wal_autocheckpoint_pages}")
 
         conn.commit()

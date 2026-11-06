@@ -66,23 +66,6 @@ CREATE INDEX IF NOT EXISTS idx_cd_mood ON cognitive_distill(user_id, mood) WHERE
 -- 若 cognitive_distill 中包含 [悬案归档] 或 [悬案归档·xxx] 前缀的记录,
 -- 它们是旧版系统自动写入的运维噪音, 可通过以下 SQL 清理:
 --   DELETE FROM cognitive_distill WHERE content LIKE '[悬案归档%';
--- 清理后若 embedding 索引也需重建, 执行:
---   DELETE FROM embedding_rebuild_queue WHERE source_table = 'cognitive_distill'
---   AND record_id NOT IN (SELECT id FROM cognitive_distill);
-
--- ============================================================
--- 表: embedding_rebuild_queue
--- 用途: Embedding 重建队列，记录因模型更换或维度变化
---      需要重新向量化的条目
--- ============================================================
-CREATE TABLE IF NOT EXISTS embedding_rebuild_queue (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    record_id INTEGER NOT NULL,
-    reason TEXT DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 -- ============================================================
 -- 表: identity_memory
 -- 用途: 身份记忆表，存储用户的特质、偏好、自我认知和边界信息
@@ -132,22 +115,6 @@ CREATE TABLE IF NOT EXISTS memory_graph_nodes (
 CREATE INDEX IF NOT EXISTS idx_mgn_user_label ON memory_graph_nodes(user_id, label);
 
 -- ============================================================
--- 表: memory_links
--- 用途: 记忆关联表，让 cognitive_distill 中的任意两条记忆
---      (content / summary) 建立显式关联
--- ============================================================
-CREATE TABLE IF NOT EXISTS memory_links (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    from_memory_id INTEGER NOT NULL,
-    to_memory_id INTEGER NOT NULL,
-    link_type TEXT DEFAULT 'related',
-    reason TEXT DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(from_memory_id, to_memory_id)
-);
-
--- ============================================================
 -- 表: session_state
 -- 用途: 会话状态表，追踪每次对话的立场、情绪、轮次、
 --      参与度、动量等会话级元数据
@@ -168,21 +135,6 @@ CREATE TABLE IF NOT EXISTS session_state (
     last_distill_turn INTEGER DEFAULT 0,
     last_distill_at TIMESTAMP
 );
-
--- ============================================================
--- 表: shared_context
--- 用途: 共享上下文表，记录与用户共同确认的背景信息
--- ============================================================
-CREATE TABLE IF NOT EXISTS shared_context (
-    context_id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    context_body TEXT,
-    omission_count INTEGER DEFAULT 0,
-    confirmed INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_sc_user ON shared_context(user_id);
 
 -- ============================================================
 -- 表: user_mappings

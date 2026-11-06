@@ -33,6 +33,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # ── 基础设施层 ──────────────────────────────────────────────────────
 from infrastructure.clock import FrozenClock
+from infrastructure.config.settings import StorageSettings
+from infrastructure.persistence.ddl import ensure_schema
 from infrastructure.persistence.sqlite_memory_repo import SQLiteMemoryRepository
 from infrastructure.persistence.sqlite_session_repo import SQLiteSessionRepository
 from infrastructure.persistence.sqlite_identity_repo import SQLiteIdentityRepository
@@ -53,82 +55,8 @@ from domain.entities.memory import UserId
 
 
 # ===================================================================
-# DDL — 各 Handler 及其依赖 Repository 所需的数据表
+# Schema 直接复用生产 DDL（infrastructure.persistence.ddl）
 # ===================================================================
-
-_DDL_STATEMENTS = """
-CREATE TABLE IF NOT EXISTS cognitive_distill (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    session_id TEXT,
-    content TEXT NOT NULL,
-    keylabel TEXT,
-    summary TEXT DEFAULT '',
-    mood TEXT DEFAULT '',
-    mood_intensity REAL DEFAULT 0.0,
-    importance REAL DEFAULT 0.3,
-    entities TEXT DEFAULT '[]',
-    embedding BLOB,
-    turn_num INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    embedding_dim INTEGER DEFAULT NULL,
-    expires_at TIMESTAMP DEFAULT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_cd_user ON cognitive_distill(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_cd_embed ON cognitive_distill(user_id) WHERE embedding IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS session_state (
-    session_id TEXT PRIMARY KEY,
-    user_id TEXT,
-    stance TEXT DEFAULT 'open',
-    mood REAL DEFAULT 0,
-    turn_count INTEGER DEFAULT 0,
-    stance_turns INTEGER DEFAULT 0,
-    engagement_level TEXT DEFAULT 'coasting',
-    momentum_depth REAL DEFAULT 0.0,
-    momentum_energy REAL DEFAULT 0.0,
-    last_active TIMESTAMP,
-    dangling_threads TEXT DEFAULT '[]',
-    embedding_updated INTEGER DEFAULT 0,
-    last_distill_turn INTEGER DEFAULT 0,
-    last_distill_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS identity_memory (
-    user_id TEXT PRIMARY KEY,
-    traits TEXT DEFAULT '[]',
-    preferences TEXT DEFAULT '{}',
-    self_identity TEXT DEFAULT '[]',
-    boundaries TEXT DEFAULT '[]',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS memory_graph_nodes (
-    node_id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    label TEXT,
-    node_type TEXT DEFAULT 'keyword',
-    freq INTEGER DEFAULT 1,
-    last_seen TIMESTAMP,
-    entity_type TEXT DEFAULT 'auto'
-);
-CREATE INDEX IF NOT EXISTS idx_mgn_user_label ON memory_graph_nodes(user_id, label);
-
-CREATE TABLE IF NOT EXISTS memory_graph_edges (
-    from_node_id INTEGER,
-    to_node_id INTEGER,
-    weight REAL DEFAULT 1.0,
-    encounter_count INTEGER DEFAULT 1,
-    last_seen TIMESTAMP,
-    relation TEXT DEFAULT '',
-    created_at TEXT DEFAULT '',
-    PRIMARY KEY (from_node_id, to_node_id)
-);
-CREATE INDEX IF NOT EXISTS idx_mge_from ON memory_graph_edges(from_node_id);
-CREATE INDEX IF NOT EXISTS idx_mge_to ON memory_graph_edges(to_node_id);
-"""
-
 
 # ===================================================================
 # 测试 Helper
@@ -139,8 +67,7 @@ def _init_db(db_path: str) -> sqlite3.Connection:
     """创建并初始化临时 SQLite 数据库，返回连接。"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.executescript(_DDL_STATEMENTS)
-    conn.commit()
+    ensure_schema(conn, StorageSettings())
     return conn
 
 

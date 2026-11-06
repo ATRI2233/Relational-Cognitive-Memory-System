@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from domain.ports.identity_repo import IIdentityRepository
 from domain.ports.graph_repo import IGraphRepository
@@ -46,7 +46,7 @@ class AnalysisWriter:
     处理 LLM 蒸馏产出的多维度持久化（不包含 key_facts 和 dangling_threads 的
     cognitive_distill 写入）：
     mood / traits / preferences / self_identity / boundaries /
-    shared_context / dangling_threads(session_state) / entities
+    dangling_threads(session_state) / entities
 
     原始逻辑在 analysis.py _apply_analysis（行 42-313）。
     """
@@ -59,7 +59,6 @@ class AnalysisWriter:
         graph_repo: IGraphRepository,
         clock: IClock,
         settings: IAnalysisWriterSettings,
-        upsert_shared_context: Callable[[str, str, str], Awaitable[None]] | None = None,
     ):
         """初始化 AnalysisWriter
 
@@ -70,8 +69,6 @@ class AnalysisWriter:
             graph_repo: 图谱仓储（memory_graph_nodes / memory_graph_edges 表）
             clock: 时间源抽象
             settings: 全局配置（反向关系映射/事实上限等）
-            upsert_shared_context: 可选回调，用于 shared_context 表的 upsert。
-                                   原型 (user_id, trigger, context) -> None。
         """
         self._memory_repo = memory_repo
         self._session_repo = session_repo
@@ -79,7 +76,6 @@ class AnalysisWriter:
         self._graph_repo = graph_repo
         self._clock = clock
         self._settings = settings
-        self._upsert_shared_context = upsert_shared_context
 
     async def write_all(
         self, user_id: str, session_id: str, analysis: dict[str, Any]
@@ -123,13 +119,10 @@ class AnalysisWriter:
         # 5. 写入 boundaries（覆盖写）
         await self._write_boundaries(user_id, data)
 
-        # 6. 写入 shared_context（upsert 梗）
-        await self._write_shared_context(user_id, data)
-
-        # 7. 处理 dangling_threads → session_state（不写入 cognitive_distill）
+        # 6. 处理 dangling_threads → session_state（不写入 cognitive_distill）
         await self._write_dangling_threads(user_id, session_id, data)
 
-        # 8. 处理 entities → 图谱
+        # 7. 处理 entities → 图谱
         await self._write_entities(user_id, data)
 
         # 日志
@@ -338,42 +331,7 @@ class AnalysisWriter:
             await self._identity_repo.save_boundaries(user_id, boundaries)
 
     # ================================================================
-    # 维度 7：shared_context（行 180-198）
-    # ================================================================
-
-    async def _write_shared_context(self, user_id: str, data: dict) -> None:
-        """写入 shared_context（upsert 梗，行 180-198）
-
-        使用注入的回调 upsert_shared_context 进行持久化。
-        未配置回调时跳过并记录警告。
-
-        每个梗包含 trigger（触发词）和 context（上下文），
-        已存在的 trigger 通过 omission_count +1 累积（行 185-193），
-        新 trigger 插入新行（行 194-198）。
-
-        Args:
-            user_id: 用户标识
-            data: 归一化后的分析数据
-        """
-        jokes = data.get("shared_jokes", [])
-        if not jokes:
-            return
-
-        if self._upsert_shared_context is None:
-            logger.warning(
-                "shared_context: upsert_shared_context 未配置，共 %d 条梗跳过写入",
-                len(jokes),
-            )
-            return
-
-        for joke in jokes:
-            trigger = joke.get("trigger", "")
-            context = joke.get("context", "")
-            if trigger:
-                await self._upsert_shared_context(user_id, trigger, context)
-
-    # ================================================================
-    # 维度 8：dangling_threads（行 208-221）
+    # 维度 7：dangling_threads（行 208-221）
     # ================================================================
 
     async def _write_dangling_threads(
@@ -406,7 +364,7 @@ class AnalysisWriter:
             )
 
     # ================================================================
-    # 维度 9：entities（行 223-252）
+    # 维度 8：entities（行 223-252）
     # ================================================================
 
     async def _write_entities(self, user_id: str, data: dict) -> None:
@@ -475,8 +433,6 @@ class AnalysisWriter:
         log_parts: list[str] = []
         if data.get("traits_updates"):
             log_parts.append(f"traits+{len(data['traits_updates'])}")
-        if data.get("shared_jokes"):
-            log_parts.append(f"jokes+{len(data['shared_jokes'])}")
         if data.get("boundaries"):
             log_parts.append(f"bounds+{len(data['boundaries'])}")
         if data.get("entities"):

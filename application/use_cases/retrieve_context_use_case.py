@@ -78,27 +78,6 @@ class IEmbeddingService(Protocol):
 
 
 @runtime_checkable
-class ISharedContextRepository(Protocol):
-    """共享语境仓储。
-
-    对应 shared_context 表的读写操作。
-    记录用户与 AI 之间积累的共同背景知识。
-    """
-
-    async def get_recent(self, user_id: str, limit: int = 4) -> list[str]:
-        """获取最近的共享语境。
-
-        Args:
-            user_id: 用户标识
-            limit: 最大返回条数
-
-        Returns:
-            context_body 字符串列表，按 context_id 降序
-        """
-        ...
-
-
-@runtime_checkable
 class IUserMappingRepository(Protocol):
     """用户映射仓储。
 
@@ -238,7 +217,6 @@ class RetrieveContextUseCase:
             identity_repo=identity_repo,
             graph_repo=graph_repo,
             session_repo=session_repo,
-            shared_context_repo=shared_context_repo,
             user_mapping_repo=user_mapping_repo,
             fusion_service=fusion_service,
             time_service=time_service,
@@ -263,7 +241,6 @@ class RetrieveContextUseCase:
         identity_repo: IIdentityRepository,
         graph_repo: IGraphRepository,
         session_repo: ISessionRepository,
-        shared_context_repo: ISharedContextRepository,
         user_mapping_repo: IUserMappingRepository,
         fusion_service: FusionService,
         time_service: TimeService,
@@ -283,7 +260,6 @@ class RetrieveContextUseCase:
             identity_repo: 用户身份仓储（identity_memory 查询）
             graph_repo: 图谱仓储（memory_graph_nodes / edges 检索）
             session_repo: 会话状态仓储（session_state 查询）
-            shared_context_repo: 共享语境仓储（shared_context 查询）
             user_mapping_repo: 用户映射仓储（user_mappings 查询）
             fusion_service: 三通道融合服务（去重 / 加权排序 / 截断）
             time_service: 时间服务（衰减计算 / 模糊时间描述）
@@ -301,7 +277,6 @@ class RetrieveContextUseCase:
         self._identity_repo = identity_repo
         self._graph_repo = graph_repo
         self._session_repo = session_repo
-        self._shared_context_repo = shared_context_repo
         self._user_mapping_repo = user_mapping_repo
         self._fusion_service = fusion_service
         self._time_service = time_service
@@ -512,7 +487,6 @@ class RetrieveContextUseCase:
               - self_identity:   [str, ...]           自我认知描述
               - boundaries:      [{"description": str}, ...]  边界/雷区
               - entities:        [{"name", "type", "relation", "fact"}, ...]  图谱实体
-              - shared_contexts: [str, ...]           共享语境文本列表
         """
         # ── 身份特质（IIdentityRepository）──
         identity = await self._identity_repo.get(user_id)
@@ -542,10 +516,6 @@ class RetrieveContextUseCase:
         # ── 图谱实体关系（IGraphRepository）──
         entities = await self._load_entities(user_id)
 
-        # ── 共享语境 ──
-        shared_contexts = await self._shared_context_repo.get_recent(
-            user_id, limit=4
-        )
 
         return {
             "identity_traits": identity_traits,
@@ -554,7 +524,6 @@ class RetrieveContextUseCase:
             "self_identity": self_identity,
             "boundaries": boundaries,
             "entities": entities,
-            "shared_contexts": shared_contexts,
         }
 
     async def build_narrative_context(
@@ -706,17 +675,11 @@ class RetrieveContextUseCase:
             )
 
         # ── 共同语境 ──
-        context_title = tmpl.get("context_title", "共同语境")
-        joke_label = tmpl.get("joke_label", "梗")
+        context_title = tmpl.get("context_title", "相关人物与地点")
         entity_label_tpl = tmpl.get(
             "entity_label_template", "他提过的{type}"
         )
         ctx_lines: list[str] = []
-        shared = long_term.get("shared_contexts", [])
-        jokes = [s.replace("[梗] ", "") for s in shared if s.startswith("[梗]")][:2]
-        other = [s for s in shared if not s.startswith("[梗]")][:2]
-        ctx_lines.extend(f"{joke_label}: {j}" for j in jokes)
-        ctx_lines.extend(other)
 
         entities = long_term.get("entities", [])
         if entities:
@@ -838,11 +801,6 @@ class RetrieveContextUseCase:
 
         # ── 长期语境块 ──
         lt_block = ""
-        shared_ctx = long_term.get("shared_contexts", [])
-        if shared_ctx:
-            ctx = "、".join(shared_ctx[:3])
-            shared_title = pc.get("shared_context_title", "【共同语境】")
-            lt_block += "\n" + shared_title + ctx
         traits = long_term.get("identity_traits", [])
         if traits:
             trait_strs = [
@@ -971,7 +929,6 @@ class RetrieveContextUseCase:
                     "identity_traits": lt.get("identity_traits", []),
                     "preferences": lt.get("preferences", {}),
                     "entities": lt.get("entities", [])[:12],
-                    "shared_contexts": lt.get("shared_contexts", [])[:6],
                 }
                 await self._emit_trace(trace)
 
@@ -1267,7 +1224,7 @@ class RetrieveContextUseCase:
         流程：
           1. 提取关键词
           2. 搜索图节点（IGraphRepository.search_nodes）
-          3. 遍历种子节点，查询相连边（IGraphRepository.get_edges_by_node）
+          3. 批量取种子节点的相连边，内存建邻接表（get_edges_by_nodes）
           4. 优先带 relation 的边，relation 为空则视为共现边
           5. 时间衰减：weight * 0.95^days, 最低 0.3
           6. 格式化语句，边对去重
@@ -1326,9 +1283,9 @@ class RetrieveContextUseCase:
         seen_pairs: set[tuple[str, str]] = set()
         chain_labels: set[str] = set()
 
+        adjacency = await self._edges_adjacency(list(seed_nodes))
         for node_id in seed_nodes:
-            edges = await self._graph_repo.get_edges_by_node(node_id)
-            for edge in edges:
+            for edge in adjacency.get(node_id, ()):
                 # 确定另一端节点 ID
                 other_id = (
                     edge.to_node_id
@@ -1511,6 +1468,26 @@ class RetrieveContextUseCase:
             return ""
         return "\n".join(f"  · {part}" for part in parts)
 
+    async def _edges_adjacency(
+        self, node_ids: list[int]
+    ) -> dict[int, list]:
+        """一次取回这批节点的所有边，按节点编号建邻接表。
+
+        替代「每节点一次 get_edges_by_node」：节点上百时会把一轮召回
+        放大成上百条 SQL，而这里恒定一条。
+        """
+        wanted = set(node_ids)
+        if not wanted:
+            return {}
+        edges = await self._graph_repo.get_edges_by_nodes(list(wanted))
+        adj: dict[int, list] = {}
+        for edge in edges:
+            if edge.from_node_id in wanted:
+                adj.setdefault(edge.from_node_id, []).append(edge)
+            if edge.to_node_id in wanted and edge.to_node_id != edge.from_node_id:
+                adj.setdefault(edge.to_node_id, []).append(edge)
+        return adj
+
     async def _load_entities(self, user_id: str) -> list[dict]:
         """加载图谱实体关系。
 
@@ -1531,9 +1508,9 @@ class RetrieveContextUseCase:
         collected: list[dict] = []
         seen_relations: set[tuple[str, str, str]] = set()
 
+        adjacency = await self._edges_adjacency([n.node_id for n in all_nodes])
         for node in all_nodes:
-            edges = await self._graph_repo.get_edges_by_node(node.node_id)
-            for edge in edges:
+            for edge in adjacency.get(node.node_id, ()):
                 if not edge.relation:
                     continue
 

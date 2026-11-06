@@ -68,9 +68,6 @@ from infrastructure.persistence.sqlite_identity_repo import (
 )
 from infrastructure.persistence.sqlite_memory_repo import SQLiteMemoryRepository
 from infrastructure.persistence.sqlite_session_repo import SQLiteSessionRepository
-from infrastructure.persistence.sqlite_shared_context_repo import (
-    SQLiteSharedContextRepository,
-)
 from infrastructure.persistence.sqlite_user_mapping_repo import (
     SQLiteUserMappingRepository,
 )
@@ -266,16 +263,6 @@ class _ChatHistoryProvider:
         return records
 
 
-class _StubSharedContextRepo:
-    """ISharedContextRepository 的桩实现。
-
-    未提供真正实现时返回空列表，避免 RetrieveContextUseCase 构造失败。
-    """
-
-    async def get_recent(self, user_id: str, limit: int = 4) -> list[str]:
-        return []
-
-
 class _StubUserMappingRepo:
     """IUserMappingRepository 的桩实现。
 
@@ -351,13 +338,9 @@ def create_core(
     settings: Optional[Settings] = None,
     llm_call: Optional[Callable[[str], Awaitable[str]]] = None,
     embed_call: Optional[Callable[[str], Awaitable[list[float]]]] = None,
-    shared_context_repo: Any = None,
     user_mapping_repo: Any = None,
     session_query_repo: Any = None,
     persona_name: str = "Bot",
-    save_shared_context_fn: Optional[
-        Callable[[str, str, str], Awaitable[None]]
-    ] = None,
     trim_low_importance_fn: Optional[
         Callable[..., Awaitable[int]]
     ] = None,
@@ -373,14 +356,11 @@ def create_core(
                   可选，不提供时 Use Case 运行时会失败。
         embed_call: Embedding 回调，接受文本返回浮点向量。
                     可选，不提供时向量检索功能降级。
-        shared_context_repo: ISharedContextRepository 实现。
-                              可选，不提供时使用桩实现（返回空列表）。
         user_mapping_repo: IUserMappingRepository 实现。
                            可选，不提供时使用桩实现。
         session_query_repo: ISessionQueryRepository 实现。
                             可选，不提供时使用桩实现（跳过 session_warmup）。
         persona_name: AI 角色的名称（默认 "Bot"）。
-        save_shared_context_fn: 可选回调，用于 shared_context 的 upsert。
         trim_low_importance_fn: 可选回调，用于低重要性记忆截断。
         trace_enabled: 是否记录「三路合成」追踪明细（供 WebUI 观测）。
         trace_max: 追踪明细保留条数，超出后按 id 从旧到新删除。
@@ -485,11 +465,9 @@ def create_core(
         graph_repo=graph_repo,
         clock=clock,
         settings=config,
-        upsert_shared_context=save_shared_context_fn,
     )
 
     # ── 可选仓储的桩 / 注入 ───────────────────────────────────────
-    _shared_context_repo = shared_context_repo or SQLiteSharedContextRepository(conn, clock)
     _user_mapping_repo = user_mapping_repo or SQLiteUserMappingRepository(conn, clock)
     # SQLiteSessionRepository 同时提供 ISessionQueryRepository 的 session_warmup 方法
     _session_query_repo = session_query_repo or session_repo
@@ -599,7 +577,6 @@ def create_core(
         prompt_builder=DefaultDistillPromptBuilder(prompts_templates),
         persona_name=persona_name,
         chat_history_provider=_chat_history_provider,
-        save_shared_context_fn=save_shared_context_fn,
         trim_low_importance_fn=trim_low_importance_fn,
         # Task 2: analysis_raw 审计日志
         save_raw_analysis_fn=_save_raw_analysis_fn,
@@ -614,7 +591,6 @@ def create_core(
         identity_repo=identity_repo,
         graph_repo=graph_repo,
         session_repo=session_repo,
-        shared_context_repo=_shared_context_repo,
         user_mapping_repo=_user_mapping_repo,
         fusion_service=fusion_svc,
         time_service=time_svc,
@@ -647,7 +623,6 @@ def create_core(
         retrieval_strategy=retrieval_adapter,
         prompt_builder=template_provider,
         distill_runner=distill_runner_adapter,
-        shared_context_repo=_shared_context_repo,
         user_mapping_repo=_user_mapping_repo,
     )
 

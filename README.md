@@ -140,6 +140,23 @@ RCMS 观测站已就绪，浏览器打开 http://127.0.0.1:8765/ 可查看表数
 - **不要把 `data_dir` 设在插件目录内**：AstrBot 升级插件时会删除并重建插件目录，写在里面的数据库会一起没掉
 - 升级前可用 SQLite 直接备份 `rcms_memory.db`（WAL 模式下请连 `-wal`/`-shm` 一起备份，或先停插件）
 
+### 废弃表自动清理（v2.2+）
+
+v1 留下的一批表在 v2 里既没有写入方也没有读取方，插件加载时会自动删除，删除前把非空表导出成
+`obsolete_tables_<时间戳>.json`（与数据库同目录）：
+
+| 表 | 为什么删 |
+| --- | --- |
+| `shared_context` | 梗库，蒸馏从未产出 `shared_jokes`，从未写入过 |
+| `memory_links` | 记忆间关联，v2 用图谱边取代 |
+| `entity_relations` | v1 三元组关系，v2 用 `memory_graph_edges` |
+| `emotional_trace` | 情绪轨迹，v2 情绪存在 `cognitive_distill.mood` |
+| `relationship_arc` | 关系弧，v2 关系阶段存在 `session_state.stance` |
+| `embedding_rebuild_queue` | 重建队列只进不出，没有消费者 |
+
+空表直接删、不留备份文件；非空表（例如 v1 遗留的 `relationship_arc`）先备份再删。
+迁移是幂等的，重复加载不会再产生文件。
+
 ## 项目结构
 
 ```

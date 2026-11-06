@@ -7,7 +7,7 @@ Graph 仓储接口
 
 from __future__ import annotations
 
-from typing import List, Protocol, runtime_checkable
+from typing import Iterable, List, Protocol, runtime_checkable
 
 from domain.entities.graph import DiffusionResult, GraphEdge, GraphNode
 
@@ -85,6 +85,20 @@ class IGraphRepository(Protocol):
 
         Returns:
             GraphEdge 列表（包括出边和入边）
+        """
+        ...
+
+    async def get_edges_by_nodes(self, node_ids: Iterable[int]) -> List[GraphEdge]:
+        """批量获取与一组节点相连的所有边。
+
+        批量版本用于避免「每个节点查一次」的 N+1 查询，
+        调用方拿到结果后自行按节点建邻接表。
+
+        Args:
+            node_ids: 节点 ID 集合
+
+        Returns:
+            GraphEdge 列表（任一端命中即返回）
         """
         ...
 

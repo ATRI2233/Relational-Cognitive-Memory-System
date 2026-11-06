@@ -710,7 +710,8 @@ class SQLiteMemoryRepository(IMemoryRepository):
 
         从 cognitive_distill 读取所有 embedding IS NOT NULL 的记录，
         反序列化后存入 _emb_cache（dict 格式含 vectors + meta）。
-        处理维度不匹配的条目时自动调用 mark_rebuild 标记重建。
+        反序列化失败或维度不符的条目会被清空向量（下次蒸馏重新向量化），
+        而不是留在缓存里让余弦恒为 0。
 
         Args:
             user_id: 用户标识
@@ -739,6 +740,8 @@ class SQLiteMemoryRepository(IMemoryRepository):
         vectors: list[list[float]] = []
         meta: list[tuple[int, str]] = []
         expected_dim: int | None = None
+        broken: list[int] = []
+        mismatched: list[int] = []
 
         for row in rows:
             rec_id = row[0]
@@ -752,33 +755,42 @@ class SQLiteMemoryRepository(IMemoryRepository):
             try:
                 vec = self._blob_to_embed(blob)
             except Exception as e:
-                logger.warning(
-                    "嵌入反序列化失败 id=%s: %s，标记重建", rec_id, e
-                )
-                await self.mark_rebuild(user_id, MemoryId(rec_id), "deserialize_failed")
+                logger.warning("嵌入反序列化失败 id=%s: %s", rec_id, e)
+                broken.append(rec_id)
                 continue
 
-            # 确定标准维度
+            # 以首条记录确定本次的标准维度
             if expected_dim is None:
                 expected_dim = db_dim if db_dim else len(vec)
 
-            # 维度检查
             if len(vec) == expected_dim:
                 vectors.append(vec)
                 meta.append((rec_id, content))
             else:
-                logger.warning(
-                    "维度不匹配 id=%s dim=%d (expected=%d)，标记重建",
-                    rec_id,
-                    len(vec),
-                    expected_dim,
-                )
+                mismatched.append(rec_id)
+
+        # 失效向量一次性清空（逐行 UPDATE + commit 会放大成 N 次事务）
+        stale = broken + mismatched
+        if stale:
+            try:
+                marks = ",".join("?" * len(stale))
                 self._conn.execute(
-                    "UPDATE cognitive_distill SET embedding = NULL, embedding_dim = NULL WHERE id = ?",
-                    (rec_id,),
+                    "UPDATE cognitive_distill "
+                    "SET embedding = NULL, embedding_dim = NULL "
+                    f"WHERE id IN ({marks})",
+                    stale,
                 )
                 self._conn.commit()
-                await self.mark_rebuild(user_id, MemoryId(rec_id), "dim_mismatch")
+            except sqlite3.Error as e:
+                self._conn.rollback()
+                logger.warning("清理失效向量失败 user=%s: %s", uid, e)
+            logger.warning(
+                "嵌入跳过 %d 条失效向量（反序列化失败 %d / 维度不符 %d），"
+                "已清空待重新向量化",
+                len(stale),
+                len(broken),
+                len(mismatched),
+            )
 
         self._emb_cache[uid] = {"vectors": vectors, "meta": meta}
         logger.info(
@@ -787,43 +799,3 @@ class SQLiteMemoryRepository(IMemoryRepository):
             len(vectors),
             expected_dim or "N/A",
         )
-
-    async def mark_rebuild(
-        self,
-        user_id: UserId,
-        record_id: MemoryId,
-        reason: str = "",
-    ) -> None:
-        """标记一条记录需要重新生成向量嵌入。
-
-        将 record_id 加入 embedding_rebuild_queue，
-        供后台重建任务消费。
-
-        Args:
-            user_id: 用户标识
-            record_id: 需要重建的记忆记录 ID
-            reason: 重建原因（如 'dim_mismatch'）
-        """
-        try:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO embedding_rebuild_queue "
-                "(user_id, record_id, reason) "
-                "VALUES (?, ?, ?)",
-                (user_id.value, record_id.value, reason),
-            )
-            self._conn.commit()
-            logger.debug(
-                "嵌入重建已标记 user=%s id=%s reason=%s",
-                user_id.value,
-                record_id.value,
-                reason,
-            )
-        except sqlite3.Error as e:
-            self._conn.rollback()
-            logger.error(
-                "标记嵌入重建失败 user=%s id=%s: %s",
-                user_id.value,
-                record_id.value,
-                e,
-            )
-            raise

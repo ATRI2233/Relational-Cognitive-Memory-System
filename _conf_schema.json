@@ -14,17 +14,6 @@
         "hint": "当无法从事件获取发送者 ID 时使用的备用用户 ID。",
         "type": "string",
         "default": "default_user"
-      },
-      "injection_method": {
-        "description": "RCMS 上下文注入方式",
-        "hint": "system_prompt：追加到人格提示词尾部；prompt_prefix：放在用户消息前；faketool：以工具调用结果注入。",
-        "type": "string",
-        "default": "system_prompt",
-        "options": [
-          "system_prompt",
-          "prompt_prefix",
-          "faketool"
-        ]
       }
     }
   },
@@ -206,23 +195,6 @@
         "hint": "相对路径会写入记忆库目录（storage.data_dir），避免升级插件时被删除；也可填绝对路径。",
         "type": "string",
         "default": "rcms_output.jsonl"
-      }
-    }
-  },
-  "debug": {
-    "description": "调试",
-    "type": "object",
-    "items": {
-      "log_level": {
-        "description": "日志级别",
-        "hint": "debug 输出详细 pipeline 日志，info 只输出关键信息。",
-        "type": "string",
-        "default": "info",
-        "options": [
-          "debug",
-          "info",
-          "warning"
-        ]
       }
     }
   },

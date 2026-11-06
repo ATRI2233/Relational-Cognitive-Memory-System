@@ -14,7 +14,6 @@ from domain.events.memory_events import (
     MemoryDistilled,
     TurnSaved,
     EmbeddingDone,
-    EmbeddingRebuildNeeded,
     MemoryExpired,
     GraphUpdated,
 )
@@ -23,7 +22,6 @@ __all__ = [
     "MemoryDistilled",
     "TurnSaved",
     "EmbeddingDone",
-    "EmbeddingRebuildNeeded",
     "MemoryExpired",
     "GraphUpdated",
 ]

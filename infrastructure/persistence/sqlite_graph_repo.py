@@ -18,7 +18,7 @@ import re
 import sqlite3
 from collections import deque
 from datetime import datetime
-from typing import Dict, List, Set, Tuple
+from typing import Dict, Iterable, List, Set, Tuple
 
 from domain.entities.graph import DiffusionResult, GraphEdge, GraphNode
 from domain.ports.clock import IClock
@@ -402,6 +402,35 @@ class SQLiteGraphRepository(IGraphRepository):
             logger.error(
                 "get_edges_by_node 失败 node_id=%d: %s", node_id, e
             )
+            raise
+
+    async def get_edges_by_nodes(self, node_ids: Iterable[int]) -> List[GraphEdge]:
+        """批量获取与一组节点相连的所有边（单条 SQL）。
+
+        逐节点调 get_edges_by_node 会退化成 N 次往返：节点上百的用户每轮
+        召回要发上百条 SQL。这里一次取回，调用方在内存里建邻接表。
+
+        Args:
+            node_ids: 节点 ID 集合
+
+        Returns:
+            GraphEdge 列表（任一端命中即返回）
+        """
+        ids = list(dict.fromkeys(int(i) for i in node_ids))
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        try:
+            rows = self._conn.execute(
+                "SELECT from_node_id, to_node_id, weight, encounter_count, "
+                "       relation, last_seen, created_at "
+                "FROM memory_graph_edges "
+                f"WHERE from_node_id IN ({marks}) OR to_node_id IN ({marks})",
+                [*ids, *ids],
+            ).fetchall()
+            return [self._row_to_graph_edge(r) for r in rows]
+        except sqlite3.Error as e:
+            logger.error("get_edges_by_nodes 失败 nodes=%d: %s", len(ids), e)
             raise
 
     async def get_nodes_by_user(self, user_id: str) -> List[GraphNode]:

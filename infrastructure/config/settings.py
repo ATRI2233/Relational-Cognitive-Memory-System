@@ -500,7 +500,6 @@ _config_json_mapping: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
     (("output_log", "max_size_mb"), ("logging", "output_log_max_size_mb")),
     (("output_log", "path"), ("logging", "output_log_path")),
     # debug → logging
-    (("debug", "log_level"), ("logging", "log_level")),
 ]
 
 

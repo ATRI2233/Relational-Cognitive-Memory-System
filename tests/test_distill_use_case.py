@@ -34,6 +34,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # ── 基础设施层 ──────────────────────────────────────────────────────
 from infrastructure.clock import FrozenClock
+from infrastructure.config.settings import StorageSettings
+from infrastructure.persistence.ddl import ensure_schema
 from infrastructure.persistence.sqlite_memory_repo import SQLiteMemoryRepository
 from infrastructure.persistence.sqlite_session_repo import SQLiteSessionRepository
 from infrastructure.persistence.sqlite_identity_repo import SQLiteIdentityRepository
@@ -66,154 +68,9 @@ from domain.events.memory_events import MemoryDistilled
 
 
 # ===================================================================
-# DDL — 与 test_integration.py _DDL_STATEMENTS 保持一致
+# Schema 直接复用生产 DDL（infrastructure.persistence.ddl），
+# 避免测试里再维护一份副本 —— 之前正是副本导致废弃表删漏。
 # ===================================================================
-
-_DDL_STATEMENTS = """
-CREATE TABLE IF NOT EXISTS analysis_raw (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    session_id TEXT,
-    content TEXT,
-    parsed INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS chat_history (
-    id INTEGER PRIMARY KEY,
-    session_id TEXT,
-    role TEXT,
-    content TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    turn_num INTEGER DEFAULT 0,
-    importance REAL DEFAULT 0.3,
-    mood TEXT DEFAULT '',
-    user_id TEXT DEFAULT '',
-    sender_name TEXT DEFAULT ''
-);
-
-CREATE INDEX IF NOT EXISTS idx_ch_session ON chat_history(session_id);
-
-CREATE TABLE IF NOT EXISTS cognitive_distill (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    session_id TEXT,
-    content TEXT NOT NULL,
-    keylabel TEXT,
-    summary TEXT DEFAULT '',
-    mood TEXT DEFAULT '',
-    mood_intensity REAL DEFAULT 0.0,
-    importance REAL DEFAULT 0.3,
-    entities TEXT DEFAULT '[]',
-    embedding BLOB,
-    turn_num INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    embedding_dim INTEGER DEFAULT NULL,
-    expires_at TIMESTAMP DEFAULT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_cd_user ON cognitive_distill(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_cd_embed ON cognitive_distill(user_id) WHERE embedding IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_cd_user_imp ON cognitive_distill(user_id, importance DESC, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_cd_mood ON cognitive_distill(user_id, mood) WHERE mood IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS embedding_rebuild_queue (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    record_id INTEGER NOT NULL,
-    reason TEXT DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS identity_memory (
-    user_id TEXT PRIMARY KEY,
-    traits TEXT DEFAULT '[]',
-    preferences TEXT DEFAULT '{}',
-    self_identity TEXT DEFAULT '[]',
-    boundaries TEXT DEFAULT '[]',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS memory_graph_edges (
-    from_node_id INTEGER,
-    to_node_id INTEGER,
-    weight REAL DEFAULT 1.0,
-    encounter_count INTEGER DEFAULT 1,
-    last_seen TIMESTAMP,
-    relation TEXT DEFAULT '',
-    created_at TEXT DEFAULT '',
-    PRIMARY KEY (from_node_id, to_node_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_mge_from ON memory_graph_edges(from_node_id);
-CREATE INDEX IF NOT EXISTS idx_mge_to ON memory_graph_edges(to_node_id);
-
-CREATE TABLE IF NOT EXISTS memory_graph_nodes (
-    node_id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    label TEXT,
-    node_type TEXT DEFAULT 'keyword',
-    freq INTEGER DEFAULT 1,
-    last_seen TIMESTAMP,
-    entity_type TEXT DEFAULT 'auto'
-);
-
-CREATE INDEX IF NOT EXISTS idx_mgn_user_label ON memory_graph_nodes(user_id, label);
-
-CREATE TABLE IF NOT EXISTS memory_links (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    from_memory_id INTEGER NOT NULL,
-    to_memory_id INTEGER NOT NULL,
-    link_type TEXT DEFAULT 'related',
-    reason TEXT DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(from_memory_id, to_memory_id)
-);
-
-CREATE TABLE IF NOT EXISTS session_state (
-    session_id TEXT PRIMARY KEY,
-    user_id TEXT,
-    stance TEXT DEFAULT 'open',
-    mood REAL DEFAULT 0,
-    turn_count INTEGER DEFAULT 0,
-    stance_turns INTEGER DEFAULT 0,
-    engagement_level TEXT DEFAULT 'coasting',
-    momentum_depth REAL DEFAULT 0.0,
-    momentum_energy REAL DEFAULT 0.0,
-    last_active TIMESTAMP,
-    dangling_threads TEXT DEFAULT '[]',
-    embedding_updated INTEGER DEFAULT 0,
-    last_distill_turn INTEGER DEFAULT 0,
-    last_distill_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS shared_context (
-    context_id INTEGER PRIMARY KEY,
-    user_id TEXT,
-    context_body TEXT,
-    omission_count INTEGER DEFAULT 0,
-    confirmed INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_sc_user ON shared_context(user_id);
-
-CREATE TABLE IF NOT EXISTS user_mappings (
-    id INTEGER PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    label TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'nickname',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(session_id, user_id, label)
-);
-
-CREATE INDEX IF NOT EXISTS idx_um_session ON user_mappings(session_id);
-CREATE INDEX IF NOT EXISTS idx_um_label ON user_mappings(session_id, label);
-"""
-
 
 # ===================================================================
 # 测试 Helper
@@ -229,8 +86,7 @@ def _init_db(db_path: str) -> sqlite3.Connection:
     """创建并初始化临时 SQLite 数据库，返回连接。"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.executescript(_DDL_STATEMENTS)
-    conn.commit()
+    ensure_schema(conn, StorageSettings())
     return conn
 
 
@@ -364,7 +220,6 @@ class TestMemoryCreatedAt:
             # 以下可选参数使用默认值，验证默认路径的正确性：
             #   persona_name="Bot"          — 群聊检测中排除自身
             #   analysis_writer=None         — 9 维分析走内部实现
-            #   save_shared_context_fn=None  — 共享梗/上下文跳过
             #   trim_low_importance_fn=None  — 低重要性条目不做截断
             #   save_raw_analysis_fn=None    — 不写入 analysis_raw 审计日志
             #   mark_raw_parsed_fn=None      — 不标记原始分析为已解析

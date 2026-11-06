@@ -437,9 +437,6 @@ class DistillUseCase:
         chat_history_provider: Callable[
             [SessionId, int, int], Awaitable[list[TurnRecord]]
         ] | None = None,
-        save_shared_context_fn: Callable[
-            [str, str, str], Awaitable[None]
-        ] | None = None,
         trim_low_importance_fn: Callable[
             [UserId, int], Awaitable[int]
         ] | None = None,
@@ -467,7 +464,6 @@ class DistillUseCase:
 
         # 可选回调（当 Repository Protocol 尚缺对应方法时注入）
         self._chat_history_provider = chat_history_provider
-        self._save_shared_context_fn = save_shared_context_fn
         self._trim_low_importance_fn = trim_low_importance_fn
 
         # AnalysisWriter 和 raw analysis 审计（Task 2 & 3）
@@ -1047,9 +1043,6 @@ class DistillUseCase:
         # Step 5: 结构化身份字段 — 对应行 160-178
         await self._save_identity_structured(user_id, data)
 
-        # Step 6: 共享梗/上下文 — 对应行 180-198
-        await self._save_shared_jokes(user_id, data)
-
         # Step 7: 边界/雷区 — 对应行 200-206
         await self._save_boundaries(user_id, data)
 
@@ -1170,30 +1163,6 @@ class DistillUseCase:
         if self_id_raw is not None:
             self_id_list = self_id_raw if isinstance(self_id_raw, list) else [str(self_id_raw)]
             await self._identity_repo.save_self_identity(user_id, self_id_list)
-
-    # ── Step 6: 共享梗/上下文 ──
-
-    async def _save_shared_jokes(self, user_id: str, data: dict) -> None:
-        """写入共享梗/上下文。
-
-        对应 _apply_analysis 行 180-198。
-        shared_context 表操作通过注入的 save_shared_context_fn 委托,
-        未注入时跳过写入。
-
-        Args:
-            user_id: 用户标识
-            data:    LLM 分析数据, 含 shared_jokes 字段
-        """
-        jokes = data.get("shared_jokes", [])
-        if not jokes or self._save_shared_context_fn is None:
-            return
-
-        for joke in jokes:
-            trigger = joke.get("trigger", "")
-            ctx = joke.get("context", "")
-            if not trigger:
-                continue
-            await self._save_shared_context_fn(user_id, trigger, ctx)
 
     # ── Step 7: 边界/雷区 ──
 

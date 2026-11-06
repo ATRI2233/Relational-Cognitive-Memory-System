@@ -414,25 +414,12 @@ class PromptBuilder:
         if not long_term:
             return ""
 
-        context_title = nc.get("context_title", "共同语境")
-        joke_label = nc.get("joke_label", "梗")
+        context_title = nc.get("context_title", "相关人物与地点")
         entity_label_tpl = nc.get(
             "entity_label_template", "他提过的{type}"
         )
 
         ctx_lines: list[str] = []
-
-        shared = long_term.get("shared_contexts", [])
-        jokes = [
-            s.replace("[梗] ", "")
-            for s in shared
-            if s.startswith("[梗]")
-        ][:2]
-        other = [
-            s for s in shared if not s.startswith("[梗]")
-        ][:2]
-        ctx_lines.extend(f"{joke_label}: {j}" for j in jokes)
-        ctx_lines.extend(other)
 
         entities = long_term.get("entities", [])
         if entities:
@@ -695,15 +682,6 @@ class PromptBuilder:
             return ""
 
         lt_block = ""
-
-        shared_ctx = long_term.get("shared_contexts", [])
-        if shared_ctx:
-            ctx = "、".join(shared_ctx[:3])
-            lt_block += (
-                "\n"
-                + pc.get("shared_context_title", "【共同语境】")
-                + ctx
-            )
 
         traits = long_term.get("identity_traits", [])
         if traits:

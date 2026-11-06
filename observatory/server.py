@@ -61,16 +61,7 @@ TABLE_META: dict[str, dict[str, str]] = {
         "title": "会话状态",
         "desc": "每个会话的轮次、蒸馏进度、悬案线索。",
     },
-    "shared_context": {"title": "共享语境", "desc": "双方共享的约定、共识类信息。"},
     "user_mappings": {"title": "用户映射", "desc": "昵称/别名 → 用户 ID 的映射。"},
-    "relationship_arc": {"title": "关系弧", "desc": "关系阶段与走向的时间线记录。"},
-    "emotional_trace": {"title": "情绪轨迹", "desc": "按时间记录的情绪变化。"},
-    "entity_relations": {"title": "实体关系", "desc": "旧版三元组关系表，新版本用图谱边。"},
-    "memory_links": {"title": "记忆关联", "desc": "记忆条目之间的直接关联。"},
-    "embedding_rebuild_queue": {
-        "title": "向量重建队列",
-        "desc": "待重新计算向量的记忆（换 Embedding 模型后会入队）。",
-    },
 }
 
 # 单次返回的最大行数，防止误点把整库拉爆

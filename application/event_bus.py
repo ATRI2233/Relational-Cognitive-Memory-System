@@ -5,7 +5,6 @@ EventBus — 事件总线。
   - TurnSaved → PostUpdateHandler / DelayedEmbedHandler / DistillCheckerHandler
   - MemoryDistilled → GraphMaintenanceHandler
   - EmbeddingDone → EmbeddingCacheHandler
-  - EmbeddingRebuildNeeded → RebuildQueueHandler
 """
 from __future__ import annotations
 

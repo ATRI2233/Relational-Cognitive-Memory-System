@@ -49,12 +49,6 @@ FOREIGN_KEY_PAIRS = [
      "memory_graph_edges.from_node_id → memory_graph_nodes.node_id"),
     ("memory_graph_edges", "to_node_id", "memory_graph_nodes", "node_id",
      "memory_graph_edges.to_node_id → memory_graph_nodes.node_id"),
-    ("embedding_rebuild_queue", "record_id", "cognitive_distill", "id",
-     "embedding_rebuild_queue.record_id → cognitive_distill.id"),
-    ("memory_links", "from_memory_id", "cognitive_distill", "id",
-     "memory_links.from_memory_id → cognitive_distill.id"),
-    ("memory_links", "to_memory_id", "cognitive_distill", "id",
-     "memory_links.to_memory_id → cognitive_distill.id"),
 ]
 
 

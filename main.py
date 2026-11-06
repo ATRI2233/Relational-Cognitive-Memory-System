@@ -82,7 +82,7 @@ def _resolve_data_dir(config: dict) -> str:
     "astrbot_plugin_rcms",
     "RCMS",
     "Relational Cognitive Memory System v2",
-    "2.1.0",
+    "2.2.0",
     "https://github.com/ATRI2233/Relational-Cognitive-Memory-System",
 )
 class RcmsPlugin(star.Star):
@@ -117,9 +117,38 @@ class RcmsPlugin(star.Star):
                 pass
 
         # 观测站要在插件一加载就能打开，不能等到第一条消息
+        self._ensure_schema_ready()
         self._start_webui()
 
     # ── 本地观测站 ──────────────────────────────────────────────────
+
+    def _ensure_schema_ready(self) -> None:
+        """插件加载时就把 Schema 迁移做完。
+
+        核心对象是懒创建的（第一条消息才建），但废弃表清理、索引补齐这类
+        迁移如果拖到那时，观测站会先显示一堆早该删掉的表。这里单独开一次
+        连接跑完 ensure_schema 再关掉，代价只有几毫秒。
+
+        失败不影响插件工作：真正建库时 create_core 还会再跑一遍。
+        """
+        try:
+            import sqlite3
+
+            from infrastructure.persistence.ddl import ensure_schema
+
+            data_dir = _resolve_data_dir(self._config)
+            os.makedirs(data_dir, exist_ok=True)
+            conn = sqlite3.connect(
+                os.path.join(data_dir, "rcms_memory.db"),
+                check_same_thread=False,
+                timeout=5.0,
+            )
+            try:
+                ensure_schema(conn, self._build_settings(data_dir).storage)
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 - 迁移失败不该拦住插件
+            logger.warning("RCMS: Schema 预检失败（会在首次对话时重试）: %s", exc)
 
     def _start_webui(self) -> None:
         """启动插件自带的 localhost 只读面板。
