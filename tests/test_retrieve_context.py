@@ -119,7 +119,17 @@ class MockEmbeddingService:
 
 
 class MockMemoryRepository:
-    """实现 IMemoryRepository protocol — 所有检索返回空列表。"""
+    """实现 IMemoryRepository protocol — 默认所有检索返回空列表。
+
+    vector_results 用于语义通道测试：构造时传入 [(Memory, 余弦), ...]，
+    search_by_embedding 原样返回。默认空列表，保持既有用例行为不变。
+    """
+
+    def __init__(
+        self,
+        vector_results: list[tuple[Memory, float]] | None = None,
+    ) -> None:
+        self.vector_results = list(vector_results or [])
 
     async def get_by_user(
         self,
@@ -146,7 +156,7 @@ class MockMemoryRepository:
         query_vec: list[float],
         limit: int = 5,
     ) -> list[tuple[Memory, float]]:
-        return []
+        return list(self.vector_results)
 
     async def save(self, memory: Memory) -> MemoryId:
         return MemoryId(1)
@@ -410,11 +420,13 @@ class MockGraphRepository:
 
 def _build_use_case(
     graph_repo: MockGraphRepository | None = None,
+    memory_repo: MockMemoryRepository | None = None,
 ) -> RetrieveContextUseCase:
     """组装 RetrieveContextUseCase，所有依赖注入 Mock 桩件。
 
     Args:
         graph_repo: 可选的自定义图仓储 mock（默认无数据返回）。
+        memory_repo: 可选的自定义记忆仓储 mock（默认所有检索返回空）。
 
     Returns:
         配置完成的 RetrieveContextUseCase 实例
@@ -422,7 +434,7 @@ def _build_use_case(
     clock = FrozenClock(datetime(2026, 6, 15, 10, 0, 0))
     settings = Settings()
 
-    memory_repo = MockMemoryRepository()
+    memory_repo = memory_repo or MockMemoryRepository()
     identity_repo = MockIdentityRepository()
     session_repo = MockSessionRepository()
     user_mapping_repo = MockUserMappingRepository()
@@ -542,6 +554,74 @@ class TestGraphPaths:
         assert len(gp) == 0, (
             "无图数据时应返回空图路径"
         )
+
+
+# ===================================================================
+# 测试：语义通道的相对门槛
+# -------------------------------------------------------------------
+# 旧代码在 _channel_resonance 里写死 `cos_sim > 0.3`，而中文语料上真正
+# 该命中的余弦普遍只有 0.20~0.30，于是向量通道常年空转、每次召回都退化成
+# keyword-only。现在门槛 = max(配置下限, 本批最高分 × 0.55)。
+# 下面几个用例分别锁住：相对门槛放宽、相对门槛仍能挡噪声、绝对下限兜底、
+# 以及无向量结果时不炸。
+# ===================================================================
+
+
+class TestSemanticChannelRelativeGate:
+    """语义通道的「相对门槛 + 绝对下限」行为。"""
+
+    def _mem(self, mid: int, content: str) -> Memory:
+        return Memory(
+            memory_id=MemoryId(mid),
+            user_id=UserId("u1"),
+            content=content,
+            created_at=datetime(2026, 6, 10, 9, 0, 0),
+            importance=Importance(0.5),
+        )
+
+    def _run_channel(self, pairs: list[tuple[Memory, float]]) -> list[tuple[str, float]]:
+        repo = MockMemoryRepository(vector_results=pairs)
+        uc = _build_use_case(memory_repo=repo)
+        return _run_async(
+            uc._channel_resonance("u1", "你还记得我为什么焦虑吗", limit=5)
+        )
+
+    def test_mid_range_cosines_all_pass(self) -> None:
+        """锁住回归本体：0.28 / 0.26 都低于旧阈值 0.3，但相对门槛必须放行。
+
+        本批最高分 0.28 → 门槛 max(0.12, 0.154) = 0.154，两条都该进语义通道。
+        改之前这里会是 0 条（全被 > 0.3 挡掉）。
+        """
+        result = self._run_channel([
+            (self._mem(1, "考研冲刺期焦虑"), 0.28),
+            (self._mem(2, "习惯性自我复盘"), 0.26),
+        ])
+        assert len(result) == 2, f"两条都该进入语义通道，实际 {len(result)} 条"
+
+    def test_relative_gate_drops_noise(self) -> None:
+        """锁住相对门槛仍然挡噪声：0.02 远低于 0.55 × 0.28 ≈ 0.154。"""
+        result = self._run_channel([
+            (self._mem(1, "考研冲刺期焦虑"), 0.28),
+            (self._mem(2, "完全无关的闲聊"), 0.02),
+        ])
+        assert len(result) == 1, f"只该保留高分那条，实际 {len(result)} 条"
+        assert "考研冲刺期焦虑" in result[0][0]
+
+    def test_absolute_floor_rejects_all_low_batch(self) -> None:
+        """锁住绝对下限：整批都很低时（0.10/0.05），相对门槛会全放行，
+        必须由 embedding_cosine_threshold=0.12 这层兜住，结果应为空。
+        """
+        result = self._run_channel([
+            (self._mem(1, "低相关记忆A"), 0.10),
+            (self._mem(2, "低相关记忆B"), 0.05),
+        ])
+        assert len(result) == 0, f"整批低于绝对下限时不该进向量通道，实际 {len(result)} 条"
+
+    def test_empty_embedding_results_is_safe(self) -> None:
+        """锁住降级路径：search_by_embedding 返回空时不报错，语义通道为空。"""
+        result = self._run_channel([])
+        assert isinstance(result, list)
+        assert len(result) == 0
 
 
 # ===================================================================

@@ -929,9 +929,10 @@ class DistillUseCase:
             content:    蒸馏正文
             keylabel:   核心标签
             summary:    概要
-            analysis:   9 维分析数据（仅取 mood 和 mood_intensity）
+            analysis:   9 维分析数据（取 mood、mood_intensity 和 importance）
             now:        当前时间
-            turn_count: 当前蒸馏到的轮次
+            turn_count: 当前蒸馏到的轮次，同时作为记忆的 turn_num 落库，
+                        让面板能把一条记忆跳回它覆盖的那段对话
 
         Returns:
             (memory_id, [(entry_id, text_for_embedding), ...])
@@ -945,6 +946,17 @@ class DistillUseCase:
         mood = analysis.get("mood", "") if isinstance(analysis, dict) else ""
         mood_intensity = analysis.get("mood_intensity", 0.0) if isinstance(analysis, dict) else 0.0
 
+        # 重要性优先用 LLM 的判断。原来这里写死 settings.distill_entry_importance，
+        # 于是每条记忆都是同一个值（默认 0.8），检索的「重要性」因子退化成常数，
+        # 排序只剩时间衰减。LLM 的 analysis.importance 才是这轮对话真正的分量。
+        raw_imp = analysis.get("importance") if isinstance(analysis, dict) else None
+        try:
+            importance_value = float(raw_imp)
+        except (TypeError, ValueError):
+            importance_value = float(self._settings.distill_entry_importance)
+        # 越界值（LLM 偶尔给 1.5 或 -0.2）夹到合法区间，别让 Importance 抛错
+        importance_value = min(1.0, max(0.0, importance_value))
+
         # 行 542-545: 写入蒸馏摘要到 cognitive_distill
         memory = Memory(
             memory_id=MemoryId(0),
@@ -952,10 +964,11 @@ class DistillUseCase:
             content=content,
             keylabel=keylabel,
             summary=summary,
-            importance=Importance(self._settings.distill_entry_importance),
+            importance=Importance(importance_value),
             mood=Mood(mood),
             mood_intensity=mood_intensity,
             session_id=SessionId(session_id),
+            turn_num=turn_count,
             created_at=self._clock.now(),
         )
         memory_id = await self._memory_repo.save(memory)

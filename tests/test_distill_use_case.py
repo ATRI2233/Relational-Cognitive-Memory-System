@@ -920,3 +920,129 @@ class TestCatchUp:
             assert _run_async(uc.catch_up()) == []
         finally:
             conn.close()
+
+
+# ===================================================================
+# 测试：蒸馏落库的 importance 与 turn_num
+# 场景 —— 旧实现把 importance 写死成 settings.distill_entry_importance，
+# 于是每条记忆的重要性都是同一个常量（默认 0.8），检索的「重要性」因子
+# 退化成常数；同时 Memory 没传 turn_num，落库恒为 0，面板无法把记忆
+# 跳回它覆盖的那段对话。下面几条用例把这两个字段钉死。
+# ===================================================================
+
+
+class TestDistillImportanceAndTurnNum:
+    """校验 _write_distill_summary 透传 LLM importance 并写入 turn_num。"""
+
+    # 用于区分「LLM 没给 importance」和「LLM 给了 None」两种输入
+    _UNSET = object()
+
+    @staticmethod
+    def _response(importance: Any = _UNSET) -> str:
+        """构造一次合法蒸馏响应；importance 缺省时不写这个字段。"""
+        analysis: dict[str, Any] = {"mood": "curious", "mood_intensity": 0.6}
+        if importance is not TestDistillImportanceAndTurnNum._UNSET:
+            analysis["importance"] = importance
+        return json.dumps({
+            "content": "用户在此轮对话中表现出对哲学的浓厚兴趣",
+            "keylabel": "哲学兴趣",
+            "summary": "用户对哲学表现出浓厚兴趣",
+            "analysis": analysis,
+        }, ensure_ascii=False)
+
+    @classmethod
+    def _build(
+        cls, tmp_path: Path, response: str, turn_count: int = 6,
+    ):
+        """复用 TestTimeBasedDistillGate 的夹具（真实 sqlite + MockLLM）。"""
+        conn, uc, _clock, _repo = TestTimeBasedDistillGate._build(
+            tmp_path,
+            first_seen_minutes_ago=180,   # 时间条件成立，一定会蒸馏
+            turn_count=turn_count,
+            llm=MockLLM(response=response),
+        )
+        return conn, uc
+
+    @staticmethod
+    def _distill_and_fetch_row(
+        conn: sqlite3.Connection,
+        uc: DistillUseCase,
+    ) -> sqlite3.Row:
+        """跑一次蒸馏，返回刚落库的那条记忆的 importance / turn_num。"""
+        result = _run_async(uc.check_and_run(user_id="u1", session_id="s1"))
+        assert result.triggered, "时间条件已满足，蒸馏应被触发"
+        assert result.memory_id > 0, f"memory_id 应 > 0，收到 {result.memory_id}"
+        rows = conn.execute(
+            "SELECT importance, turn_num FROM cognitive_distill WHERE id = ?",
+            (result.memory_id,),
+        ).fetchall()
+        assert len(rows) == 1, f"应找到 1 条蒸馏记录，实际 {len(rows)} 条"
+        return rows[0]
+
+    def test_llm_importance_is_persisted(self, tmp_path: Path) -> None:
+        """LLM 给了 0.62 → 库里就是 0.62。
+
+        锁：LLM 的 importance 必须真的落库，不能被配置常量覆盖。
+        修复前这里是 settings.distill_entry_importance（测试夹具里 0.5）。
+        """
+        conn, uc = self._build(tmp_path, self._response(importance=0.62))
+        try:
+            row = self._distill_and_fetch_row(conn, uc)
+            assert abs(row["importance"] - 0.62) < 1e-6, (
+                f"importance 应为 LLM 的 0.62，实际 {row['importance']}"
+            )
+        finally:
+            conn.close()
+
+    def test_missing_importance_falls_back_to_settings(self, tmp_path: Path) -> None:
+        """LLM 没给 importance → 回落到 settings.distill_entry_importance（0.5）。
+
+        锁：字段缺失时不能崩，也不能给个 0；要落在配置的默认值上。
+        """
+        conn, uc = self._build(tmp_path, self._response())
+        try:
+            row = self._distill_and_fetch_row(conn, uc)
+            assert abs(row["importance"] - 0.5) < 1e-6, (
+                f"缺省 importance 应回落到 0.5，实际 {row['importance']}"
+            )
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            (1.5, 1.0),    # 越上界 → 夹到 1.0
+            (-0.3, 0.0),   # 越下界 → 夹到 0.0
+        ],
+    )
+    def test_out_of_range_importance_is_clamped(
+        self, tmp_path: Path, raw: float, expected: float,
+    ) -> None:
+        """LLM 偶尔给出 1.5 / -0.3 这类越界值 → 夹到 [0, 1]，不能抛错。
+
+        锁：Importance 值对象对范围有校验，写库前必须先夹取，
+        否则整条记忆写不进去。
+        """
+        conn, uc = self._build(tmp_path, self._response(importance=raw))
+        try:
+            row = self._distill_and_fetch_row(conn, uc)
+            assert abs(row["importance"] - expected) < 1e-6, (
+                f"importance={raw} 应夹到 {expected}，实际 {row['importance']}"
+            )
+        finally:
+            conn.close()
+
+    def test_turn_num_is_persisted(self, tmp_path: Path) -> None:
+        """会话 turn_count=6 蒸馏一次 → 记忆的 turn_num 应为 6。
+
+        锁：记忆必须知道自己覆盖到第几轮（修复前恒为 0），
+        否则面板没法把记忆跳回对应的对话。
+        """
+        conn, uc = self._build(tmp_path, self._response(importance=0.62), turn_count=6)
+        try:
+            row = self._distill_and_fetch_row(conn, uc)
+            assert row["turn_num"] == 6, (
+                f"turn_num 应为当前蒸馏到的轮次 6，实际 {row['turn_num']}"
+            )
+        finally:
+            conn.close()

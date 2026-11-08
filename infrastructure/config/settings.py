@@ -163,10 +163,13 @@ class RetrievalSettings(BaseModel):
         description="图召回「隐性」激活阈值",
     )
     embedding_cosine_threshold: float = Field(
-        default=0.3,
+        default=0.12,
         ge=-1.0,
         le=1.0,
-        description="向量余弦相似度最低阈值",
+        description=(
+            "向量召回的绝对下限（相对门槛另按本批最高分计算）："
+            "低于此值的余弦视为噪声，不进入语义通道"
+        ),
     )
     session_importance_boost: float = Field(
         default=0.3,
@@ -486,6 +489,9 @@ _config_json_mapping: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
     (("analysis", "retrieval", "embedding_enabled"), ("retrieval", "embedding_enabled")),
     (("analysis", "retrieval", "total_cap"), ("retrieval", "total_cap")),
     (("analysis", "retrieval", "channel_min"), ("retrieval", "channel_min")),
+    # 向量召回下限。相对门槛另按「本批最高分 × 0.55」计算，这里只是噪声地板。
+    (("analysis", "retrieval", "embedding_cosine_threshold"),
+     ("retrieval", "embedding_cosine_threshold")),
     (("analysis", "retrieval", "channel_weights"), ("retrieval", "channel_weights")),
     (("analysis", "retrieval", "time_decay_halflife"), ("retrieval", "time_decay_halflife")),
     (("analysis", "retrieval", "emotional_resonance_bonus"), ("retrieval", "emotional_resonance_bonus")),

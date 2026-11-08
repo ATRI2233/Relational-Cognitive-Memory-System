@@ -49,6 +49,16 @@ from domain.services.keyword_service import KeywordService
 
 logger = logging.getLogger(__name__)
 
+# 语义通道的相对门槛系数：只保留「不低于本批最高分 55%」的向量命中。
+#
+# 为什么不用绝对余弦阈值：不同 embedding 模型的余弦分布差异极大，
+# 同一个 0.3 在某个模型上可能筛掉九成结果，在另一个模型上又可能放进一堆噪声。
+# 实测中文数据（text-embedding-3-small，1536 维）上，真正该命中的记忆
+# 余弦普遍落在 0.20~0.30，旧的 `cos_sim > 0.3` 等于把向量通道直接判死，
+# 每次召回都退化成了 keyword-only。相对门槛只看「本批结果的相对高低」，
+# 天然适配任意模型的分布；噪声下限则交给配置项 embedding_cosine_threshold。
+_SEMANTIC_REL_RATIO = 0.55
+
 # ═══════════════════════════════════════════════════════════════
 # 依赖接口协议（应用层协议，尚未纳入 domain.ports）
 # ═══════════════════════════════════════════════════════════════
@@ -175,6 +185,9 @@ class IRetrievalConfig(Protocol):
     channel_weights: list[float]
     time_decay_halflife: int
     emotional_resonance_bonus: float
+    # 向量余弦的绝对下限：相对门槛（本批最高分 × _SEMANTIC_REL_RATIO）
+    # 之外再兜一层噪声，防止整批结果都很低时仍被全量放进语义通道。
+    embedding_cosine_threshold: float
 
 
 @runtime_checkable
@@ -1042,9 +1055,21 @@ class RetrieveContextUseCase:
             embedding_results = await self._memory_repo.search_by_embedding(
                 uid, query_vec, limit=50
             )
-            for mem, cos_sim in embedding_results:
-                if cos_sim > 0.3:
-                    vec_results[mem.memory_id.value] = (cos_sim, mem)
+            # 先只留正相似度：零/负值代表方向无关或相反，拿来算基准没有意义
+            raw = [(m, c) for m, c in embedding_results if c > 0]
+            if raw:
+                # 原来这里写死 `cos_sim > 0.3`。实测这套中文数据上，真正该命中的
+                # 条目余弦普遍落在 0.20~0.30，绝对阈值把向量通道直接判死，
+                # 每次召回都退化成 keyword-only。改成以本批最高分为基准的相对
+                # 门槛，再用配置里的 embedding_cosine_threshold 兜住噪声下限。
+                floor = getattr(
+                    self._config, "embedding_cosine_threshold", 0.12
+                )
+                best = max(c for _, c in raw)
+                gate = max(floor, best * _SEMANTIC_REL_RATIO)
+                vec_results = {
+                    m.memory_id.value: (c, m) for m, c in raw if c >= gate
+                }
 
         # 4. 关键词 SQL 候选
         kw_memories: list[Memory] = []
