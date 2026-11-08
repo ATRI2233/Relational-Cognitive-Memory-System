@@ -145,22 +145,10 @@ class RetrievalSettings(BaseModel):
         description="无 relation 的共现边扩散权重惩罚因子",
     )
     graph_diffusion_max_results: int = Field(
-        default=4,
+        default=8,
         ge=1,
         le=20,
-        description="图扩散最大返回结果数",
-    )
-    surfaced_threshold: float = Field(
-        default=0.6,
-        ge=0.0,
-        le=1.0,
-        description="图召回「显性」激活阈值",
-    )
-    silent_threshold: float = Field(
-        default=0.25,
-        ge=0.0,
-        le=1.0,
-        description="图召回「隐性」激活阈值",
+        description="图扩散扩词上限（供语义通道扩充查询词）",
     )
     embedding_cosine_threshold: float = Field(
         default=0.12,
@@ -177,9 +165,31 @@ class RetrievalSettings(BaseModel):
         le=1.0,
         description="当前 session 条目重要性额外加成",
     )
-    fusion_fallback_channel_weights: list[float] = Field(
-        default=[1.0, 1.0, 0.4],
-        description="融合兜底权重 (当 channel_weights 未配置时)",
+    fusion_floor_ratio: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "融合相对质量门槛：候选加权分低于「本轮最高分 × 该比例」即视为"
+            "不相关，即使通道有保底名额也让位。调高更严格（宁缺毋滥），"
+            "调低更宽松"
+        ),
+    )
+    fusion_near_dup_ratio: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "近似去重阈值：两条候选的字符 2-gram Jaccard 相似度达到该值即"
+            "视为同一条的重复表述，只保留分数更高的一条"
+        ),
+    )
+    resonance_fallback_on_empty: bool = Field(
+        default=False,
+        description=(
+            "语义通道完全无命中时，是否降级为「按重要性取最近几条」。"
+            "默认关闭：无关话题不应被塞进毫不相关的旧记忆"
+        ),
     )
 
 
@@ -492,6 +502,14 @@ _config_json_mapping: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
     # 向量召回下限。相对门槛另按「本批最高分 × 0.55」计算，这里只是噪声地板。
     (("analysis", "retrieval", "embedding_cosine_threshold"),
      ("retrieval", "embedding_cosine_threshold")),
+    (("analysis", "retrieval", "session_importance_boost"),
+     ("retrieval", "session_importance_boost")),
+    (("analysis", "retrieval", "fusion_floor_ratio"),
+     ("retrieval", "fusion_floor_ratio")),
+    (("analysis", "retrieval", "fusion_near_dup_ratio"),
+     ("retrieval", "fusion_near_dup_ratio")),
+    (("analysis", "retrieval", "resonance_fallback_on_empty"),
+     ("retrieval", "resonance_fallback_on_empty")),
     (("analysis", "retrieval", "channel_weights"), ("retrieval", "channel_weights")),
     (("analysis", "retrieval", "time_decay_halflife"), ("retrieval", "time_decay_halflife")),
     (("analysis", "retrieval", "emotional_resonance_bonus"), ("retrieval", "emotional_resonance_bonus")),

@@ -1257,11 +1257,16 @@ class TestFusionService:
         assert tags.count(ChannelTag.SKELETON) >= 2
 
     def test_fusion_weighted_order(self) -> None:
-        """高权重通道的条目应排在前面。"""
+        """高权重通道的条目应排在前面。
+
+        通道内先归一化到 0~1 再乘权重，因此 raw 分数的绝对大小不再影响
+        排序，只有权重与通道内相对位置起作用——这正是 channel_weights
+        设计意图得以生效的前提。
+        """
         config = _FusionTestConfig(
             total_cap=6,
             channel_min=[0, 0, 0],
-            channel_weights=[0.1, 1.0, 0.3],
+            channel_weights=[0.5, 1.0, 0.6],
         )
         svc = FusionService(config)
 
@@ -1272,9 +1277,138 @@ class TestFusionService:
         }
         result = svc.fuse(channels)
 
-        # Resonance 权重最高 (1.0)，应排在首位
-        assert len(result) >= 3
+        # 归一化后加权分：recent 0.5 / resonance 1.0 / skeleton 0.6，
+        # 均高于 gate=0.35，因此三条都在，resonance 排首位
+        assert len(result) == 3
         assert result[0][1] == ChannelTag.RESONANCE
+        assert [t for _, t in result] == [
+            ChannelTag.RESONANCE,
+            ChannelTag.SKELETON,
+            ChannelTag.RECENT,
+        ]
+
+    def test_fusion_normalized_across_channels(self) -> None:
+        """原始量纲悬殊时，归一化应让权重重新主导排序。
+
+        骨架通道原始分含 +2.0 的关系加分（1.98），语义通道只有 0.92；
+        不归一化则骨架永远第一。归一化后语义通道应凭更高权重反超。
+        """
+        config = _FusionTestConfig(
+            total_cap=5,
+            channel_min=[0, 0, 0],
+            channel_weights=[0.5, 1.0, 0.6],
+        )
+        svc = FusionService(config)
+
+        channels = {
+            ChannelTag.RECENT: [("时间记忆", 1.69)],
+            ChannelTag.RESONANCE: [("语义记忆", 0.92)],
+            ChannelTag.SKELETON: [("图谱记忆", 1.98)],
+        }
+        result = svc.fuse(channels)
+
+        assert result[0][1] == ChannelTag.RESONANCE
+
+    def test_fusion_weak_channel_yields_to_gate(self) -> None:
+        """远弱于本轮最高分的通道应整体让位，而不是靠保底硬塞。"""
+        config = _FusionTestConfig(
+            total_cap=3,
+            channel_min=[1, 1, 1],
+            channel_weights=[0.1, 1.0, 0.3],
+        )
+        svc = FusionService(config)
+
+        channels = {
+            ChannelTag.RECENT: [("不相关的时间记忆", 1.0)],
+            ChannelTag.RESONANCE: [("命中语义记忆", 1.0)],
+            ChannelTag.SKELETON: [("不相关的图谱记忆", 1.0)],
+        }
+        result, detail = svc.fuse_with_detail(channels)
+
+        # 只有 resonance 过门槛（1.0），另两条（0.1 / 0.3）低于 gate=0.35
+        assert len(result) == 1
+        assert result[0][1] == ChannelTag.RESONANCE
+        assert detail["gate"] == pytest.approx(0.35)
+        skipped_tags = {e["tag"] for e in detail["gate_skipped"]}
+        assert ChannelTag.RECENT in skipped_tags
+        assert ChannelTag.SKELETON in skipped_tags
+
+    def test_fusion_cap_is_hard_limit(self) -> None:
+        """total_cap 是硬上限：候选不足时宁可少给，不影响上限语义。"""
+        config = _FusionTestConfig(
+            total_cap=5,
+            channel_min=[1, 1, 1],
+            channel_weights=[1.0, 1.0, 1.0],
+        )
+        svc = FusionService(config)
+
+        channels = {
+            ChannelTag.RECENT: [("记忆A", 1.0)],
+            ChannelTag.RESONANCE: [("记忆B", 0.9)],
+            ChannelTag.SKELETON: [],
+        }
+        result = svc.fuse(channels)
+
+        # 图谱通道空且无补位候选时，只给 2 条，不凑满 5 条
+        assert len(result) == 2
+
+    def test_fusion_dedup_by_business_key(self) -> None:
+        """同一条记忆经不同通道格式化后，应按业务身份合并成一条。"""
+        config = _FusionTestConfig(
+            total_cap=5,
+            channel_min=[1, 1, 1],
+            channel_weights=[1.0, 1.0, 1.0],
+        )
+        svc = FusionService(config)
+
+        channels = {
+            ChannelTag.RECENT: [("刚刚，用户复盘了这件事的失败之处", 1.0, 42)],
+            ChannelTag.RESONANCE: [("用户复盘刚才对话未总结的失败", 1.0, 42)],
+            ChannelTag.SKELETON: [],
+        }
+        result, detail = svc.fuse_with_detail(channels)
+
+        assert len(result) == 1
+        assert detail["dedup_dropped"]
+
+    def test_fusion_near_dup_graph_paths(self) -> None:
+        """同一组关系的不同起点的图谱链，应按 2-gram 近似去重。"""
+        config = _FusionTestConfig(
+            total_cap=5,
+            channel_min=[1, 1, 1],
+            channel_weights=[1.0, 1.0, 1.0],
+        )
+        svc = FusionService(config)
+
+        p1 = "用户 [讨论过] AstrBot → AstrBot [可自动注入] self-review文件"
+        p2 = "AstrBot [可自动注入] self-review文件 → self-review文件 [包含] 2026-11.md"
+        channels = {
+            ChannelTag.RECENT: [],
+            ChannelTag.RESONANCE: [],
+            ChannelTag.SKELETON: [(p1, 1.0), (p2, 0.98)],
+        }
+        result, detail = svc.fuse_with_detail(channels)
+
+        assert len(result) == 1
+        assert detail["near_dup_dropped"]
+
+    def test_fusion_short_text_not_near_dup(self) -> None:
+        """短标签之间不应因 2-gram 偶然重合被误判为重复。"""
+        config = _FusionTestConfig(
+            total_cap=5,
+            channel_min=[0, 0, 0],
+            channel_weights=[1.0, 1.0, 1.0],
+        )
+        svc = FusionService(config)
+
+        channels = {
+            ChannelTag.RECENT: [],
+            ChannelTag.RESONANCE: [("关心对方作息", 1.0), ("关心对方情绪", 1.0)],
+            ChannelTag.SKELETON: [],
+        }
+        result = svc.fuse(channels)
+
+        assert len(result) == 2
 
     def test_fusion_returns_correct_tag(self) -> None:
         """返回的每个条目都应携带正确的 source tag。"""

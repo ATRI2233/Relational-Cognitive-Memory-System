@@ -405,7 +405,16 @@ def create_core(
     memory_repo: IMemoryRepository = SQLiteMemoryRepository(conn, clock)
     session_repo: ISessionRepository = SQLiteSessionRepository(conn, clock)
     identity_repo: IIdentityRepository = SQLiteIdentityRepository(conn, clock)
-    graph_repo: IGraphRepository = SQLiteGraphRepository(conn, clock)
+    graph_repo: IGraphRepository = SQLiteGraphRepository(
+        conn,
+        clock,
+        tuning={
+            "activation_decay": config.retrieval.graph_activation_decay,
+            "cooccurrence_penalty": config.retrieval.graph_cooccurrence_noise_penalty,
+            "edge_decay_factor": config.retrieval.graph_edge_decay_factor,
+            "edge_weight_floor": config.retrieval.graph_edge_weight_floor,
+        },
+    )
 
     # ── Domain Services ────────────────────────────────────────────
     fusion_svc = FusionService(config.retrieval)
@@ -633,7 +642,7 @@ def create_core(
     distill_checker = DistillCheckerHandler(distill_uc)
     event_bus.register(TurnSaved, distill_checker.handle)
 
-    graph_maintenance = GraphMaintenanceHandler(graph_repo)
+    graph_maintenance = GraphMaintenanceHandler(graph_repo, config.retrieval)
     event_bus.register(MemoryDistilled, graph_maintenance.handle)
 
     # 当提供了 embed_call 时注册 DelayedEmbedHandler

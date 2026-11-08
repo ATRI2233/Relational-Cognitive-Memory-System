@@ -54,9 +54,26 @@ class SQLiteGraphRepository(IGraphRepository):
         clock: 可注入的时间源
     """
 
-    def __init__(self, conn: sqlite3.Connection, clock: IClock) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        clock: IClock,
+        tuning: dict | None = None,
+    ) -> None:
         self._conn = conn
         self._clock = clock
+        # 图扩散调参。此前 activation_decay / cooccurrence_noise_penalty /
+        # edge_decay_factor / edge_weight_floor 四个配置字段在 settings 中
+        # 定义，实现层却各自硬编码，面板上改了不生效。这里允许调用方注入。
+        t = tuning or {}
+        self._activation_decay = float(
+            t.get("activation_decay", _GRAPH_ACTIVATION_DECAY)
+        )
+        self._cooccurrence_penalty = float(
+            t.get("cooccurrence_penalty", 0.1)
+        )
+        self._edge_decay_factor = float(t.get("edge_decay_factor", 0.95))
+        self._edge_weight_floor = float(t.get("edge_weight_floor", 0.3))
 
     # ── 内部辅助方法 ──────────────────────────────────────────────
 
@@ -335,15 +352,18 @@ class SQLiteGraphRepository(IGraphRepository):
                             else:
                                 last_dt = last_seen  # type: ignore[assignment]
                             days = (now_dt - last_dt).days
-                            w = max(w * (0.95 ** days), 0.3)
+                            w = max(
+                                w * (self._edge_decay_factor ** days),
+                                self._edge_weight_floor,
+                            )
                         except (ValueError, TypeError):
                             pass
 
                     # 无 relation 的共现边严重降权
-                    w = w * (1.0 if relation else 0.1)
+                    w = w * (1.0 if relation else self._cooccurrence_penalty)
 
                     nid = frm if frm != cid else to
-                    decayed = w * (_GRAPH_ACTIVATION_DECAY ** (cur_depth + 1))
+                    decayed = w * (self._activation_decay ** (cur_depth + 1))
 
                     if nid in visited:
                         activation_map[nid] += decayed
@@ -455,36 +475,59 @@ class SQLiteGraphRepository(IGraphRepository):
             )
             raise
 
-    async def maintain(self, user_id: str) -> None:
+    async def maintain(
+        self,
+        user_id: str,
+        decay_min: float = 0.80,
+        decay_max: float = 0.95,
+        relation_bonus: float = 0.05,
+        dead_edge_threshold: float = 0.4,
+    ) -> None:
         """执行图衰减与清理维护。
 
         低频边快衰减，高频边慢衰减，语义边额外保护。
-        衰减率 = MIN(0.80 + 0.15 * encounter_count/20 + 是否语义边*0.05, 0.95)。
-        权重低于 0.4 的边被删除，无关联边的孤立节点被删除。
+        衰减率 = MIN(decay_min + (decay_max-decay_min) * encounter_count/20
+                     + 是否语义边 * relation_bonus, decay_max)。
+        权重低于 dead_edge_threshold 的边被删除，无关联边的孤立节点被删除。
+
+        四个阈值原先全部硬编码在本方法里（0.80 / 0.95 / 0.05 / 0.4），
+        而 settings 中 graph_maintenance_* 与 graph_dead_edge_threshold
+        定义了同义字段却无人读取。此处改为参数，由调用方从配置注入。
 
         Args:
             user_id: 用户标识
+            decay_min: 低频边衰减系数下限
+            decay_max: 高频边衰减系数上限（也是衰减率封顶值）
+            relation_bonus: 语义边的额外保护系数
+            dead_edge_threshold: 边权低于此值即删除
         """
         try:
             self._conn.execute(
                 """
                 UPDATE memory_graph_edges SET weight = ROUND(weight * MIN(
-                    0.80 + 0.15 * CAST(MIN(encounter_count, 20) AS REAL) / 20.0
-                    + CASE WHEN relation != '' THEN 0.05 ELSE 0.0 END,
-                    0.95
+                    ? + (? - ?) * CAST(MIN(encounter_count, 20) AS REAL) / 20.0
+                    + CASE WHEN relation != '' THEN ? ELSE 0.0 END,
+                    ?
                 ), 2)
                 WHERE from_node_id IN (
                     SELECT node_id FROM memory_graph_nodes WHERE user_id = ?
                 )
                 """,
-                (user_id,),
+                (
+                    decay_min,
+                    decay_max,
+                    decay_min,
+                    relation_bonus,
+                    decay_max,
+                    user_id,
+                ),
             )
 
             dead_edges = self._conn.execute(
-                "DELETE FROM memory_graph_edges WHERE weight < 0.4 "
+                "DELETE FROM memory_graph_edges WHERE weight < ? "
                 "AND (from_node_id IN (SELECT node_id FROM memory_graph_nodes WHERE user_id = ?) "
                 "OR to_node_id IN (SELECT node_id FROM memory_graph_nodes WHERE user_id = ?))",
-                (user_id, user_id),
+                (dead_edge_threshold, user_id, user_id),
             ).rowcount
 
             orphan_nodes = self._conn.execute(

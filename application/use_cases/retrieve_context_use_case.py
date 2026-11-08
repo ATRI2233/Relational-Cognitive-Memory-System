@@ -188,6 +188,11 @@ class IRetrievalConfig(Protocol):
     # 向量余弦的绝对下限：相对门槛（本批最高分 × _SEMANTIC_REL_RATIO）
     # 之外再兜一层噪声，防止整批结果都很低时仍被全量放进语义通道。
     embedding_cosine_threshold: float
+    # 当前 session 条目的重要性加成（时间通道用）
+    session_importance_boost: float
+    # 语义通道在完全没有命中时，是否降级为「按重要性兜底」。
+    # 默认 False：无关话题不应该被塞进毫不相关的旧记忆。
+    resonance_fallback_on_empty: bool
 
 
 @runtime_checkable
@@ -448,14 +453,17 @@ class RetrieveContextUseCase:
         self._trace_begin(user_input)
 
         # ── 三通道并行召回 ──
+        # 每个通道多取一些候选：融合层现在有质量门槛和双去重，
+        # 如果只按 channel_min 取一两条，过滤后就没有挑选空间了。
+        pool_size = max(config.total_cap, max(config.channel_min) + 2)
         channel_time = await self._channel_time(
-            user_id, session_id=session_id, limit=config.channel_min[0] + 1
+            user_id, session_id=session_id, limit=pool_size
         )
         channel_resonance = await self._channel_resonance(
-            user_id, user_input, limit=config.channel_min[1] + 2
+            user_id, user_input, limit=pool_size
         )
         channel_graph_result = await self._channel_graph(
-            user_id, user_input, limit=config.channel_min[2] + 1
+            user_id, user_input, limit=pool_size
         )
         channel_graph, chain_labels = channel_graph_result
 
@@ -916,7 +924,7 @@ class RetrieveContextUseCase:
         user_id: str,
         session_id: Optional[str] = None,
         limit: int = 2,
-    ) -> list[tuple[str, float]]:
+    ) -> list[tuple[str, float, int]]:
         """通道 1：时间衰减 × importance，当前 session 条目额外推高。
 
         对应 retrieval.py _channel_time_importance（行 77-103）。
@@ -925,7 +933,7 @@ class RetrieveContextUseCase:
           1. 从 IMemoryRepository 获取最近 50 条重要性 > 0.1 的记忆
           2. 过滤已过期的条目
           3. 每条计算：score = (time_decay + session_boost) * (0.5 + importance)
-             session_boost = 0.3（当前 session 匹配时）
+             session_boost 取自配置 session_importance_boost（默认 0.3）
           4. 格式化：fuzz_time + "，" + summary
           5. 按 score 降序，截取 limit 条
 
@@ -935,7 +943,10 @@ class RetrieveContextUseCase:
             limit: 最大返回条数
 
         Returns:
-            [(formatted_content, score), ...] 按分数降序，最多 limit 条
+            [(formatted_content, score, memory_id), ...] 按分数降序，最多 limit 条。
+            第三项 memory_id 供融合层按业务身份去重——同一条记忆在时间通道
+            输出「模糊时间 + summary」，在语义通道输出原始 content，
+            仅靠文本 hash 无法识别为同一条。
         """
         uid = UserId(user_id)
         memories = await self._memory_repo.get_by_user(
@@ -943,7 +954,7 @@ class RetrieveContextUseCase:
         )
         now = self._clock.now()
 
-        scored: list[tuple[str, float]] = []
+        scored: list[tuple[str, float, int]] = []
         for mem in memories:
             if mem.is_expired(now):
                 continue
@@ -952,7 +963,13 @@ class RetrieveContextUseCase:
             session_boost = 0.0
             if session_id is not None and mem.session_id is not None:
                 if mem.session_id.value == session_id:
-                    session_boost = 0.3
+                    # 原先硬编码 0.3，settings.session_importance_boost 定义了
+                    # 却从未被读取；这里接到配置上，面板调它才会真的生效。
+                    session_boost = float(
+                        getattr(
+                            self._config, "session_importance_boost", 0.3
+                        )
+                    )
             score = (t + session_boost) * (0.5 + mem.importance.value)
 
             # 保护：高重要性记忆的最低分数保障
@@ -979,7 +996,7 @@ class RetrieveContextUseCase:
                         "mood": mem.mood.value if mem.mood else "",
                     },
                 )
-            scored.append((formatted, score))
+            scored.append((formatted, score, mem.memory_id.value))
 
         scored.sort(key=lambda x: -x[1])
         return scored[:limit]
@@ -993,7 +1010,7 @@ class RetrieveContextUseCase:
         user_id: str,
         user_input: str,
         limit: int = 3,
-    ) -> list[tuple[str, float]]:
+    ) -> list[tuple[str, float, int]]:
         """通道 2：时间词过滤 → 图扩散扩词 → 向量余弦 → 情绪共振 → 重要性兜底。
 
         对应 retrieval.py _channel_multi_resonance（行 121-241）。
@@ -1003,7 +1020,7 @@ class RetrieveContextUseCase:
           2. 提取关键词 → 图扩散扩充
           3. 构造扩展查询文本 → 向量化 → IMemoryRepository.search_by_embedding
           4. IMemoryRepository.search_by_keywords（补充 vec 未覆盖的条目）
-          5. 无结果时降级为重要性兜底查询
+          5. 无结果时降级为重要性兜底（受 resonance_fallback_on_empty 控制，默认关闭）
           6. 评分：余弦 × 0.6 + 时间衰减重要性 × 0.4，情绪共振加成 15%
           7. 格式化内容字符串，按分数降序截取
 
@@ -1013,7 +1030,7 @@ class RetrieveContextUseCase:
             limit: 最大返回条数
 
         Returns:
-            [(content, score), ...] 按分数降序，最多 limit 条
+            [(content, score, memory_id), ...] 按分数降序，最多 limit 条
         """
         config = self._config
         uid = UserId(user_id)
@@ -1078,8 +1095,16 @@ class RetrieveContextUseCase:
                 uid, all_keywords, limit=30, time_filter=time_range
             )
 
-        # 5. 无向量 + 无关键词结果 → 重要性兜底
-        if not vec_results and not kw_memories:
+        # 5. 无向量 + 无关键词结果 → 重要性兜底（默认关闭）
+        #    实测这一段会把无关记忆塞进上下文：输入「活泼一点喵」这类
+        #    无需回忆的话时，库里没有命中，就拿最近的高分记忆顶替，
+        #    结果不同话题反复注入同一条技术讨论。长期记忆的价值在
+        #    「该想起来时才想起来」，宁缺毋滥，故改为显式开关。
+        if (
+            not vec_results
+            and not kw_memories
+            and getattr(config, "resonance_fallback_on_empty", False)
+        ):
             kw_memories = await self._memory_repo.get_by_user(
                 uid, limit=5, min_importance=0.5
             )
@@ -1090,7 +1115,7 @@ class RetrieveContextUseCase:
 
         # 7. 评分融合
         now = self._clock.now()
-        scored: list[tuple[str, float]] = []
+        scored: list[tuple[str, float, int]] = []
         kw_mem_map: dict[int, Memory] = {
             m.memory_id.value: m for m in kw_memories
         }
@@ -1130,7 +1155,7 @@ class RetrieveContextUseCase:
                             "mood": mem.mood.value if mem.mood else "",
                         },
                     )
-                scored.append((mem.content, score))
+                scored.append((mem.content, score, mid))
 
             for mid, (cos_sim, mem) in vec_results.items():
                 if mid not in kw_mem_map:
@@ -1149,7 +1174,7 @@ class RetrieveContextUseCase:
                                 "mood": mem.mood.value if mem.mood else "",
                             },
                         )
-                    scored.append((mem.content, score))
+                    scored.append((mem.content, score, mid))
         else:
             for mem in kw_memories:
                 t = self._time_service.time_decay(mem.created_at)
@@ -1176,7 +1201,7 @@ class RetrieveContextUseCase:
                             "mood": mem.mood.value if mem.mood else "",
                         },
                     )
-                scored.append((mem.content, score))
+                scored.append((mem.content, score, mem.memory_id.value))
 
         scored.sort(key=lambda x: -x[1])
         return scored[:limit]
@@ -1215,6 +1240,7 @@ class RetrieveContextUseCase:
               chain_labels: 图中涉及的节点标签集合，供 _build_graph_paths 使用
         """
         kws = self._keyword_service.extract_keywords(user_input, max_kw=4)
+        config = self._config
 
         # 1a. 先尝试直接关键词匹配
         seed_nodes: dict[int, GraphNode] = {}
@@ -1228,9 +1254,14 @@ class RetrieveContextUseCase:
         diffusion_seed = kws if kws else [user_input[:20]]
         diffused = await self._graph_diffuse(user_id, diffusion_seed)
         if diffused:
+            # 扩散词上限接到配置（graph_diffusion_max_results），
+            # 原先这里写死 8，与配置里的同义字段互不相干
+            max_diffused = int(
+                getattr(config, "graph_diffusion_max_results", 8)
+            )
             expanded_kws = list(set(
                 (kws if kws else [])
-                + [label for label, _ in diffused[:8]]
+                + [label for label, _ in diffused[:max_diffused]]
             ))
             for kw in expanded_kws:
                 nodes = await self._graph_repo.search_nodes(user_id, kw)
@@ -1276,7 +1307,15 @@ class RetrieveContextUseCase:
                     ref = now.replace(tzinfo=None) if now.tzinfo else now
                     ls = edge.last_seen.replace(tzinfo=None) if edge.last_seen.tzinfo else edge.last_seen
                     days = max(0, (ref - ls).days)
-                    w = max(w * (0.95 ** days), 0.3)
+                    # 原先硬编码 0.95 / 0.3，与 graph_edge_decay_factor、
+                    # graph_edge_weight_floor 两个配置字段各走各的
+                    decay_factor = float(
+                        getattr(config, "graph_edge_decay_factor", 0.95)
+                    )
+                    weight_floor = float(
+                        getattr(config, "graph_edge_weight_floor", 0.3)
+                    )
+                    w = max(w * (decay_factor ** days), weight_floor)
 
                 # 边对去重
                 pair = (min(src_label, tgt_label), max(src_label, tgt_label))
@@ -1352,7 +1391,11 @@ class RetrieveContextUseCase:
             return []
 
         seed_ids = list(seed_nodes.keys())
-        diffused = await self._graph_repo.bfs_diffuse(user_id, seed_ids)
+        # BFS 深度接到配置（graph_bfs_depth），原先隐式使用仓储默认值
+        depth = int(getattr(self._config, "graph_bfs_depth", 2))
+        diffused = await self._graph_repo.bfs_diffuse(
+            user_id, seed_ids, depth=depth
+        )
 
         return [(d.label, d.score) for d in diffused]
 

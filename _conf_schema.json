@@ -73,6 +73,42 @@
             "min": 1,
             "max": 20
           },
+          "fusion_floor_ratio": [
+            {
+              "description": "融合相对质量门槛",
+              "hint": "候选加权分低于「本轮最高分 × 该比例」即视为不相关，即使通道有保底名额也让位。调高更严格（宁缺毋滥），调低更宽松。",
+              "type": "float",
+              "default": 0.35,
+              "min": 0.0,
+              "max": 1.0
+            }
+          ],
+          "fusion_near_dup_ratio": [
+            {
+              "description": "近似去重阈值",
+              "hint": "两条候选的字符 2-gram 相似度达到该值即视为同一条的重复表述，只保留分数更高的一条。",
+              "type": "float",
+              "default": 0.5,
+              "min": 0.0,
+              "max": 1.0
+            }
+          ],
+          "resonance_fallback_on_empty": [
+            {
+              "description": "语义通道空命中时是否按重要性兜底",
+              "hint": "默认关闭。开启后，即使当前话题与任何历史记忆都不相关，也会拿最近的高分记忆顶上，容易在闲聊时突然提起旧事。",
+              "type": "bool",
+              "default": false
+            }
+          ],
+          "session_importance_boost": {
+            "description": "当前会话条目重要性加成",
+            "hint": "当轮对话产生的记忆在时间通道中的额外加权，值越大越偏向「刚刚聊过的」。",
+            "type": "float",
+            "default": 0.3,
+            "min": 0.0,
+            "max": 1.0
+          },
           "embedding_cosine_threshold": {
             "description": "向量召回噪声下限",
             "hint": "低于此余弦值的记忆不进语义通道。这是绝对下限；实际门槛还会取「本批最高分 × 0.55」的较大者，所以换 embedding 模型也不用改这里。中文短句常见正确命中在 0.20~0.30，不建议调到 0.3 以上。",
